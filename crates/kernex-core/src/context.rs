@@ -1,6 +1,7 @@
 //! Conversation context passed to AI providers.
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// Controls which optional context blocks are loaded and injected.
 ///
@@ -49,6 +50,9 @@ pub struct McpServer {
     pub command: String,
     /// Command-line arguments.
     pub args: Vec<String>,
+    /// Environment variables passed to the server process.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
 }
 
 /// Conversation context passed to an AI provider.
@@ -189,6 +193,7 @@ mod tests {
             name: "playwright".into(),
             command: "npx".into(),
             args: vec!["@playwright/mcp".into(), "--headless".into()],
+            env: HashMap::new(),
         };
         let json = serde_json::to_string(&server).unwrap();
         let deserialized: McpServer = serde_json::from_str(&json).unwrap();

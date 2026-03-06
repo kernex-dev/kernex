@@ -88,17 +88,22 @@ impl McpClient {
         name: &str,
         command: &str,
         args: &[String],
+        env: &std::collections::HashMap<String, String>,
     ) -> Result<Self, anyhow::Error> {
         debug!(
             "mcp: connecting to server '{name}' via: {command} {}",
             args.join(" ")
         );
 
-        let mut child = tokio::process::Command::new(command)
-            .args(args)
+        let mut cmd = tokio::process::Command::new(command);
+        cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .stderr(Stdio::null());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let mut child = cmd
             .spawn()
             .map_err(|e| anyhow::anyhow!("mcp: failed to spawn '{command}': {e}"))?;
 
