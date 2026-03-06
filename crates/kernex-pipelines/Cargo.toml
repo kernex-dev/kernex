@@ -1,0 +1,13 @@
+[package]
+name = "kernex-pipelines"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Topology-driven multi-agent pipelines with corrective loops for Kernex"
+
+[dependencies]
+kernex-core = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }

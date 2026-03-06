@@ -1,0 +1,29 @@
+# Build
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config (secrets)
+config.toml
+.env
+*.pem
+*.key
+
+# Internal docs (extraction reference, not public)
+/docs/
+
+# Logs
+*.log
+
+# Test artifacts
+/tmp/

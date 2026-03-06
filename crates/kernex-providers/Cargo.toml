@@ -1,0 +1,24 @@
+[package]
+name = "kernex-providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "AI backend providers for Kernex (Claude Code, Anthropic, OpenAI, Ollama, OpenRouter, Gemini, MCP)"
+
+[dependencies]
+kernex-core = { workspace = true }
+kernex-sandbox = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+tracing = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+http = { workspace = true }
