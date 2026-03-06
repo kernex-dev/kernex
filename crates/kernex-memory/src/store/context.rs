@@ -205,6 +205,7 @@ impl Store {
             history,
             current_message: incoming.text.clone(),
             mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
             max_turns: None,
             allowed_tools: None,
             model: None,

@@ -1,7 +1,7 @@
 //! Skill loading, parsing, deployment, and trigger matching.
 
 use crate::parse::{data_path, extract_bins_from_metadata, parse_yaml_list, unquote, which_exists};
-use kernex_core::context::McpServer;
+use kernex_core::context::{McpServer, Toolbox};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -80,6 +80,8 @@ pub struct Skill {
     pub trigger: Option<String>,
     /// MCP servers this skill declares.
     pub mcp_servers: Vec<McpServer>,
+    /// Script-based tools this skill declares.
+    pub toolboxes: Vec<Toolbox>,
 }
 
 /// MCP server definition in TOML frontmatter (`[mcp.name]`).
@@ -119,6 +121,84 @@ struct McpJsonEntry {
 struct McpJsonFile {
     #[serde(rename = "mcpServers", default)]
     mcp_servers: HashMap<String, McpJsonEntry>,
+}
+
+/// Toolbox definition in TOML frontmatter (`[toolbox.name]`).
+#[derive(Debug, Deserialize)]
+struct ToolboxFrontmatter {
+    description: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default = "default_object_schema")]
+    parameters: serde_json::Value,
+}
+
+fn default_object_schema() -> serde_json::Value {
+    serde_json::json!({"type": "object"})
+}
+
+/// A single entry in `toolbox.json` under `toolboxes`.
+#[derive(Debug, Deserialize)]
+struct ToolboxJsonEntry {
+    description: String,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default = "default_object_schema")]
+    parameters: serde_json::Value,
+}
+
+/// Root structure of `toolbox.json`.
+#[derive(Debug, Deserialize)]
+struct ToolboxJsonFile {
+    #[serde(default)]
+    toolboxes: HashMap<String, ToolboxJsonEntry>,
+}
+
+/// Load toolboxes from an optional `toolbox.json` file in a skill directory.
+fn load_toolbox_json(skill_dir: &Path) -> Vec<Toolbox> {
+    let path = skill_dir.join("toolbox.json");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let file: ToolboxJsonFile = match serde_json::from_str(&content) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(
+                "skills: invalid toolbox.json in {}: {e}",
+                skill_dir.display()
+            );
+            return Vec::new();
+        }
+    };
+    file.toolboxes
+        .into_iter()
+        .filter_map(|(name, entry)| {
+            if is_safe_mcp_command(&entry.command) {
+                Some(Toolbox {
+                    name,
+                    description: entry.description,
+                    parameters: entry.parameters,
+                    command: entry.command,
+                    args: entry.args,
+                    env: entry.env,
+                })
+            } else {
+                warn!(
+                    "skills: rejected unsafe toolbox command {:?} in {}",
+                    entry.command,
+                    path.display()
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 /// Load MCP servers from an optional `mcp.json` file in a skill directory.
@@ -175,6 +255,8 @@ struct SkillFrontmatter {
     trigger: Option<String>,
     #[serde(default)]
     mcp: HashMap<String, McpFrontmatter>,
+    #[serde(default)]
+    toolbox: HashMap<String, ToolboxFrontmatter>,
 }
 
 /// Scan `{data_dir}/skills/*/SKILL.md` and return all valid skill definitions.
@@ -240,6 +322,42 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                 mcp_servers.push(srv);
             }
         }
+
+        // Collect toolboxes from frontmatter.
+        let mut toolboxes: Vec<Toolbox> = fm
+            .toolbox
+            .into_iter()
+            .filter_map(|(name, tbf)| {
+                if is_safe_mcp_command(&tbf.command) {
+                    Some(Toolbox {
+                        name,
+                        description: tbf.description,
+                        parameters: tbf.parameters,
+                        command: tbf.command,
+                        args: tbf.args,
+                        env: tbf.env,
+                    })
+                } else {
+                    warn!(
+                        "skills: rejected unsafe toolbox command {:?} in {}",
+                        tbf.command,
+                        skill_file.display()
+                    );
+                    None
+                }
+            })
+            .collect();
+
+        // Merge toolboxes from optional toolbox.json (takes precedence on name collision).
+        let json_toolboxes = load_toolbox_json(&path);
+        for tb in json_toolboxes {
+            if let Some(existing) = toolboxes.iter_mut().find(|t| t.name == tb.name) {
+                *existing = tb;
+            } else {
+                toolboxes.push(tb);
+            }
+        }
+
         skills.push(Skill {
             name: fm.name,
             description: fm.description,
@@ -249,6 +367,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             path: skill_file,
             trigger: fm.trigger,
             mcp_servers,
+            toolboxes,
         });
     }
 
@@ -365,6 +484,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
         homepage,
         trigger,
         mcp,
+        toolbox: HashMap::new(),
     })
 }
 
@@ -399,6 +519,37 @@ pub fn match_skill_triggers(skills: &[Skill], message: &str) -> Vec<McpServer> {
     }
 
     servers
+}
+
+/// Match user message against skill triggers and return activated toolboxes.
+///
+/// Same trigger-matching logic as [`match_skill_triggers`], but returns
+/// the toolbox tools instead of MCP servers. Deduplicated by tool name.
+pub fn match_skill_toolboxes(skills: &[Skill], message: &str) -> Vec<Toolbox> {
+    let lower = message.to_lowercase();
+    let mut seen = std::collections::HashSet::new();
+    let mut toolboxes = Vec::new();
+
+    for skill in skills {
+        if !skill.available || skill.toolboxes.is_empty() {
+            continue;
+        }
+        let Some(ref trigger) = skill.trigger else {
+            continue;
+        };
+        let matched = trigger
+            .split('|')
+            .any(|kw| !kw.trim().is_empty() && lower.contains(&kw.trim().to_lowercase()));
+        if matched {
+            for tb in &skill.toolboxes {
+                if seen.insert(tb.name.clone()) {
+                    toolboxes.push(tb.clone());
+                }
+            }
+        }
+    }
+
+    toolboxes
 }
 
 #[cfg(test)]
@@ -505,6 +656,7 @@ description = \"No deps.\"
                 path: PathBuf::from("/home/user/.kernex/skills/gog/SKILL.md"),
                 trigger: None,
                 mcp_servers: Vec::new(),
+                toolboxes: Vec::new(),
             },
             Skill {
                 name: "missing".into(),
@@ -515,6 +667,7 @@ description = \"No deps.\"
                 path: PathBuf::from("/home/user/.kernex/skills/missing/SKILL.md"),
                 trigger: None,
                 mcp_servers: Vec::new(),
+                toolboxes: Vec::new(),
             },
         ];
         let prompt = build_skill_prompt(&skills);
@@ -688,6 +841,7 @@ description = \"No trigger or MCP.\"
             path: PathBuf::from("/test"),
             trigger: trigger.map(String::from),
             mcp_servers,
+            toolboxes: Vec::new(),
         }
     }
 
@@ -1014,5 +1168,215 @@ mcp-pwned: sh;rm -rf / --no-preserve-root
         assert!(!is_safe_mcp_command(
             &fm.mcp.get("pwned").map_or("", |m| &m.command)
         ));
+    }
+
+    // --- Toolbox tests ---
+
+    #[test]
+    fn test_parse_toml_frontmatter_with_toolbox() {
+        let content = r#"---
+name = "lint-skill"
+description = "Linting tools."
+trigger = "lint|check"
+
+[toolbox.lint]
+description = "Run linter on a file."
+command = "bash"
+args = ["scripts/lint.sh"]
+---
+
+Body text.
+"#;
+        let fm = parse_skill_file(content).unwrap();
+        assert_eq!(fm.toolbox.len(), 1);
+        assert_eq!(fm.toolbox["lint"].command, "bash");
+        assert_eq!(fm.toolbox["lint"].description, "Run linter on a file.");
+        assert_eq!(fm.toolbox["lint"].args, vec!["scripts/lint.sh"]);
+    }
+
+    #[test]
+    fn test_load_toolbox_json_basic() {
+        let tmp = std::env::temp_dir().join("__kernex_test_toolbox_json_basic__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("toolbox.json"),
+            r#"{"toolboxes":{"lint":{"description":"Run linter.","command":"bash","args":["lint.sh"]}}}"#,
+        )
+        .unwrap();
+
+        let toolboxes = load_toolbox_json(&tmp);
+        assert_eq!(toolboxes.len(), 1);
+        assert_eq!(toolboxes[0].name, "lint");
+        assert_eq!(toolboxes[0].command, "bash");
+        assert_eq!(toolboxes[0].description, "Run linter.");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_toolbox_json_with_env_and_params() {
+        let tmp = std::env::temp_dir().join("__kernex_test_toolbox_json_env__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("toolbox.json"),
+            r#"{"toolboxes":{"deploy":{"description":"Deploy app.","command":"bash","args":["deploy.sh"],"env":{"ENV":"prod"},"parameters":{"type":"object","properties":{"target":{"type":"string"}}}}}}"#,
+        )
+        .unwrap();
+
+        let toolboxes = load_toolbox_json(&tmp);
+        assert_eq!(toolboxes.len(), 1);
+        assert_eq!(toolboxes[0].env.get("ENV").unwrap(), "prod");
+        assert!(toolboxes[0].parameters.get("properties").is_some());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_toolbox_json_missing_file() {
+        let tmp = std::env::temp_dir().join("__kernex_test_toolbox_json_missing__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(load_toolbox_json(&tmp).is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_toolbox_json_rejects_unsafe_command() {
+        let tmp = std::env::temp_dir().join("__kernex_test_toolbox_json_unsafe__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("toolbox.json"),
+            r#"{"toolboxes":{"evil":{"description":"Bad.","command":"sh -c 'rm -rf /'"}}}"#,
+        )
+        .unwrap();
+
+        assert!(load_toolbox_json(&tmp).is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_skills_with_toolbox() {
+        let tmp = std::env::temp_dir().join("__kernex_test_skills_toolbox__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let skill_dir = tmp.join("skills/lint");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname = \"lint\"\ndescription = \"Lint tools.\"\nrequires = [\"ls\"]\ntrigger = \"lint\"\n\n[toolbox.check]\ndescription = \"Run checker.\"\ncommand = \"bash\"\nargs = [\"check.sh\"]\n---\n",
+        )
+        .unwrap();
+
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].toolboxes.len(), 1);
+        assert_eq!(skills[0].toolboxes[0].name, "check");
+        assert_eq!(skills[0].toolboxes[0].command, "bash");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_skills_merges_toolbox_json() {
+        let tmp = std::env::temp_dir().join("__kernex_test_skills_merge_toolbox__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let skill_dir = tmp.join("skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname = \"my-skill\"\ndescription = \"Test.\"\nrequires = [\"ls\"]\ntrigger = \"test\"\n\n[toolbox.from-fm]\ndescription = \"From frontmatter.\"\ncommand = \"echo\"\n---\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            skill_dir.join("toolbox.json"),
+            r#"{"toolboxes":{"from-json":{"description":"From JSON.","command":"echo","args":["hi"]}}}"#,
+        )
+        .unwrap();
+
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].toolboxes.len(), 2);
+        let names: Vec<&str> = skills[0]
+            .toolboxes
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect();
+        assert!(names.contains(&"from-fm"));
+        assert!(names.contains(&"from-json"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_skills_toolbox_json_overrides_frontmatter() {
+        let tmp = std::env::temp_dir().join("__kernex_test_skills_toolbox_override__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let skill_dir = tmp.join("skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname = \"my-skill\"\ndescription = \"Test.\"\n\n[toolbox.shared]\ndescription = \"Old.\"\ncommand = \"echo\"\nargs = [\"old\"]\n---\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            skill_dir.join("toolbox.json"),
+            r#"{"toolboxes":{"shared":{"description":"New.","command":"echo","args":["new"]}}}"#,
+        )
+        .unwrap();
+
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].toolboxes.len(), 1);
+        assert_eq!(skills[0].toolboxes[0].description, "New.");
+        assert_eq!(skills[0].toolboxes[0].args, vec!["new"]);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    fn make_toolbox(name: &str) -> Toolbox {
+        Toolbox {
+            name: name.into(),
+            description: format!("{name} tool"),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "echo".into(),
+            args: Vec::new(),
+            env: HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn test_match_skill_toolboxes_basic() {
+        let mut skill = make_skill("lint", true, Some("lint|check"), Vec::new());
+        skill.toolboxes = vec![make_toolbox("linter")];
+        let toolboxes = match_skill_toolboxes(&[skill], "please lint this file");
+        assert_eq!(toolboxes.len(), 1);
+        assert_eq!(toolboxes[0].name, "linter");
+    }
+
+    #[test]
+    fn test_match_skill_toolboxes_no_match() {
+        let mut skill = make_skill("lint", true, Some("lint|check"), Vec::new());
+        skill.toolboxes = vec![make_toolbox("linter")];
+        let toolboxes = match_skill_toolboxes(&[skill], "deploy to production");
+        assert!(toolboxes.is_empty());
+    }
+
+    #[test]
+    fn test_match_skill_toolboxes_deduplicates() {
+        let mut s1 = make_skill("a", true, Some("lint"), Vec::new());
+        s1.toolboxes = vec![make_toolbox("linter")];
+        let mut s2 = make_skill("b", true, Some("check"), Vec::new());
+        s2.toolboxes = vec![make_toolbox("linter")];
+        let toolboxes = match_skill_toolboxes(&[s1, s2], "lint and check");
+        assert_eq!(toolboxes.len(), 1);
+    }
+
+    #[test]
+    fn test_match_skill_toolboxes_skips_unavailable() {
+        let mut skill = make_skill("lint", false, Some("lint"), Vec::new());
+        skill.toolboxes = vec![make_toolbox("linter")];
+        let toolboxes = match_skill_toolboxes(&[skill], "lint this");
+        assert!(toolboxes.is_empty());
     }
 }
