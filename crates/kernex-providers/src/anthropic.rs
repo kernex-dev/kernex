@@ -167,6 +167,7 @@ impl Provider for AnthropicProvider {
             if let Some(ref ws) = self.workspace_path {
                 let mut executor = ToolExecutor::new(ws.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
+                executor.register_toolboxes(&context.toolboxes);
 
                 let result = self
                     .agentic_loop(

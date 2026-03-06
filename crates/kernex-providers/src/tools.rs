@@ -4,7 +4,7 @@
 //! plus MCP server tool routing. Used by all agentic loops.
 
 use crate::mcp_client::McpClient;
-use kernex_core::context::McpServer;
+use kernex_core::context::{McpServer, Toolbox};
 use kernex_core::message::{CompletionMeta, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,6 +18,8 @@ const MAX_BASH_OUTPUT: usize = 30_000;
 const MAX_READ_OUTPUT: usize = 50_000;
 /// Default bash command timeout in seconds.
 const BASH_TIMEOUT_SECS: u64 = 120;
+/// Default toolbox script timeout in seconds.
+const TOOLBOX_TIMEOUT_SECS: u64 = 120;
 
 /// A tool definition in provider-agnostic format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,13 +41,14 @@ pub struct ToolResult {
     pub is_error: bool,
 }
 
-/// Executes built-in tools and routes MCP tool calls to the correct server.
+/// Executes built-in tools, script-based toolboxes, and MCP tool calls.
 pub struct ToolExecutor {
     workspace_path: PathBuf,
     data_dir: PathBuf,
     config_path: Option<PathBuf>,
     mcp_clients: HashMap<String, McpClient>,
     mcp_tool_map: HashMap<String, String>,
+    toolboxes: HashMap<String, Toolbox>,
 }
 
 impl ToolExecutor {
@@ -65,6 +68,7 @@ impl ToolExecutor {
             config_path: None,
             mcp_clients: HashMap::new(),
             mcp_tool_map: HashMap::new(),
+            toolboxes: HashMap::new(),
         }
     }
 
@@ -77,6 +81,14 @@ impl ToolExecutor {
     pub fn with_config_path(mut self, config_path: PathBuf) -> Self {
         self.config_path = Some(config_path);
         self
+    }
+
+    /// Register script-based toolbox tools.
+    pub fn register_toolboxes(&mut self, toolboxes: &[Toolbox]) {
+        for tb in toolboxes {
+            debug!("toolbox: registered '{}'", tb.name);
+            self.toolboxes.insert(tb.name.clone(), tb.clone());
+        }
     }
 
     /// Connect to MCP servers and discover their tools.
@@ -99,9 +111,18 @@ impl ToolExecutor {
         }
     }
 
-    /// Return all available tool definitions (built-in + MCP).
+    /// Return all available tool definitions (built-in + toolbox + MCP).
     pub fn all_tool_defs(&self) -> Vec<ToolDef> {
         let mut defs = builtin_tool_defs();
+
+        // Add toolbox tools.
+        for tb in self.toolboxes.values() {
+            defs.push(ToolDef {
+                name: tb.name.clone(),
+                description: tb.description.clone(),
+                parameters: tb.parameters.clone(),
+            });
+        }
 
         // Add MCP tools.
         for client in self.mcp_clients.values() {
@@ -125,6 +146,11 @@ impl ToolExecutor {
             "write" => self.exec_write(args).await,
             "edit" => self.exec_edit(args).await,
             _ => {
+                // Try toolbox routing.
+                if let Some(tb) = self.toolboxes.get(tool_name).cloned() {
+                    return self.exec_toolbox(&tb, args).await;
+                }
+
                 // Try MCP routing.
                 if let Some(server_name) = self.mcp_tool_map.get(tool_name).cloned() {
                     if let Some(client) = self.mcp_clients.get_mut(&server_name) {
@@ -309,6 +335,78 @@ impl ToolExecutor {
             },
             Err(e) => ToolResult {
                 content: format!("Error writing {}: {e}", path.display()),
+                is_error: true,
+            },
+        }
+    }
+
+    async fn exec_toolbox(&self, tb: &Toolbox, args: &Value) -> ToolResult {
+        debug!("toolbox/{}: running", tb.name);
+
+        let mut cmd = kernex_sandbox::protected_command(&tb.command, &self.data_dir);
+        cmd.args(&tb.args);
+        cmd.current_dir(&self.workspace_path);
+        cmd.kill_on_drop(true);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        for (k, v) in &tb.env {
+            cmd.env(k, v);
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("Failed to spawn toolbox '{}': {e}", tb.name),
+                    is_error: true,
+                };
+            }
+        };
+
+        // Write arguments as JSON to stdin.
+        if let Some(mut stdin) = child.stdin.take() {
+            let json = serde_json::to_string(args).unwrap_or_default();
+            let _ = tokio::io::AsyncWriteExt::write_all(&mut stdin, json.as_bytes()).await;
+            // Drop stdin to signal EOF.
+        }
+
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(TOOLBOX_TIMEOUT_SECS),
+            child.wait_with_output(),
+        )
+        .await
+        {
+            Ok(Ok(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let mut result = String::new();
+                if !stdout.is_empty() {
+                    result.push_str(&stdout);
+                }
+                if !stderr.is_empty() {
+                    if !result.is_empty() {
+                        result.push('\n');
+                    }
+                    result.push_str(&stderr);
+                }
+                if result.is_empty() {
+                    result = format!("(exit code: {})", output.status.code().unwrap_or(-1));
+                }
+                ToolResult {
+                    content: truncate_output(&result, MAX_BASH_OUTPUT),
+                    is_error: !output.status.success(),
+                }
+            }
+            Ok(Err(e)) => ToolResult {
+                content: format!("Toolbox '{}' execution failed: {e}", tb.name),
+                is_error: true,
+            },
+            Err(_) => ToolResult {
+                content: format!(
+                    "Toolbox '{}' timed out after {TOOLBOX_TIMEOUT_SECS}s",
+                    tb.name
+                ),
                 is_error: true,
             },
         }
@@ -692,6 +790,125 @@ mod tests {
             .await;
         assert!(result.is_error);
         assert!(result.content.contains("Unknown tool"));
+    }
+
+    #[test]
+    fn test_register_toolboxes() {
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let toolboxes = vec![Toolbox {
+            name: "lint".into(),
+            description: "Run linter.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "bash".into(),
+            args: vec!["lint.sh".into()],
+            env: std::collections::HashMap::new(),
+        }];
+        executor.register_toolboxes(&toolboxes);
+        assert!(executor.toolboxes.contains_key("lint"));
+    }
+
+    #[test]
+    fn test_all_tool_defs_includes_toolboxes() {
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let toolboxes = vec![Toolbox {
+            name: "lint".into(),
+            description: "Run linter.".into(),
+            parameters: serde_json::json!({"type": "object", "properties": {"file": {"type": "string"}}}),
+            command: "bash".into(),
+            args: vec!["lint.sh".into()],
+            env: std::collections::HashMap::new(),
+        }];
+        executor.register_toolboxes(&toolboxes);
+        let defs = executor.all_tool_defs();
+        assert!(defs.iter().any(|d| d.name == "lint"));
+        assert_eq!(defs.len(), 5); // 4 built-in + 1 toolbox
+    }
+
+    #[tokio::test]
+    async fn test_exec_toolbox_echo() {
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let tb = Toolbox {
+            name: "greet".into(),
+            description: "Echo greeting.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "echo".into(),
+            args: vec!["hello from toolbox".into()],
+            env: std::collections::HashMap::new(),
+        };
+        executor.register_toolboxes(&[tb]);
+        let result = executor.execute("greet", &serde_json::json!({})).await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("hello from toolbox"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_toolbox_receives_stdin_json() {
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let tb = Toolbox {
+            name: "cat-input".into(),
+            description: "Cat stdin.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "cat".into(),
+            args: Vec::new(),
+            env: std::collections::HashMap::new(),
+        };
+        executor.register_toolboxes(&[tb]);
+        let result = executor
+            .execute("cat-input", &serde_json::json!({"file": "test.rs"}))
+            .await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("test.rs"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_toolbox_nonzero_exit() {
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let tb = Toolbox {
+            name: "fail".into(),
+            description: "Always fails.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "bash".into(),
+            args: vec!["-c".into(), "echo error >&2; exit 1".into()],
+            env: std::collections::HashMap::new(),
+        };
+        executor.register_toolboxes(&[tb]);
+        let result = executor.execute("fail", &serde_json::json!({})).await;
+        assert!(result.is_error);
+        assert!(result.content.contains("error"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_toolbox_with_env() {
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let mut env = std::collections::HashMap::new();
+        env.insert("GREETING".into(), "hola".into());
+        let tb = Toolbox {
+            name: "env-test".into(),
+            description: "Print env var.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "bash".into(),
+            args: vec!["-c".into(), "echo $GREETING".into()],
+            env,
+        };
+        executor.register_toolboxes(&[tb]);
+        let result = executor.execute("env-test", &serde_json::json!({})).await;
+        assert!(!result.is_error);
+        assert!(result.content.contains("hola"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_toolbox_spawn_failure() {
+        let executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let tb = Toolbox {
+            name: "bad".into(),
+            description: "Bad command.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "__nonexistent_cmd_xyz__".into(),
+            args: Vec::new(),
+            env: std::collections::HashMap::new(),
+        };
+        let result = executor.exec_toolbox(&tb, &serde_json::json!({})).await;
+        assert!(result.is_error);
     }
 
     #[test]
