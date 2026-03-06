@@ -26,10 +26,10 @@ async-trait = "0.1"
 http = "1"
 
 # Internal crates
-kernex-core = { path = "crates/kernex-core" }
-kernex-sandbox = { path = "crates/kernex-sandbox" }
-kernex-providers = { path = "crates/kernex-providers" }
-kernex-memory = { path = "crates/kernex-memory" }
-kernex-skills = { path = "crates/kernex-skills" }
-kernex-pipelines = { path = "crates/kernex-pipelines" }
-kernex-runtime = { path = "crates/kernex-runtime" }
+kernex-core = { version = "0.1.0", path = "crates/kernex-core" }
+kernex-sandbox = { version = "0.1.0", path = "crates/kernex-sandbox" }
+kernex-providers = { version = "0.1.0", path = "crates/kernex-providers" }
+kernex-memory = { version = "0.1.0", path = "crates/kernex-memory" }
+kernex-skills = { version = "0.1.0", path = "crates/kernex-skills" }
+kernex-pipelines = { version = "0.1.0", path = "crates/kernex-pipelines" }
+kernex-runtime = { version = "0.1.0", path = "crates/kernex-runtime" }
