@@ -11,6 +11,7 @@
 <p align="center">
   <a href="https://github.com/kernex-dev/kernex/actions"><img src="https://img.shields.io/github/actions/workflow/status/kernex-dev/kernex/ci.yml?branch=main&style=flat-square" alt="CI"></a>
   <a href="https://crates.io/crates/kernex-runtime"><img src="https://img.shields.io/crates/v/kernex-runtime?style=flat-square" alt="crates.io"></a>
+  <a href="https://docs.rs/kernex-runtime"><img src="https://img.shields.io/docsrs/kernex-runtime?style=flat-square" alt="docs.rs"></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-Apache--2.0%20OR%20MIT-blue?style=flat-square" alt="License"></a>
   <a href="https://github.com/kernex-dev/kernex"><img src="https://img.shields.io/github/stars/kernex-dev/kernex?style=flat-square" alt="Stars"></a>
 </p>
@@ -55,13 +56,15 @@ kernex-runtime          Facade — composes all crates into a RuntimeBuilder
 
 | Crate | Description | Tests |
 |-------|-------------|-------|
-| [`kernex-core`](crates/kernex-core) | Shared types, traits, config, sanitization | 34 |
-| [`kernex-sandbox`](crates/kernex-sandbox) | OS-level sandbox (Seatbelt + Landlock) | 22 |
-| [`kernex-providers`](crates/kernex-providers) | 6 AI providers, tool executor, MCP client | 83 |
-| [`kernex-memory`](crates/kernex-memory) | SQLite memory, FTS5 search, reward learning | 80 |
-| [`kernex-skills`](crates/kernex-skills) | Skill/project loader, trigger matching | 40 |
-| [`kernex-pipelines`](crates/kernex-pipelines) | TOML topology, multi-agent orchestration | 25 |
-| [`kernex-runtime`](crates/kernex-runtime) | Facade crate with `RuntimeBuilder` | 2 |
+| Crate | crates.io | Description |
+|-------|-----------|-------------|
+| [`kernex-core`](crates/kernex-core) | [![](https://img.shields.io/crates/v/kernex-core?style=flat-square)](https://crates.io/crates/kernex-core) | Shared types, traits, config, sanitization |
+| [`kernex-sandbox`](crates/kernex-sandbox) | [![](https://img.shields.io/crates/v/kernex-sandbox?style=flat-square)](https://crates.io/crates/kernex-sandbox) | OS-level sandbox (Seatbelt + Landlock) |
+| [`kernex-providers`](crates/kernex-providers) | [![](https://img.shields.io/crates/v/kernex-providers?style=flat-square)](https://crates.io/crates/kernex-providers) | 6 AI providers, tool executor, MCP client |
+| [`kernex-memory`](crates/kernex-memory) | [![](https://img.shields.io/crates/v/kernex-memory?style=flat-square)](https://crates.io/crates/kernex-memory) | SQLite memory, FTS5 search, reward learning |
+| [`kernex-skills`](crates/kernex-skills) | [![](https://img.shields.io/crates/v/kernex-skills?style=flat-square)](https://crates.io/crates/kernex-skills) | Skill/project loader, trigger matching |
+| [`kernex-pipelines`](crates/kernex-pipelines) | [![](https://img.shields.io/crates/v/kernex-pipelines?style=flat-square)](https://crates.io/crates/kernex-pipelines) | TOML topology, multi-agent orchestration |
+| [`kernex-runtime`](crates/kernex-runtime) | [![](https://img.shields.io/crates/v/kernex-runtime?style=flat-square)](https://crates.io/crates/kernex-runtime) | Facade crate with `RuntimeBuilder` |
 
 ## Quick Start
 
@@ -178,12 +181,32 @@ impl Provider for MyProvider {
 │       └── SKILL.md        # TOML/YAML frontmatter + instructions
 ├── projects/               # Project definitions
 │   └── my-project/
-│       └── ROLE.md         # Project role + skills
+│       └── AGENTS.md       # Project instructions + skills (or ROLE.md)
 └── topologies/             # Pipeline definitions
     └── my-pipeline/
         ├── TOPOLOGY.toml   # Phase definitions
         └── agents/         # Agent .md files
 ```
+
+## Examples
+
+Runnable examples in [`crates/kernex-runtime/examples/`](crates/kernex-runtime/examples/):
+
+```bash
+# Interactive chat with Ollama (local, no API key)
+cargo run --example simple_chat
+
+# Persistent memory: facts, lessons, outcomes
+cargo run --example memory_agent
+
+# Load skills and match triggers
+cargo run --example skill_loader
+
+# Load and inspect a multi-agent pipeline topology
+cargo run --example pipeline_loader
+```
+
+Reference skills for common MCP servers in [`examples/skills/`](examples/skills/).
 
 ## Development
 
@@ -191,7 +214,7 @@ impl Provider for MyProvider {
 # Build all crates
 cargo build --workspace
 
-# Run all 286 tests
+# Run all 290 tests
 cargo test --workspace
 
 # Lint
