@@ -90,7 +90,15 @@ pub fn load_projects(data_dir: &str) -> Vec<Project> {
             warn!("projects: path traversal blocked for {}", path.display());
             continue;
         }
-        let instructions_path = path.join("ROLE.md");
+        // Try AGENTS.md first (modern), fallback to ROLE.md (legacy).
+        let instructions_path = {
+            let agents = path.join("AGENTS.md");
+            if agents.exists() {
+                agents
+            } else {
+                path.join("ROLE.md")
+            }
+        };
         let content = match std::fs::read_to_string(&instructions_path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -271,6 +279,37 @@ Body text.
             !projects[0].instructions.contains("---"),
             "frontmatter should be stripped"
         );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_projects_agents_md_preferred_over_role_md() {
+        let tmp = std::env::temp_dir().join("__kernex_test_projects_agents_md__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let proj_dir = tmp.join("projects/modern");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        // Both files exist — AGENTS.md should win.
+        std::fs::write(proj_dir.join("ROLE.md"), "legacy instructions").unwrap();
+        std::fs::write(proj_dir.join("AGENTS.md"), "modern instructions").unwrap();
+
+        let projects = load_projects(tmp.to_str().unwrap());
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].instructions, "modern instructions");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_projects_agents_md_only() {
+        let tmp = std::env::temp_dir().join("__kernex_test_projects_agents_only__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let proj_dir = tmp.join("projects/agent-only");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        // Only AGENTS.md, no ROLE.md.
+        std::fs::write(proj_dir.join("AGENTS.md"), "agent instructions").unwrap();
+
+        let projects = load_projects(tmp.to_str().unwrap());
+        assert_eq!(projects.len(), 1);
+        assert_eq!(projects[0].instructions, "agent instructions");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
