@@ -85,11 +85,13 @@ fn test_mcp_tool_patterns() {
             name: "playwright".into(),
             command: "npx".into(),
             args: vec!["@playwright/mcp".into()],
+            ..Default::default()
         },
         McpServer {
             name: "postgres".into(),
             command: "npx".into(),
             args: vec!["@pg/mcp".into()],
+            ..Default::default()
         },
     ];
     let patterns = mcp::mcp_tool_patterns(&servers);
@@ -106,6 +108,7 @@ async fn test_write_and_cleanup_mcp_settings() {
         name: "playwright".into(),
         command: "npx".into(),
         args: vec!["@playwright/mcp".into(), "--headless".into()],
+        ..Default::default()
     }];
 
     let path = mcp::write_mcp_settings(&tmp, &servers).await.unwrap();

@@ -4,7 +4,7 @@ use crate::parse::{data_path, extract_bins_from_metadata, parse_yaml_list, unquo
 use kernex_core::context::McpServer;
 use serde::Deserialize;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
 /// Migrate legacy flat skill files (`{data_dir}/skills/*.md`) to the
@@ -104,6 +104,64 @@ fn is_safe_mcp_command(command: &str) -> bool {
         .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '@'))
 }
 
+/// A single entry in `mcp.json` under `mcpServers`.
+#[derive(Debug, Deserialize)]
+struct McpJsonEntry {
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
+}
+
+/// Root structure of `mcp.json`.
+#[derive(Debug, Deserialize)]
+struct McpJsonFile {
+    #[serde(rename = "mcpServers", default)]
+    mcp_servers: HashMap<String, McpJsonEntry>,
+}
+
+/// Load MCP servers from an optional `mcp.json` file in a skill directory.
+///
+/// Returns validated servers with safe commands, skipping any with
+/// dangerous shell metacharacters. Servers from `mcp.json` are merged
+/// with frontmatter servers — `mcp.json` entries take precedence on
+/// name collision.
+fn load_mcp_json(skill_dir: &Path) -> Vec<McpServer> {
+    let mcp_path = skill_dir.join("mcp.json");
+    let content = match std::fs::read_to_string(&mcp_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let file: McpJsonFile = match serde_json::from_str(&content) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!("skills: invalid mcp.json in {}: {e}", skill_dir.display());
+            return Vec::new();
+        }
+    };
+    file.mcp_servers
+        .into_iter()
+        .filter_map(|(name, entry)| {
+            if is_safe_mcp_command(&entry.command) {
+                Some(McpServer {
+                    name,
+                    command: entry.command,
+                    args: entry.args,
+                    env: entry.env,
+                })
+            } else {
+                warn!(
+                    "skills: rejected unsafe MCP command {:?} in {}",
+                    entry.command,
+                    mcp_path.display()
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 /// Frontmatter parsed from a `SKILL.md` file (TOML or YAML).
 #[derive(Debug, Deserialize)]
 struct SkillFrontmatter {
@@ -150,7 +208,8 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             continue;
         };
         let available = fm.requires.iter().all(|t| which_exists(t));
-        let mcp_servers: Vec<McpServer> = fm
+        // Collect MCP servers from frontmatter.
+        let mut mcp_servers: Vec<McpServer> = fm
             .mcp
             .into_iter()
             .filter_map(|(name, mfm)| {
@@ -159,6 +218,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                         name,
                         command: mfm.command,
                         args: mfm.args,
+                        ..Default::default()
                     })
                 } else {
                     warn!(
@@ -170,6 +230,16 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                 }
             })
             .collect();
+
+        // Merge MCP servers from optional mcp.json (takes precedence on name collision).
+        let json_servers = load_mcp_json(&path);
+        for srv in json_servers {
+            if let Some(existing) = mcp_servers.iter_mut().find(|s| s.name == srv.name) {
+                *existing = srv;
+            } else {
+                mcp_servers.push(srv);
+            }
+        }
         skills.push(Skill {
             name: fm.name,
             description: fm.description,
@@ -270,7 +340,8 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
                         let parts: Vec<&str> = val.split_whitespace().collect();
                         let command = parts.first().unwrap_or(&"").to_string();
                         if is_safe_mcp_command(&command) {
-                            let args = parts[1..].iter().map(|s| s.to_string()).collect();
+                            let args: Vec<String> =
+                                parts[1..].iter().map(|s| s.to_string()).collect();
                             mcp.insert(server_name, McpFrontmatter { command, args });
                         }
                     }
@@ -625,6 +696,7 @@ description = \"No trigger or MCP.\"
             name: name.into(),
             command: "npx".into(),
             args: vec![format!("@{name}/mcp")],
+            ..Default::default()
         }
     }
 
@@ -761,6 +833,172 @@ Body text.
         let fm = parse_skill_file(content).unwrap();
         assert!(fm.mcp.contains_key("pwned"));
         assert!(!is_safe_mcp_command(&fm.mcp["pwned"].command));
+    }
+
+    #[test]
+    fn test_load_mcp_json_basic() {
+        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_basic__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("mcp.json"),
+            r#"{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp","--headless"]}}}"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_json(&tmp);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "playwright");
+        assert_eq!(servers[0].command, "npx");
+        assert_eq!(servers[0].args, vec!["@playwright/mcp", "--headless"]);
+        assert!(servers[0].env.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_mcp_json_with_env() {
+        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_env__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("mcp.json"),
+            r#"{"mcpServers":{"postgres":{"command":"npx","args":["@pg/mcp"],"env":{"DATABASE_URL":"postgres://localhost/test"}}}}"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_json(&tmp);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "postgres");
+        assert_eq!(
+            servers[0].env.get("DATABASE_URL").unwrap(),
+            "postgres://localhost/test"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_mcp_json_missing_file() {
+        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_missing__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let servers = load_mcp_json(&tmp);
+        assert!(servers.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_mcp_json_invalid_json() {
+        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_invalid__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("mcp.json"), "not valid json").unwrap();
+
+        let servers = load_mcp_json(&tmp);
+        assert!(servers.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_mcp_json_rejects_unsafe_command() {
+        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_unsafe__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("mcp.json"),
+            r#"{"mcpServers":{"evil":{"command":"sh -c 'rm -rf /'","args":[]}}}"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_json(&tmp);
+        assert!(servers.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_mcp_json_multiple_servers() {
+        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_multi__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(
+            tmp.join("mcp.json"),
+            r#"{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp"]},"postgres":{"command":"npx","args":["@pg/mcp"]}}}"#,
+        )
+        .unwrap();
+
+        let servers = load_mcp_json(&tmp);
+        assert_eq!(servers.len(), 2);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_skills_merges_mcp_json() {
+        let tmp = std::env::temp_dir().join("__kernex_test_skills_merge_mcp__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let skill_dir = tmp.join("skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        // Frontmatter declares one server.
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname = \"my-skill\"\ndescription = \"Test.\"\nrequires = [\"ls\"]\ntrigger = \"test\"\n\n[mcp.from-frontmatter]\ncommand = \"npx\"\nargs = [\"@fm/mcp\"]\n---\n",
+        )
+        .unwrap();
+
+        // mcp.json declares another server.
+        std::fs::write(
+            skill_dir.join("mcp.json"),
+            r#"{"mcpServers":{"from-json":{"command":"npx","args":["@json/mcp"],"env":{"KEY":"val"}}}}"#,
+        )
+        .unwrap();
+
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].mcp_servers.len(), 2);
+        let names: Vec<&str> = skills[0]
+            .mcp_servers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(names.contains(&"from-frontmatter"));
+        assert!(names.contains(&"from-json"));
+
+        let json_srv = skills[0]
+            .mcp_servers
+            .iter()
+            .find(|s| s.name == "from-json")
+            .unwrap();
+        assert_eq!(json_srv.env.get("KEY").unwrap(), "val");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_load_skills_mcp_json_overrides_frontmatter() {
+        let tmp = std::env::temp_dir().join("__kernex_test_skills_mcp_override__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let skill_dir = tmp.join("skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+
+        // Frontmatter declares "shared" server.
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname = \"my-skill\"\ndescription = \"Test.\"\n\n[mcp.shared]\ncommand = \"npx\"\nargs = [\"@old/mcp\"]\n---\n",
+        )
+        .unwrap();
+
+        // mcp.json overrides "shared" with different args.
+        std::fs::write(
+            skill_dir.join("mcp.json"),
+            r#"{"mcpServers":{"shared":{"command":"npx","args":["@new/mcp"]}}}"#,
+        )
+        .unwrap();
+
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].mcp_servers.len(), 1);
+        assert_eq!(skills[0].mcp_servers[0].name, "shared");
+        assert_eq!(skills[0].mcp_servers[0].args, vec!["@new/mcp"]);
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
