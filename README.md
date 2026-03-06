@@ -70,7 +70,7 @@ Add Kernex to your project:
 
 ```toml
 [dependencies]
-kernex-runtime = "0.1"
+kernex-runtime = "0.2"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -212,7 +212,7 @@ Reference skills for common MCP servers in [`examples/skills/`](examples/skills/
 # Build all crates
 cargo build --workspace
 
-# Run all 290 tests
+# Run all 298 tests
 cargo test --workspace
 
 # Lint
