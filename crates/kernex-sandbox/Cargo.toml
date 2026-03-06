@@ -1,0 +1,15 @@
+[package]
+name = "kernex-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OS-level sandboxing for AI agent subprocesses (Seatbelt on macOS, Landlock on Linux)"
+
+[dependencies]
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = "0.4"

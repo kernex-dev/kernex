@@ -1,0 +1,19 @@
+[package]
+name = "kernex-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Rust runtime for AI agents — composable engine with sandbox, providers, learning, and pipelines"
+
+[dependencies]
+kernex-core = { workspace = true }
+kernex-sandbox = { workspace = true }
+kernex-providers = { workspace = true }
+kernex-memory = { workspace = true }
+kernex-skills = { workspace = true }
+kernex-pipelines = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }

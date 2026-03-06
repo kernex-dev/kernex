@@ -1,0 +1,18 @@
+[package]
+name = "kernex-memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pluggable storage for Kernex — conversations, learning, and scheduled tasks"
+
+[dependencies]
+kernex-core = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+async-trait = { workspace = true }
