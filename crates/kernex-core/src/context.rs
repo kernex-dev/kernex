@@ -55,6 +55,33 @@ pub struct McpServer {
     pub env: HashMap<String, String>,
 }
 
+/// A simple script-based tool that runs without a full MCP server.
+///
+/// The script receives tool arguments as JSON on stdin and returns its
+/// result on stdout. Exit code 0 means success; non-zero means error.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Toolbox {
+    /// Tool name exposed to the AI model.
+    pub name: String,
+    /// Human-readable description shown in tool definitions.
+    pub description: String,
+    /// JSON Schema for the tool's input parameters.
+    #[serde(default = "default_object_schema")]
+    pub parameters: serde_json::Value,
+    /// Command to execute (e.g. "bash", "python3").
+    pub command: String,
+    /// Command-line arguments (e.g. ["scripts/lint.sh"]).
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Environment variables passed to the script process.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub env: HashMap<String, String>,
+}
+
+fn default_object_schema() -> serde_json::Value {
+    serde_json::json!({"type": "object"})
+}
+
 /// Conversation context passed to an AI provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Context {
@@ -67,6 +94,9 @@ pub struct Context {
     /// MCP servers to activate for this request.
     #[serde(default)]
     pub mcp_servers: Vec<McpServer>,
+    /// Script-based tools to activate for this request.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toolboxes: Vec<Toolbox>,
     /// Override the provider's default max_turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
@@ -102,6 +132,7 @@ impl Context {
             history: Vec::new(),
             current_message: message.to_string(),
             mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
             max_turns: None,
             allowed_tools: None,
             model: None,
@@ -182,6 +213,7 @@ mod tests {
         assert!(ctx.system_prompt.is_empty());
         assert!(ctx.history.is_empty());
         assert!(ctx.mcp_servers.is_empty());
+        assert!(ctx.toolboxes.is_empty());
         assert_eq!(ctx.current_message, "hello");
         assert!(ctx.session_id.is_none());
         assert!(ctx.agent_name.is_none());
@@ -236,6 +268,7 @@ mod tests {
             ],
             current_message: "How are you?".into(),
             mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
             max_turns: None,
             allowed_tools: None,
             model: None,
@@ -257,6 +290,7 @@ mod tests {
             }],
             current_message: "How are you?".into(),
             mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
             max_turns: None,
             allowed_tools: None,
             model: None,
@@ -279,6 +313,7 @@ mod tests {
             }],
             current_message: "How are you?".into(),
             mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
             max_turns: None,
             allowed_tools: None,
             model: None,
@@ -300,6 +335,7 @@ mod tests {
             }],
             current_message: "Build me a task tracker.".into(),
             mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
             max_turns: None,
             allowed_tools: None,
             model: None,
@@ -317,6 +353,7 @@ mod tests {
             history: Vec::new(),
             current_message: "Build something.".into(),
             mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
             max_turns: None,
             allowed_tools: None,
             model: None,
@@ -333,6 +370,7 @@ mod tests {
             history: Vec::new(),
             current_message: "hi".into(),
             mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
             max_turns: None,
             allowed_tools: None,
             model: None,
@@ -351,5 +389,54 @@ mod tests {
         assert!(!json.contains("session_id"));
         assert!(!json.contains("agent_name"));
         assert!(!json.contains("max_turns"));
+        assert!(!json.contains("toolboxes"));
+    }
+
+    #[test]
+    fn test_toolbox_serde_round_trip() {
+        let tb = Toolbox {
+            name: "lint".into(),
+            description: "Run linter on a file.".into(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {"file": {"type": "string"}},
+                "required": ["file"]
+            }),
+            command: "bash".into(),
+            args: vec!["scripts/lint.sh".into()],
+            env: HashMap::new(),
+        };
+        let json = serde_json::to_string(&tb).unwrap();
+        let deserialized: Toolbox = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.name, "lint");
+        assert_eq!(deserialized.command, "bash");
+        assert_eq!(deserialized.args, vec!["scripts/lint.sh"]);
+    }
+
+    #[test]
+    fn test_toolbox_default_parameters() {
+        let json = r#"{"name":"test","description":"Test tool.","command":"echo"}"#;
+        let tb: Toolbox = serde_json::from_str(json).unwrap();
+        assert_eq!(tb.parameters, serde_json::json!({"type": "object"}));
+        assert!(tb.args.is_empty());
+        assert!(tb.env.is_empty());
+    }
+
+    #[test]
+    fn test_context_serde_with_toolboxes() {
+        let mut ctx = Context::new("run lint");
+        ctx.toolboxes.push(Toolbox {
+            name: "lint".into(),
+            description: "Lint a file.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "bash".into(),
+            args: vec!["lint.sh".into()],
+            env: HashMap::new(),
+        });
+        let json = serde_json::to_string(&ctx).unwrap();
+        assert!(json.contains("toolboxes"));
+        let deserialized: Context = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.toolboxes.len(), 1);
+        assert_eq!(deserialized.toolboxes[0].name, "lint");
     }
 }
