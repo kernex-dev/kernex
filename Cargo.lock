@@ -910,6 +910,7 @@ version = "0.1.0"
 dependencies = [
  "kernex-core",
  "serde",
+ "serde_json",
  "toml",
  "tracing",
 ]

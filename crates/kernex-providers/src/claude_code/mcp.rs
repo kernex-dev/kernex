@@ -37,6 +37,14 @@ pub(super) async fn write_mcp_settings(
                     .collect(),
             ),
         );
+        if !srv.env.is_empty() {
+            let env_obj: serde_json::Map<String, serde_json::Value> = srv
+                .env
+                .iter()
+                .map(|(k, v)| (k.clone(), serde_json::Value::String(v.clone())))
+                .collect();
+            entry.insert("env".to_string(), serde_json::Value::Object(env_obj));
+        }
         mcp_servers.insert(srv.name.clone(), serde_json::Value::Object(entry));
     }
 
