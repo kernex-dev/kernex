@@ -1,0 +1,41 @@
+[topology]
+name = "code-review"
+description = "Multi-agent code review pipeline with corrective loop"
+version = 1
+
+# Phase 1: Parse the brief (what files/changes to review).
+[[phases]]
+name = "parse-brief"
+agent = "planner"
+phase_type = "parse-brief"
+model_tier = "fast"
+
+# Phase 2: Perform the code review.
+[[phases]]
+name = "review"
+agent = "reviewer"
+phase_type = "standard"
+model_tier = "complex"
+max_turns = 30
+
+# Phase 3: Validate and fix issues found.
+[[phases]]
+name = "validate"
+agent = "reviewer"
+phase_type = "corrective-loop"
+model_tier = "complex"
+
+[phases.retry]
+max = 3
+fix_agent = "fixer"
+
+[phases.pre_validation]
+type = "file_exists"
+paths = ["review-output.md"]
+
+# Phase 4: Summarize findings.
+[[phases]]
+name = "summary"
+agent = "summarizer"
+phase_type = "parse-summary"
+model_tier = "fast"
