@@ -54,8 +54,6 @@ kernex-runtime          Facade — composes all crates into a RuntimeBuilder
   └── kernex-pipelines  Topology-driven multi-agent pipelines
 ```
 
-| Crate | Description | Tests |
-|-------|-------------|-------|
 | Crate | crates.io | Description |
 |-------|-----------|-------------|
 | [`kernex-core`](crates/kernex-core) | [![](https://img.shields.io/crates/v/kernex-core?style=flat-square)](https://crates.io/crates/kernex-core) | Shared types, traits, config, sanitization |
