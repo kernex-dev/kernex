@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Skills.sh-compatible skill loader and trigger matcher for Kernex"
+readme = "../../README.md"
 
 [dependencies]
 kernex-core = { workspace = true }

@@ -70,29 +70,44 @@ Add Kernex to your project:
 
 ```toml
 [dependencies]
-kernex-runtime = "0.2"
+kernex-runtime = "0.3"
+kernex-core = "0.3"
+kernex-providers = "0.3"
 tokio = { version = "1", features = ["full"] }
 ```
 
-Build and initialize a runtime:
+Send a message and get a response with persistent memory:
 
 ```rust
 use kernex_runtime::RuntimeBuilder;
+use kernex_core::traits::Provider;
+use kernex_core::message::Request;
+use kernex_providers::ollama::OllamaProvider;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let runtime = RuntimeBuilder::new()
         .data_dir("~/.my-agent")
+        .system_prompt("You are a helpful assistant.")
+        .channel("cli")
         .build()
         .await?;
 
-    println!("Loaded {} skills, {} projects",
-        runtime.skills.len(),
-        runtime.projects.len());
+    let provider = OllamaProvider::from_config(
+        "http://localhost:11434".into(),
+        "llama3.2".into(),
+        None,
+    )?;
+
+    let request = Request::text("user-1", "What is Rust?");
+    let response = runtime.complete(&provider, &request).await?;
+    println!("{}", response.text);
 
     Ok(())
 }
 ```
+
+`runtime.complete()` handles the full pipeline: build context from memory → enrich with skills → send to provider → save exchange.
 
 Use individual crates for fine-grained control:
 
@@ -212,7 +227,7 @@ Reference skills for common MCP servers in [`examples/skills/`](examples/skills/
 # Build all crates
 cargo build --workspace
 
-# Run all 298 tests
+# Run all tests
 cargo test --workspace
 
 # Lint

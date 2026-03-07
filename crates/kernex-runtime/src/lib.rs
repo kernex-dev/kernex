@@ -8,21 +8,40 @@
 //!
 //! ```rust,ignore
 //! use kernex_runtime::RuntimeBuilder;
+//! use kernex_core::traits::Provider;
+//! use kernex_core::message::Request;
+//! use kernex_providers::ollama::OllamaProvider;
 //!
 //! #[tokio::main]
 //! async fn main() -> anyhow::Result<()> {
 //!     let runtime = RuntimeBuilder::new()
-//!         .data_dir("~/.kernex")
+//!         .data_dir("~/.my-agent")
 //!         .build()
 //!         .await?;
+//!
+//!     let provider = OllamaProvider::from_config(
+//!         "http://localhost:11434".into(),
+//!         "llama3.2".into(),
+//!         None,
+//!     )?;
+//!
+//!     let request = Request::text("user-1", "Hello!");
+//!     let response = runtime.complete(&provider, &request).await?;
+//!     println!("{}", response.text);
+//!
 //!     Ok(())
 //! }
 //! ```
 
 use kernex_core::config::MemoryConfig;
+use kernex_core::context::ContextNeeds;
 use kernex_core::error::KernexError;
+use kernex_core::message::{Request, Response};
+use kernex_core::traits::Provider;
 use kernex_memory::Store;
-use kernex_skills::{Project, Skill};
+use kernex_skills::{
+    build_skill_prompt, match_skill_toolboxes, match_skill_triggers, Project, Skill,
+};
 
 /// Re-export sub-crates for convenience.
 pub use kernex_core as core;
@@ -42,12 +61,93 @@ pub struct Runtime {
     pub projects: Vec<Project>,
     /// Data directory path (expanded).
     pub data_dir: String,
+    /// Base system prompt prepended to every request.
+    pub system_prompt: String,
+    /// Communication channel identifier (e.g. "cli", "api", "slack").
+    pub channel: String,
+    /// Active project key for scoping memory and lessons.
+    pub project: Option<String>,
+}
+
+impl Runtime {
+    /// Send a request through the full runtime pipeline:
+    /// build context from memory → enrich with skills → complete via provider → save exchange.
+    ///
+    /// This is the high-level convenience method that wires together all
+    /// Kernex subsystems in a single call.
+    pub async fn complete(
+        &self,
+        provider: &dyn Provider,
+        request: &Request,
+    ) -> Result<Response, KernexError> {
+        self.complete_with_needs(provider, request, &ContextNeeds::default())
+            .await
+    }
+
+    /// Like [`complete`](Self::complete), but with explicit control over which
+    /// context blocks are loaded from memory.
+    pub async fn complete_with_needs(
+        &self,
+        provider: &dyn Provider,
+        request: &Request,
+        needs: &ContextNeeds,
+    ) -> Result<Response, KernexError> {
+        let project_ref = self.project.as_deref();
+
+        // Build skill prompt and append to base system prompt.
+        let skill_prompt = build_skill_prompt(&self.skills);
+        let full_system_prompt = if skill_prompt.is_empty() {
+            self.system_prompt.clone()
+        } else if self.system_prompt.is_empty() {
+            skill_prompt
+        } else {
+            format!("{}\n\n{}", self.system_prompt, skill_prompt)
+        };
+
+        // Build context from memory (history, recall, facts, lessons, etc).
+        let mut context = self
+            .store
+            .build_context(
+                &self.channel,
+                request,
+                &full_system_prompt,
+                needs,
+                project_ref,
+            )
+            .await?;
+
+        // Enrich context with triggered MCP servers.
+        let mcp_servers = match_skill_triggers(&self.skills, &request.text);
+        if !mcp_servers.is_empty() {
+            context.mcp_servers = mcp_servers;
+        }
+
+        // Enrich context with triggered toolboxes.
+        let toolboxes = match_skill_toolboxes(&self.skills, &request.text);
+        if !toolboxes.is_empty() {
+            context.toolboxes = toolboxes;
+        }
+
+        // Send to provider.
+        let response = provider.complete(&context).await?;
+
+        // Persist exchange in memory.
+        let project_key = project_ref.unwrap_or("default");
+        self.store
+            .store_exchange(&self.channel, request, &response, project_key)
+            .await?;
+
+        Ok(response)
+    }
 }
 
 /// Builder for constructing a `Runtime` with the desired configuration.
 pub struct RuntimeBuilder {
     data_dir: String,
     db_path: Option<String>,
+    system_prompt: String,
+    channel: String,
+    project: Option<String>,
 }
 
 impl RuntimeBuilder {
@@ -56,6 +156,9 @@ impl RuntimeBuilder {
         Self {
             data_dir: "~/.kernex".to_string(),
             db_path: None,
+            system_prompt: String::new(),
+            channel: "cli".to_string(),
+            project: None,
         }
     }
 
@@ -68,6 +171,24 @@ impl RuntimeBuilder {
     /// Set a custom database path (default: `{data_dir}/memory.db`).
     pub fn db_path(mut self, path: &str) -> Self {
         self.db_path = Some(path.to_string());
+        self
+    }
+
+    /// Set the base system prompt.
+    pub fn system_prompt(mut self, prompt: &str) -> Self {
+        self.system_prompt = prompt.to_string();
+        self
+    }
+
+    /// Set the channel identifier (default: `"cli"`).
+    pub fn channel(mut self, channel: &str) -> Self {
+        self.channel = channel.to_string();
+        self
+    }
+
+    /// Set the active project for scoping memory.
+    pub fn project(mut self, project: &str) -> Self {
+        self.project = Some(project.to_string());
         self
     }
 
@@ -105,6 +226,9 @@ impl RuntimeBuilder {
             skills,
             projects,
             data_dir: expanded_dir,
+            system_prompt: self.system_prompt,
+            channel: self.channel,
+            project: self.project,
         })
     }
 }
@@ -132,6 +256,9 @@ mod tests {
 
         assert!(runtime.skills.is_empty());
         assert!(runtime.projects.is_empty());
+        assert!(runtime.system_prompt.is_empty());
+        assert_eq!(runtime.channel, "cli");
+        assert!(runtime.project.is_none());
         assert!(std::path::Path::new(&runtime.data_dir).exists());
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -153,6 +280,27 @@ mod tests {
 
         assert!(db.exists());
         drop(runtime);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_runtime_builder_with_config() {
+        let tmp = std::env::temp_dir().join("__kernex_test_runtime_cfg__");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let runtime = RuntimeBuilder::new()
+            .data_dir(tmp.to_str().unwrap())
+            .system_prompt("You are helpful.")
+            .channel("api")
+            .project("my-project")
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.system_prompt, "You are helpful.");
+        assert_eq!(runtime.channel, "api");
+        assert_eq!(runtime.project, Some("my-project".to_string()));
+
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
