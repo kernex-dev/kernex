@@ -7,9 +7,14 @@
 //! what tools and contexts are available.
 
 mod parse;
+mod permissions;
 mod projects;
 mod skills;
 
+pub use permissions::{
+    determine_trust_level, Permissions, RiskCategory, RiskDetector, RiskWarning, TrustLevel,
+    DEFAULT_TRUSTED_ORGS,
+};
 pub use projects::{ensure_projects_dir, get_project_instructions, load_projects, Project};
 pub use skills::{
     build_skill_prompt, load_skills, match_skill_toolboxes, match_skill_triggers,
