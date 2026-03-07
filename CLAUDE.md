@@ -48,7 +48,10 @@ Cargo workspace with composable crates:
 
 ## Code Standards
 
-- Rust edition 2021, strict clippy (`-D warnings`)
+## Code Standards
+
+- Rust edition 2021
+- Strict clippy enforcement: `#![deny(clippy::unwrap_used, clippy::expect_used)]` applied to all crate `lib.rs` roots (falling back to `#![cfg_attr(test, allow(...))]` for testing), as well as `#![deny(warnings)]`.
 - `cargo fmt` before every commit
 - Every public type and function gets a doc comment
 - Every new feature includes tests
@@ -60,10 +63,11 @@ Cargo workspace with composable crates:
 | Step | Action |
 |------|--------|
 | 1 | `cargo build --workspace` |
-| 2 | `cargo clippy --workspace -- -D warnings` |
-| 3 | `cargo test --workspace` |
-| 4 | `cargo fmt --check` |
-| 5 | Commit only after 1-4 pass |
+| 2 | `cargo audit` and `cargo deny check` (Supply Chain CI Gate) |
+| 3 | `cargo clippy --workspace -- -D warnings` |
+| 4 | `cargo test --workspace` |
+| 5 | `cargo fmt --check` |
+| 6 | Commit only after 1-5 pass |
 
 ## Versioning & Publishing
 

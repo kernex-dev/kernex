@@ -31,14 +31,16 @@
 
 ## Features
 
-- **Sandbox-first execution** — OS-level protection via Seatbelt (macOS) and Landlock (Linux)
+- **Sandbox-first execution** — OS-level protection via Seatbelt (macOS) and Landlock (Linux) combined with highly configurable `SandboxProfile` allow/deny lists
 - **6 AI providers** — Claude Code CLI, Anthropic, OpenAI, Ollama, OpenRouter, Gemini
 - **OpenAI-compatible base URL** — works with LiteLLM, Cerebras, DeepSeek, Hugging Face, and any compatible endpoint
+- **Dynamic instantiation** — instantiate robust AI Providers completely dynamically from configuration maps using `ProviderFactory`
 - **MCP client** — stdio-based Model Context Protocol for external tool integration
 - **Persistent memory** — SQLite-backed conversations, facts, reward-based learning, scheduled tasks
 - **Skills.sh compatible** — load skills from `SKILL.md` files with TOML/YAML frontmatter
 - **Multi-agent pipelines** — TOML-defined topologies with corrective loops and file-mediated handoffs
 - **Trait-based composition** — implement `Provider` or `Store` to plug in your own backends
+- **Secure by default** — All API keys are protected in memory with `secrecy::SecretString`
 
 ## Architecture
 
@@ -101,22 +103,21 @@ Send a message and get a response with persistent memory:
 use kernex_runtime::RuntimeBuilder;
 use kernex_core::traits::Provider;
 use kernex_core::message::Request;
-use kernex_providers::ollama::OllamaProvider;
+use kernex_providers::factory::ProviderFactory;
+use kernex_providers::ProviderConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let runtime = RuntimeBuilder::new()
-        .data_dir("~/.my-agent")
-        .system_prompt("You are a helpful assistant.")
-        .channel("cli")
-        .build()
-        .await?;
+    // Elegant, environment-based construction via `from_env()` 
+    // Uses $KERNEX_DATA_DIR, $KERNEX_SYSTEM_PROMPT, and $KERNEX_CHANNEL
+    let runtime = RuntimeBuilder::from_env().build().await?;
 
-    let provider = OllamaProvider::from_config(
-        "http://localhost:11434".into(),
-        "llama3.2".into(),
-        None,
-    )?;
+    let mut config = ProviderConfig::default();
+    config.model = Some("llama3.2".to_string());
+    config.base_url = Some("http://localhost:11434".to_string());
+
+    let provider = ProviderFactory::create("ollama", Some(serde_json::to_value(config)?))?;
+
 
     let request = Request::text("user-1", "What is Rust?");
     let response = runtime.complete(&provider, &request).await?;
