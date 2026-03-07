@@ -5,6 +5,7 @@ resolver = "2"
 [workspace.package]
 version = "0.3.2"
 edition = "2021"
+rust-version = "1.74"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/kernex-dev/kernex"
 description = "The Rust runtime for AI agents"
