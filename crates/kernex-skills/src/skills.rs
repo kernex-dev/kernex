@@ -1,6 +1,7 @@
 //! Skill loading, parsing, deployment, and trigger matching.
 
 use crate::parse::{data_path, extract_bins_from_metadata, parse_yaml_list, unquote, which_exists};
+use crate::permissions::Permissions;
 use kernex_core::context::{McpServer, Toolbox};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -68,6 +69,8 @@ pub struct Skill {
     pub name: String,
     /// Human-readable description.
     pub description: String,
+    /// Skill version (semver).
+    pub version: Option<String>,
     /// CLI tools this skill depends on.
     pub requires: Vec<String>,
     /// Homepage URL (informational).
@@ -82,6 +85,10 @@ pub struct Skill {
     pub mcp_servers: Vec<McpServer>,
     /// Script-based tools this skill declares.
     pub toolboxes: Vec<Toolbox>,
+    /// Security permissions this skill requests.
+    pub permissions: Permissions,
+    /// Source of the skill (e.g. "anthropics/skills", local path).
+    pub source: String,
 }
 
 /// MCP server definition in TOML frontmatter (`[mcp.name]`).
@@ -248,6 +255,8 @@ struct SkillFrontmatter {
     name: String,
     description: String,
     #[serde(default)]
+    version: Option<String>,
+    #[serde(default)]
     requires: Vec<String>,
     #[serde(default)]
     homepage: String,
@@ -257,6 +266,8 @@ struct SkillFrontmatter {
     mcp: HashMap<String, McpFrontmatter>,
     #[serde(default)]
     toolbox: HashMap<String, ToolboxFrontmatter>,
+    #[serde(default)]
+    permissions: Permissions,
 }
 
 /// Scan `{data_dir}/skills/*/SKILL.md` and return all valid skill definitions.
@@ -358,9 +369,18 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             }
         }
 
+        // Derive source from the skill path (local skill).
+        let source = skill_file
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
         skills.push(Skill {
             name: fm.name,
             description: fm.description,
+            version: fm.version,
             requires: fm.requires,
             homepage: fm.homepage,
             available,
@@ -368,6 +388,8 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             trigger: fm.trigger,
             mcp_servers,
             toolboxes,
+            permissions: fm.permissions,
+            source,
         });
     }
 
@@ -480,11 +502,13 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
     Some(SkillFrontmatter {
         name: name?,
         description: description?,
+        version: None,
         requires,
         homepage,
         trigger,
         mcp,
         toolbox: HashMap::new(),
+        permissions: Permissions::default(),
     })
 }
 
@@ -650,6 +674,7 @@ description = \"No deps.\"
             Skill {
                 name: "gog".into(),
                 description: "Google Workspace CLI.".into(),
+                version: None,
                 requires: vec!["gog".into()],
                 homepage: "https://gogcli.sh".into(),
                 available: true,
@@ -657,10 +682,13 @@ description = \"No deps.\"
                 trigger: None,
                 mcp_servers: Vec::new(),
                 toolboxes: Vec::new(),
+                permissions: Permissions::default(),
+                source: String::new(),
             },
             Skill {
                 name: "missing".into(),
                 description: "Not installed tool.".into(),
+                version: None,
                 requires: vec!["nope".into()],
                 homepage: String::new(),
                 available: false,
@@ -668,6 +696,8 @@ description = \"No deps.\"
                 trigger: None,
                 mcp_servers: Vec::new(),
                 toolboxes: Vec::new(),
+                permissions: Permissions::default(),
+                source: String::new(),
             },
         ];
         let prompt = build_skill_prompt(&skills);
@@ -835,6 +865,7 @@ description = \"No trigger or MCP.\"
         Skill {
             name: name.into(),
             description: String::new(),
+            version: None,
             requires: Vec::new(),
             homepage: String::new(),
             available,
@@ -842,6 +873,8 @@ description = \"No trigger or MCP.\"
             trigger: trigger.map(String::from),
             mcp_servers,
             toolboxes: Vec::new(),
+            permissions: Permissions::default(),
+            source: String::new(),
         }
     }
 
