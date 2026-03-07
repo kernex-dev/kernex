@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Core types, traits, config, and error handling for Kernex"
+readme = "../../README.md"
 
 [dependencies]
 serde = { workspace = true }
