@@ -1,4 +1,6 @@
 //! kernex-providers: AI backend implementations and tool execution.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 //!
 //! Provides 6 AI providers (Claude Code CLI, Anthropic, OpenAI, Ollama,
 //! OpenRouter, Gemini), a shared tool executor with sandbox enforcement,
