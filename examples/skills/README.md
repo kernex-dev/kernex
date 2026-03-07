@@ -5,8 +5,8 @@ with TOML frontmatter that declares triggers and MCP servers.
 
 ## Available skills
 
-| Skill | MCP Server | Description |
-|-------|-----------|-------------|
+| Skill | MCP Server / CLI | Description |
+|-------|-----------------|-------------|
 | [filesystem](filesystem/) | `@modelcontextprotocol/server-filesystem` | Secure file operations |
 | [git](git/) | `@modelcontextprotocol/server-git` | Git repository operations |
 | [playwright](playwright/) | `@playwright/mcp` | Browser automation (Microsoft) |
@@ -14,6 +14,8 @@ with TOML frontmatter that declares triggers and MCP servers.
 | [postgres](postgres/) | `@modelcontextprotocol/server-postgres` | PostgreSQL read-only access |
 | [sqlite](sqlite/) | `@modelcontextprotocol/server-sqlite` | SQLite read/write access |
 | [brave-search](brave-search/) | `@modelcontextprotocol/server-brave-search` | Web search via Brave API |
+| [pdf](pdf/) | `pdftotext` (CLI) | Read and extract text from PDFs |
+| [webhook](webhook/) | `curl` (CLI) | Send HTTP webhooks to external services |
 
 ## Usage
 

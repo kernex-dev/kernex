@@ -15,4 +15,5 @@ pub(crate) mod mcp_client;
 pub mod ollama;
 pub mod openai;
 pub mod openrouter;
+pub mod tool_params;
 pub(crate) mod tools;

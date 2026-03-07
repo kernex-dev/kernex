@@ -21,6 +21,7 @@ async-trait = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 secrecy = { version = "0.8", features = ["serde"] }
+schemars = { workspace = true }
 
 [dev-dependencies]
 http = { workspace = true }

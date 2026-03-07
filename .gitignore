@@ -27,3 +27,8 @@ config.toml
 
 # Test artifacts
 /tmp/
+
+# Internal documentation (not public)
+CLAUDE.md
+CLAUDE.local.md
+.claude/

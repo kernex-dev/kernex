@@ -4,7 +4,7 @@ Thank you for your interest in contributing to Kernex. This document outlines th
 
 ## Before You Start
 
-Read [CLAUDE.md](CLAUDE.md) for the full project principles, architecture, and code standards. This guide provides a condensed version for quick reference.
+This guide provides the essential information for contributors. For architecture details, see the [README](README.md).
 
 ## Development Setup
 
@@ -77,7 +77,7 @@ git checkout -b feat/my-feature
 - **Logging:** Use `tracing`, not `println!`.
 - **Async:** All I/O is async via Tokio.
 
-For the complete code standards, see [CLAUDE.md](CLAUDE.md).
+For architecture details, see the [README](README.md).
 
 ## License
 

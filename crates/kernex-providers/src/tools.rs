@@ -534,77 +534,33 @@ pub fn truncate_output(s: &str, max_bytes: usize) -> String {
 }
 
 /// Return the definitions of the 4 built-in tools.
+///
+/// Uses typed parameters from `tool_params` module with auto-generated JSON schemas.
 pub fn builtin_tool_defs() -> Vec<ToolDef> {
+    use crate::tool_params::{tool_schema_for, BashParams, EditParams, ReadParams, WriteParams};
+
     vec![
         ToolDef {
             name: "bash".to_string(),
             description: "Execute a bash command and return its output.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "The bash command to execute"
-                    }
-                },
-                "required": ["command"]
-            }),
+            parameters: tool_schema_for::<BashParams>(),
         },
         ToolDef {
             name: "read".to_string(),
             description: "Read the contents of a file.".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Absolute path to the file to read"
-                    }
-                },
-                "required": ["file_path"]
-            }),
+            parameters: tool_schema_for::<ReadParams>(),
         },
         ToolDef {
             name: "write".to_string(),
             description: "Write content to a file (creates or overwrites).".to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Absolute path to the file to write"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "The content to write"
-                    }
-                },
-                "required": ["file_path", "content"]
-            }),
+            parameters: tool_schema_for::<WriteParams>(),
         },
         ToolDef {
             name: "edit".to_string(),
             description:
                 "Edit a file by replacing the first occurrence of old_string with new_string."
                     .to_string(),
-            parameters: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Absolute path to the file to edit"
-                    },
-                    "old_string": {
-                        "type": "string",
-                        "description": "The exact string to find and replace"
-                    },
-                    "new_string": {
-                        "type": "string",
-                        "description": "The replacement string"
-                    }
-                },
-                "required": ["file_path", "old_string", "new_string"]
-            }),
+            parameters: tool_schema_for::<EditParams>(),
         },
     ]
 }
