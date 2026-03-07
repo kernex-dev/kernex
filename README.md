@@ -45,6 +45,7 @@ For running examples:
 - **6 AI providers** — Claude Code CLI, Anthropic, OpenAI, Ollama, OpenRouter, Gemini
 - **OpenAI-compatible base URL** — works with LiteLLM, Cerebras, DeepSeek, Hugging Face, and any compatible endpoint
 - **Dynamic instantiation** — instantiate robust AI Providers completely dynamically from configuration maps using `ProviderFactory`
+- **Typed tool schemas** — Auto-generated JSON Schema for tool parameters via `schemars`
 - **MCP client** — stdio-based Model Context Protocol for external tool integration
 - **Persistent memory** — SQLite-backed conversations, facts, reward-based learning, scheduled tasks
 - **Skills.sh compatible** — load skills from `SKILL.md` files with TOML/YAML frontmatter
@@ -244,14 +245,19 @@ All examples are in [`crates/kernex-runtime/examples/`](crates/kernex-runtime/ex
 
 ## Skills
 
-Kernex supports [Skills.sh](https://skills.sh) compatible skills. 7 ready-to-use skills included:
+Kernex supports [Skills.sh](https://skills.sh) compatible skills. 9 ready-to-use skills included:
 
-- **filesystem** — File operations via MCP
-- **git** — Repository operations
-- **playwright** — Browser automation
-- **github** — GitHub API integration
-- **postgres** / **sqlite** — Database operations
-- **brave-search** — Web search
+| Skill | Backend | Description |
+|-------|---------|-------------|
+| **filesystem** | MCP | Secure file operations |
+| **git** | MCP | Repository operations |
+| **playwright** | MCP | Browser automation |
+| **github** | MCP | GitHub API integration |
+| **postgres** | MCP | PostgreSQL read-only access |
+| **sqlite** | MCP | SQLite read/write access |
+| **brave-search** | MCP | Web search via Brave API |
+| **pdf** | CLI | Extract text from PDFs |
+| **webhook** | CLI | Send HTTP webhooks to external services |
 
 See [examples/skills/](examples/skills/) for documentation and templates.
 
