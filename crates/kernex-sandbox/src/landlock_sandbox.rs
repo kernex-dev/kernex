@@ -49,7 +49,11 @@ fn full_access() -> BitFlags<AccessFs> {
 ///
 /// If the kernel does not support Landlock, logs a warning and falls back
 /// to a plain command.
-pub(crate) fn protected_command(program: &str, data_dir: &std::path::Path) -> Command {
+pub(crate) fn protected_command(
+    program: &str,
+    data_dir: &std::path::Path,
+    profile: &crate::SandboxProfile,
+) -> Command {
     if !landlock_available() {
         warn!("landlock: not supported by this kernel; falling back to code-level protection");
         return Command::new(program);
@@ -57,6 +61,7 @@ pub(crate) fn protected_command(program: &str, data_dir: &std::path::Path) -> Co
 
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let data_dir_owned = data_dir.to_path_buf();
+    let profile_clone = profile.clone();
 
     let mut cmd = Command::new(program);
 
@@ -64,7 +69,7 @@ pub(crate) fn protected_command(program: &str, data_dir: &std::path::Path) -> Co
     // the landlock crate (which uses syscalls), no async or allocator abuse.
     unsafe {
         cmd.pre_exec(move || {
-            apply_landlock(&home, &data_dir_owned).map_err(|e| {
+            apply_landlock(&home, &data_dir_owned, &profile_clone).map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string())
             })
         });
@@ -87,7 +92,11 @@ fn refer_only() -> BitFlags<AccessFs> {
 }
 
 /// Apply Landlock restrictions to the current process.
-fn apply_landlock(home: &str, data_dir: &std::path::Path) -> Result<(), anyhow::Error> {
+fn apply_landlock(
+    home: &str,
+    data_dir: &std::path::Path,
+    profile: &crate::SandboxProfile,
+) -> Result<(), anyhow::Error> {
     let home_dir = PathBuf::from(home);
 
     let mut ruleset = Ruleset::default()
@@ -105,6 +114,12 @@ fn apply_landlock(home: &str, data_dir: &std::path::Path) -> Result<(), anyhow::
         }
     }
 
+    for allowed in &profile.allowed_paths {
+        if allowed.exists() {
+            ruleset = ruleset.add_rules(path_beneath_rules(&[allowed.clone()], full_access()))?;
+        }
+    }
+
     // Ensure the directory exists so the Landlock rule is always applied.
     // Without this, a first-run scenario where the data dir hasn't been
     // created yet would skip the restriction entirely.
@@ -119,6 +134,12 @@ fn apply_landlock(home: &str, data_dir: &std::path::Path) -> Result<(), anyhow::
     let config_file = data_dir.join("config.toml");
     if config_file.exists() {
         ruleset = ruleset.add_rules(path_beneath_rules(&[config_file], refer_only()))?;
+    }
+
+    for blocked in &profile.blocked_paths {
+        if blocked.exists() {
+            ruleset = ruleset.add_rules(path_beneath_rules(&[blocked.clone()], refer_only()))?;
+        }
     }
 
     let status = ruleset.restrict_self()?;
@@ -164,7 +185,8 @@ mod tests {
     #[test]
     fn test_command_structure() {
         let data_dir = PathBuf::from("/tmp/ws");
-        let cmd = protected_command("claude", &data_dir);
+        let profile = crate::SandboxProfile::default();
+        let cmd = protected_command("claude", &data_dir, &profile);
         let program = cmd.as_std().get_program().to_string_lossy().to_string();
         assert_eq!(program, "claude");
     }

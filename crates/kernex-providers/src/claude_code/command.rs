@@ -187,7 +187,8 @@ impl ClaudeCodeProvider {
                 // Protection blocks writes to data dir (parent of workspace)
                 // so memory.db is safe, but skills, projects, etc. are writable.
                 let data_dir = dir.parent().unwrap_or(dir);
-                let mut c = kernex_sandbox::protected_command("claude", data_dir);
+                let mut c =
+                    kernex_sandbox::protected_command("claude", data_dir, &self.sandbox_profile);
                 c.current_dir(dir);
                 c
             }

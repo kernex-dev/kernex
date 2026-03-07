@@ -37,6 +37,8 @@ pub struct ClaudeCodeProvider {
     model: String,
     /// OAuth token injected as `CLAUDE_CODE_OAUTH_TOKEN` env var.
     oauth_token: Option<String>,
+    /// System sandbox restrictions.
+    sandbox_profile: kernex_sandbox::SandboxProfile,
 }
 
 /// JSON response from `claude -p --output-format json`.
@@ -72,6 +74,7 @@ impl ClaudeCodeProvider {
             max_resume_attempts: 5,
             model: String::new(),
             oauth_token: None,
+            sandbox_profile: Default::default(),
         }
     }
 
@@ -93,7 +96,14 @@ impl ClaudeCodeProvider {
             max_resume_attempts,
             model,
             oauth_token,
+            sandbox_profile: Default::default(),
         }
+    }
+
+    /// Set a custom sandbox profile.
+    pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
+        self.sandbox_profile = profile;
+        self
     }
 
     /// Check if the `claude` CLI is installed and accessible.

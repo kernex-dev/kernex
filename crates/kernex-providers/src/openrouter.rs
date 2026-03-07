@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use kernex_core::{context::Context, error::KernexError, message::Response, traits::Provider};
+use secrecy::{ExposeSecret, SecretString};
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, warn};
@@ -23,9 +24,10 @@ const DEFAULT_MAX_TURNS: u32 = 50;
 /// OpenRouter provider — routes requests to many models via the OpenAI-compatible API.
 pub struct OpenRouterProvider {
     client: reqwest::Client,
-    api_key: String,
+    api_key: SecretString,
     model: String,
     workspace_path: Option<PathBuf>,
+    sandbox_profile: kernex_sandbox::SandboxProfile,
 }
 
 impl OpenRouterProvider {
@@ -40,10 +42,17 @@ impl OpenRouterProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .map_err(|e| KernexError::Provider(format!("failed to build HTTP client: {e}")))?,
-            api_key,
+            api_key: SecretString::new(api_key),
             model,
             workspace_path,
+            sandbox_profile: Default::default(),
         })
+    }
+
+    /// Set a custom sandbox profile.
+    pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
+        self.sandbox_profile = profile;
+        self
     }
 }
 
@@ -61,14 +70,15 @@ impl Provider for OpenRouterProvider {
         let (system, api_messages) = context.to_api_messages();
         let effective_model = context.model.as_deref().unwrap_or(&self.model);
         let url = format!("{OPENROUTER_BASE_URL}/chat/completions");
-        let auth = format!("Bearer {}", self.api_key);
+        let auth = format!("Bearer {}", self.api_key.expose_secret());
         let max_turns = context.max_turns.unwrap_or(DEFAULT_MAX_TURNS);
 
         let has_tools = tools_enabled(context);
 
         if has_tools {
             if let Some(ref ws) = self.workspace_path {
-                let mut executor = ToolExecutor::new(ws.clone());
+                let mut executor = ToolExecutor::new(ws.clone())
+                    .with_sandbox_profile(self.sandbox_profile.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 
@@ -156,7 +166,7 @@ impl Provider for OpenRouterProvider {
     }
 
     async fn is_available(&self) -> bool {
-        if self.api_key.is_empty() {
+        if self.api_key.expose_secret().is_empty() {
             warn!("openrouter: no API key configured");
             return false;
         }
@@ -164,7 +174,10 @@ impl Provider for OpenRouterProvider {
         match self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header(
+                "Authorization",
+                format!("Bearer {}", self.api_key.expose_secret()),
+            )
             .send()
             .await
         {

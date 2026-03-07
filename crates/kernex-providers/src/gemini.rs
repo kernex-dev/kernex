@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use kernex_core::{context::Context, error::KernexError, message::Response, traits::Provider};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -21,9 +22,10 @@ const DEFAULT_MAX_TURNS: u32 = 50;
 /// Google Gemini API provider.
 pub struct GeminiProvider {
     client: reqwest::Client,
-    api_key: String,
+    api_key: SecretString,
     model: String,
     workspace_path: Option<PathBuf>,
+    sandbox_profile: kernex_sandbox::SandboxProfile,
 }
 
 impl GeminiProvider {
@@ -38,10 +40,17 @@ impl GeminiProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .map_err(|e| KernexError::Provider(format!("failed to build HTTP client: {e}")))?,
-            api_key,
+            api_key: SecretString::new(api_key),
             model,
             workspace_path,
+            sandbox_profile: Default::default(),
         })
+    }
+
+    /// Set a custom sandbox profile.
+    pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
+        self.sandbox_profile = profile;
+        self
     }
 }
 
@@ -174,7 +183,8 @@ impl Provider for GeminiProvider {
 
         if has_tools {
             if let Some(ref ws) = self.workspace_path {
-                let mut executor = ToolExecutor::new(ws.clone());
+                let mut executor = ToolExecutor::new(ws.clone())
+                    .with_sandbox_profile(self.sandbox_profile.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 
@@ -229,7 +239,7 @@ impl Provider for GeminiProvider {
             send_with_retry("gemini", || {
                 let req = client
                     .post(url.as_str())
-                    .header("x-goog-api-key", api_key.as_str())
+                    .header("x-goog-api-key", api_key.expose_secret().as_str())
                     .header("Content-Type", "application/json")
                     .body(body_json.clone());
                 async move { req.send().await }
@@ -268,7 +278,7 @@ impl Provider for GeminiProvider {
     }
 
     async fn is_available(&self) -> bool {
-        if self.api_key.is_empty() {
+        if self.api_key.expose_secret().is_empty() {
             warn!("gemini: no API key configured");
             return false;
         }
@@ -276,7 +286,7 @@ impl Provider for GeminiProvider {
         match self
             .client
             .get(&url)
-            .header("x-goog-api-key", &self.api_key)
+            .header("x-goog-api-key", self.api_key.expose_secret())
             .send()
             .await
         {
@@ -345,7 +355,7 @@ impl GeminiProvider {
                 send_with_retry("gemini", || {
                     let req = client
                         .post(url.as_str())
-                        .header("x-goog-api-key", api_key.as_str())
+                        .header("x-goog-api-key", api_key.expose_secret().as_str())
                         .header("Content-Type", "application/json")
                         .body(body_json.clone());
                     async move { req.send().await }

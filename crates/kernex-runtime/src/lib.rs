@@ -33,11 +33,13 @@
 //! }
 //! ```
 
+#[cfg(feature = "sqlite-store")]
 use kernex_core::config::MemoryConfig;
 use kernex_core::context::ContextNeeds;
 use kernex_core::error::KernexError;
 use kernex_core::message::{Request, Response};
 use kernex_core::traits::Provider;
+#[cfg(feature = "sqlite-store")]
 use kernex_memory::Store;
 use kernex_skills::{
     build_skill_prompt, match_skill_toolboxes, match_skill_triggers, Project, Skill,
@@ -45,6 +47,7 @@ use kernex_skills::{
 
 /// Re-export sub-crates for convenience.
 pub use kernex_core as core;
+#[cfg(feature = "sqlite-store")]
 pub use kernex_memory as memory;
 pub use kernex_pipelines as pipelines;
 pub use kernex_providers as providers;
@@ -54,6 +57,7 @@ pub use kernex_skills as skills;
 /// A configured Kernex runtime with all subsystems initialized.
 pub struct Runtime {
     /// Persistent memory store.
+    #[cfg(feature = "sqlite-store")]
     pub store: Store,
     /// Loaded skills from the data directory.
     pub skills: Vec<Skill>,
@@ -90,7 +94,7 @@ impl Runtime {
         &self,
         provider: &dyn Provider,
         request: &Request,
-        needs: &ContextNeeds,
+        #[allow(unused_variables)] needs: &ContextNeeds,
     ) -> Result<Response, KernexError> {
         let project_ref = self.project.as_deref();
 
@@ -105,6 +109,7 @@ impl Runtime {
         };
 
         // Build context from memory (history, recall, facts, lessons, etc).
+        #[cfg(feature = "sqlite-store")]
         let mut context = self
             .store
             .build_context(
@@ -115,6 +120,13 @@ impl Runtime {
                 project_ref,
             )
             .await?;
+
+        #[cfg(not(feature = "sqlite-store"))]
+        let mut context = {
+            let mut ctx = kernex_core::context::Context::new(&request.text);
+            ctx.system_prompt = full_system_prompt;
+            ctx
+        };
 
         // Enrich context with triggered MCP servers.
         let mcp_servers = match_skill_triggers(&self.skills, &request.text);
@@ -132,7 +144,10 @@ impl Runtime {
         let response = provider.complete(&context).await?;
 
         // Persist exchange in memory.
+        #[allow(unused_variables)]
         let project_key = project_ref.unwrap_or("default");
+
+        #[cfg(feature = "sqlite-store")]
         self.store
             .store_exchange(&self.channel, request, &response, project_key)
             .await?;
@@ -144,6 +159,7 @@ impl Runtime {
 /// Builder for constructing a `Runtime` with the desired configuration.
 pub struct RuntimeBuilder {
     data_dir: String,
+    #[cfg(feature = "sqlite-store")]
     db_path: Option<String>,
     system_prompt: String,
     channel: String,
@@ -155,11 +171,43 @@ impl RuntimeBuilder {
     pub fn new() -> Self {
         Self {
             data_dir: "~/.kernex".to_string(),
+            #[cfg(feature = "sqlite-store")]
             db_path: None,
             system_prompt: String::new(),
             channel: "cli".to_string(),
             project: None,
         }
+    }
+
+    /// Create a new builder configured from environment variables.
+    ///
+    /// Recognizes:
+    /// - `KERNEX_DATA_DIR`
+    /// - `KERNEX_DB_PATH` (when `sqlite-store` feature is enabled)
+    /// - `KERNEX_SYSTEM_PROMPT`
+    /// - `KERNEX_CHANNEL`
+    /// - `KERNEX_PROJECT`
+    pub fn from_env() -> Self {
+        let mut builder = Self::new();
+
+        if let Ok(dir) = std::env::var("KERNEX_DATA_DIR") {
+            builder = builder.data_dir(&dir);
+        }
+        #[cfg(feature = "sqlite-store")]
+        if let Ok(path) = std::env::var("KERNEX_DB_PATH") {
+            builder = builder.db_path(&path);
+        }
+        if let Ok(prompt) = std::env::var("KERNEX_SYSTEM_PROMPT") {
+            builder = builder.system_prompt(&prompt);
+        }
+        if let Ok(channel) = std::env::var("KERNEX_CHANNEL") {
+            builder = builder.channel(&channel);
+        }
+        if let Ok(project) = std::env::var("KERNEX_PROJECT") {
+            builder = builder.project(&project);
+        }
+
+        builder
     }
 
     /// Set the data directory (default: `~/.kernex`).
@@ -169,6 +217,7 @@ impl RuntimeBuilder {
     }
 
     /// Set a custom database path (default: `{data_dir}/memory.db`).
+    #[cfg(feature = "sqlite-store")]
     pub fn db_path(mut self, path: &str) -> Self {
         self.db_path = Some(path.to_string());
         self
@@ -202,14 +251,17 @@ impl RuntimeBuilder {
             .map_err(|e| KernexError::Config(format!("failed to create data dir: {e}")))?;
 
         // Initialize store.
-        let db_path = self
-            .db_path
-            .unwrap_or_else(|| format!("{expanded_dir}/memory.db"));
-        let mem_config = MemoryConfig {
-            db_path: db_path.clone(),
-            ..Default::default()
+        #[cfg(feature = "sqlite-store")]
+        let store = {
+            let db_path = self
+                .db_path
+                .unwrap_or_else(|| format!("{expanded_dir}/memory.db"));
+            let mem_config = MemoryConfig {
+                db_path: db_path.clone(),
+                ..Default::default()
+            };
+            Store::new(&mem_config).await?
         };
-        let store = Store::new(&mem_config).await?;
 
         // Load skills and projects.
         let skills = kernex_skills::load_skills(&self.data_dir);
@@ -222,6 +274,7 @@ impl RuntimeBuilder {
         );
 
         Ok(Runtime {
+            #[cfg(feature = "sqlite-store")]
             store,
             skills,
             projects,

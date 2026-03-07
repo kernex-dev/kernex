@@ -10,7 +10,7 @@ repository = "https://github.com/kernex-dev/kernex"
 description = "The Rust runtime for AI agents"
 
 [workspace.dependencies]
-tokio = { version = "1", features = ["full"] }
+tokio = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"

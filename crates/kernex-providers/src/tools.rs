@@ -46,6 +46,7 @@ pub struct ToolExecutor {
     workspace_path: PathBuf,
     data_dir: PathBuf,
     config_path: Option<PathBuf>,
+    sandbox_profile: kernex_sandbox::SandboxProfile,
     mcp_clients: HashMap<String, McpClient>,
     mcp_tool_map: HashMap<String, String>,
     toolboxes: HashMap<String, Toolbox>,
@@ -66,6 +67,7 @@ impl ToolExecutor {
             workspace_path,
             data_dir,
             config_path: None,
+            sandbox_profile: Default::default(),
             mcp_clients: HashMap::new(),
             mcp_tool_map: HashMap::new(),
             toolboxes: HashMap::new(),
@@ -80,6 +82,12 @@ impl ToolExecutor {
     #[allow(dead_code)]
     pub fn with_config_path(mut self, config_path: PathBuf) -> Self {
         self.config_path = Some(config_path);
+        self
+    }
+
+    /// Set a custom sandbox profile.
+    pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
+        self.sandbox_profile = profile;
         self
     }
 
@@ -217,7 +225,8 @@ impl ToolExecutor {
 
         debug!("tool/bash: {command}");
 
-        let mut cmd = kernex_sandbox::protected_command("bash", &self.data_dir);
+        let mut cmd =
+            kernex_sandbox::protected_command("bash", &self.data_dir, &self.sandbox_profile);
         cmd.arg("-c").arg(command);
         cmd.current_dir(&self.workspace_path);
         // Kill the child process when the handle is dropped (e.g. on timeout).
@@ -275,7 +284,12 @@ impl ToolExecutor {
         // Resolve relative paths against workspace to prevent sandbox bypass.
         let path = self.resolve_path(path_str);
         let path = path.as_path();
-        if kernex_sandbox::is_read_blocked(path, &self.data_dir, self.config_path.as_deref()) {
+        if kernex_sandbox::is_read_blocked(
+            path,
+            &self.data_dir,
+            self.config_path.as_deref(),
+            Some(&self.sandbox_profile),
+        ) {
             return ToolResult {
                 content: format!("Read denied: {} is a protected path", path.display()),
                 is_error: true,
@@ -309,7 +323,7 @@ impl ToolExecutor {
         // Resolve relative paths against workspace to prevent sandbox bypass.
         let path = self.resolve_path(path_str);
         let path = path.as_path();
-        if kernex_sandbox::is_write_blocked(path, &self.data_dir) {
+        if kernex_sandbox::is_write_blocked(path, &self.data_dir, Some(&self.sandbox_profile)) {
             return ToolResult {
                 content: format!("Write denied: {} is a protected path", path.display(),),
                 is_error: true,
@@ -343,7 +357,8 @@ impl ToolExecutor {
     async fn exec_toolbox(&self, tb: &Toolbox, args: &Value) -> ToolResult {
         debug!("toolbox/{}: running", tb.name);
 
-        let mut cmd = kernex_sandbox::protected_command(&tb.command, &self.data_dir);
+        let mut cmd =
+            kernex_sandbox::protected_command(&tb.command, &self.data_dir, &self.sandbox_profile);
         cmd.args(&tb.args);
         cmd.current_dir(&self.workspace_path);
         cmd.kill_on_drop(true);
@@ -439,7 +454,7 @@ impl ToolExecutor {
         // Resolve relative paths against workspace to prevent sandbox bypass.
         let path = self.resolve_path(path_str);
         let path = path.as_path();
-        if kernex_sandbox::is_write_blocked(path, &self.data_dir) {
+        if kernex_sandbox::is_write_blocked(path, &self.data_dir, Some(&self.sandbox_profile)) {
             return ToolResult {
                 content: format!("Write denied: {} is a protected path", path.display(),),
                 is_error: true,

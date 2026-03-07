@@ -25,6 +25,15 @@
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
+/// Configuration for system sandbox restrictions.
+#[derive(Clone, Debug, Default)]
+pub struct SandboxProfile {
+    /// Extra paths that should be fully writable (Linux Landlock allowlist).
+    pub allowed_paths: Vec<PathBuf>,
+    /// Extra paths that should be completely blocked for read/write.
+    pub blocked_paths: Vec<PathBuf>,
+}
+
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use tracing::warn;
 
@@ -44,8 +53,8 @@ mod landlock_sandbox;
 /// under `data_dir` (workspace, skills, projects) remain writable.
 ///
 /// On unsupported platforms, logs a warning and returns a plain command.
-pub fn protected_command(program: &str, data_dir: &Path) -> Command {
-    platform_command(program, data_dir)
+pub fn protected_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
+    platform_command(program, data_dir, profile)
 }
 
 /// Best-effort path canonicalization. Returns the canonicalized path or the
@@ -62,7 +71,7 @@ fn try_canonicalize(path: &Path) -> PathBuf {
 ///
 /// Resolves symlinks before comparison to prevent bypass via symlink chains.
 /// Used by tool executors for code-level enforcement.
-pub fn is_write_blocked(path: &Path, data_dir: &Path) -> bool {
+pub fn is_write_blocked(path: &Path, data_dir: &Path, profile: Option<&SandboxProfile>) -> bool {
     let abs = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -79,6 +88,14 @@ pub fn is_write_blocked(path: &Path, data_dir: &Path) -> bool {
     let config_file = try_canonicalize(&data_dir.join("config.toml"));
     if resolved == config_file {
         return true;
+    }
+
+    if let Some(prof) = profile {
+        for blocked in &prof.blocked_paths {
+            if resolved.starts_with(try_canonicalize(blocked)) {
+                return true;
+            }
+        }
     }
 
     let blocked_prefixes: &[&str] = &[
@@ -116,7 +133,12 @@ pub fn is_write_blocked(path: &Path, data_dir: &Path) -> bool {
 ///
 /// Resolves symlinks before comparison to prevent bypass via symlink chains.
 /// Used by tool executors for code-level enforcement.
-pub fn is_read_blocked(path: &Path, data_dir: &Path, config_path: Option<&Path>) -> bool {
+pub fn is_read_blocked(
+    path: &Path,
+    data_dir: &Path,
+    config_path: Option<&Path>,
+    profile: Option<&SandboxProfile>,
+) -> bool {
     let abs = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -142,21 +164,29 @@ pub fn is_read_blocked(path: &Path, data_dir: &Path, config_path: Option<&Path>)
         }
     }
 
+    if let Some(prof) = profile {
+        for blocked in &prof.blocked_paths {
+            if resolved.starts_with(try_canonicalize(blocked)) {
+                return true;
+            }
+        }
+    }
+
     false
 }
 
 #[cfg(target_os = "macos")]
-fn platform_command(program: &str, data_dir: &Path) -> Command {
-    seatbelt::protected_command(program, data_dir)
+fn platform_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
+    seatbelt::protected_command(program, data_dir, profile)
 }
 
 #[cfg(target_os = "linux")]
-fn platform_command(program: &str, data_dir: &Path) -> Command {
-    landlock_sandbox::protected_command(program, data_dir)
+fn platform_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
+    landlock_sandbox::protected_command(program, data_dir, profile)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn platform_command(program: &str, _data_dir: &Path) -> Command {
+fn platform_command(program: &str, _data_dir: &Path, _profile: &SandboxProfile) -> Command {
     warn!("OS-level protection not available on this platform; using code-level enforcement only");
     Command::new(program)
 }
@@ -169,7 +199,8 @@ mod tests {
     #[test]
     fn test_protected_command_returns_command() {
         let data_dir = PathBuf::from("/tmp/ws");
-        let cmd = protected_command("claude", &data_dir);
+        let profile = SandboxProfile::default();
+        let cmd = protected_command("claude", &data_dir, &profile);
         let program = cmd.as_std().get_program().to_string_lossy().to_string();
         assert!(!program.is_empty());
     }
@@ -179,11 +210,13 @@ mod tests {
         let data_dir = PathBuf::from("/home/user/.kernex");
         assert!(is_write_blocked(
             Path::new("/home/user/.kernex/data/memory.db"),
-            &data_dir
+            &data_dir,
+            None
         ));
         assert!(is_write_blocked(
             Path::new("/home/user/.kernex/data/"),
-            &data_dir
+            &data_dir,
+            None
         ));
     }
 
@@ -192,11 +225,13 @@ mod tests {
         let data_dir = PathBuf::from("/home/user/.kernex");
         assert!(!is_write_blocked(
             Path::new("/home/user/.kernex/workspace/test.txt"),
-            &data_dir
+            &data_dir,
+            None
         ));
         assert!(!is_write_blocked(
             Path::new("/home/user/.kernex/skills/test/SKILL.md"),
-            &data_dir
+            &data_dir,
+            None
         ));
     }
 
@@ -205,44 +240,61 @@ mod tests {
         let data_dir = PathBuf::from("/home/user/.kernex");
         assert!(is_write_blocked(
             Path::new("/System/Library/test"),
-            &data_dir
+            &data_dir,
+            None
         ));
-        assert!(is_write_blocked(Path::new("/bin/sh"), &data_dir));
-        assert!(is_write_blocked(Path::new("/usr/bin/env"), &data_dir));
-        assert!(is_write_blocked(Path::new("/private/etc/hosts"), &data_dir));
+        assert!(is_write_blocked(Path::new("/bin/sh"), &data_dir, None));
+        assert!(is_write_blocked(Path::new("/usr/bin/env"), &data_dir, None));
+        assert!(is_write_blocked(
+            Path::new("/private/etc/hosts"),
+            &data_dir,
+            None
+        ));
         assert!(is_write_blocked(
             Path::new("/Library/Preferences/test"),
-            &data_dir
+            &data_dir,
+            None
         ));
     }
 
     #[test]
     fn test_is_write_blocked_allows_normal_paths() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(!is_write_blocked(Path::new("/tmp/test"), &data_dir));
+        assert!(!is_write_blocked(Path::new("/tmp/test"), &data_dir, None));
         assert!(!is_write_blocked(
             Path::new("/home/user/documents/test"),
-            &data_dir
+            &data_dir,
+            None
         ));
         assert!(!is_write_blocked(
             Path::new("/usr/local/bin/something"),
-            &data_dir
+            &data_dir,
+            None
         ));
     }
 
     #[test]
     fn test_is_write_blocked_no_string_prefix_false_positive() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(!is_write_blocked(Path::new("/binaries/test"), &data_dir));
+        assert!(!is_write_blocked(
+            Path::new("/binaries/test"),
+            &data_dir,
+            None
+        ));
     }
 
     #[test]
     fn test_is_write_blocked_relative_path() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(is_write_blocked(Path::new("relative/path"), &data_dir));
+        assert!(is_write_blocked(
+            Path::new("relative/path"),
+            &data_dir,
+            None
+        ));
         assert!(is_write_blocked(
             Path::new("../../data/memory.db"),
-            &data_dir
+            &data_dir,
+            None
         ));
     }
 
@@ -251,7 +303,8 @@ mod tests {
         let data_dir = PathBuf::from("/home/user/.kernex");
         assert!(is_write_blocked(
             Path::new("/home/user/.kernex/config.toml"),
-            &data_dir
+            &data_dir,
+            None
         ));
     }
 
@@ -261,11 +314,13 @@ mod tests {
         assert!(is_read_blocked(
             Path::new("/home/user/.kernex/data/memory.db"),
             &data_dir,
+            None,
             None
         ));
         assert!(is_read_blocked(
             Path::new("/home/user/.kernex/data/"),
             &data_dir,
+            None,
             None
         ));
     }
@@ -276,6 +331,7 @@ mod tests {
         assert!(is_read_blocked(
             Path::new("/home/user/.kernex/config.toml"),
             &data_dir,
+            None,
             None
         ));
     }
@@ -287,12 +343,14 @@ mod tests {
         assert!(is_read_blocked(
             Path::new("/opt/kernex/config.toml"),
             &data_dir,
-            Some(ext_config.as_path())
+            Some(ext_config.as_path()),
+            None
         ));
         assert!(!is_read_blocked(
             Path::new("/opt/kernex/other.toml"),
             &data_dir,
-            Some(ext_config.as_path())
+            Some(ext_config.as_path()),
+            None
         ));
     }
 
@@ -302,11 +360,13 @@ mod tests {
         assert!(!is_read_blocked(
             Path::new("/home/user/.kernex/workspace/test.txt"),
             &data_dir,
+            None,
             None
         ));
         assert!(!is_read_blocked(
             Path::new("/home/user/.kernex/skills/test/SKILL.md"),
             &data_dir,
+            None,
             None
         ));
     }
@@ -317,6 +377,7 @@ mod tests {
         assert!(!is_read_blocked(
             Path::new("/home/user/.kernex/stores/trading/store.db"),
             &data_dir,
+            None,
             None
         ));
     }
@@ -324,10 +385,16 @@ mod tests {
     #[test]
     fn test_is_read_blocked_relative_path() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(is_read_blocked(Path::new("relative/path"), &data_dir, None));
+        assert!(is_read_blocked(
+            Path::new("relative/path"),
+            &data_dir,
+            None,
+            None
+        ));
         assert!(is_read_blocked(
             Path::new("../../data/memory.db"),
             &data_dir,
+            None,
             None
         ));
     }
