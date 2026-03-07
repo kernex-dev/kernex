@@ -32,7 +32,7 @@
 
 ## Prerequisites
 
-- **Rust 1.70+** — Install from [rustup.rs](https://rustup.rs)
+- **Rust 1.74+** — Install from [rustup.rs](https://rustup.rs)
 - **Cargo** — Comes with Rust
 
 For running examples:
