@@ -271,6 +271,40 @@ cp -r examples/skills/_template ~/.kernex/skills/my-skill
 # See examples/skills/README.md for full guide
 ```
 
+## Common Errors
+
+### "unknown provider type: xyz"
+
+The provider name must match exactly. Valid values: `openai`, `anthropic`, `ollama`, `gemini`, `openrouter`, `claude-code`.
+
+### "config error: failed to create data dir"
+
+Ensure `~/.kernex/` is writable:
+
+```bash
+mkdir -p ~/.kernex && chmod 755 ~/.kernex
+```
+
+### "provider error: timeout"
+
+The provider took longer than the configured timeout (default 120s). Check your internet connection or increase the timeout in `ProviderConfig`.
+
+### "Ollama not available"
+
+Ollama server isn't running. Start it in a separate terminal:
+
+```bash
+ollama serve
+```
+
+### "model not found" (Ollama)
+
+Pull the model first:
+
+```bash
+ollama pull llama3.2
+```
+
 ## Development
 
 ```bash
