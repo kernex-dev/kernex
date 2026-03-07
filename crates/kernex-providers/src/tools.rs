@@ -505,7 +505,7 @@ fn normalize_path(path: &Path) -> PathBuf {
 
 /// Truncate output to at most `max_bytes` bytes at a valid UTF-8 char boundary,
 /// appending a note if truncated.
-fn truncate_output(s: &str, max_bytes: usize) -> String {
+pub fn truncate_output(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         s.to_string()
     } else {
