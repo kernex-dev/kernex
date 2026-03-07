@@ -17,17 +17,14 @@ const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// `data_dir` is the runtime data directory (e.g. `~/.kernex/`).
 /// - Writes to system dirs and `{data_dir}/data/` are denied.
 /// - Reads to `{data_dir}/data/` and `{data_dir}/config.toml` are denied.
-fn build_profile(data_dir: &Path) -> String {
+fn build_profile(data_dir: &Path, profile: &crate::SandboxProfile) -> String {
     let data_data = data_dir.join("data");
     let data_data_str = data_data.display();
     let config_file = data_dir.join("config.toml");
     let config_str = config_file.display();
 
-    format!(
-        r#"(version 1)
-(allow default)
-(deny file-write*
-  (subpath "/System")
+    let mut deny_writes = format!(
+        r#"  (subpath "/System")
   (subpath "/bin")
   (subpath "/sbin")
   (subpath "/usr/bin")
@@ -38,11 +35,26 @@ fn build_profile(data_dir: &Path) -> String {
   (subpath "/Library")
   (subpath "{data_data_str}")
   (literal "{config_str}")
-)
-(deny file-read*
-  (subpath "{data_data_str}")
+"#
+    );
+
+    let mut deny_reads = format!(
+        r#"  (subpath "{data_data_str}")
   (literal "{config_str}")
-)"#
+"#
+    );
+
+    for blocked in &profile.blocked_paths {
+        let blocked_str = blocked.display();
+        deny_writes.push_str(&format!("  (subpath \"{blocked_str}\")\n"));
+        deny_reads.push_str(&format!("  (subpath \"{blocked_str}\")\n"));
+    }
+
+    format!(
+        "(version 1)\n\
+        (allow default)\n\
+        (deny file-write*\n{deny_writes})\n\
+        (deny file-read*\n{deny_reads})\n"
     )
 }
 
@@ -54,15 +66,19 @@ fn build_profile(data_dir: &Path) -> String {
 ///
 /// If `/usr/bin/sandbox-exec` does not exist, logs a warning and returns
 /// a plain command without OS-level enforcement.
-pub(crate) fn protected_command(program: &str, data_dir: &Path) -> Command {
+pub(crate) fn protected_command(
+    program: &str,
+    data_dir: &Path,
+    profile: &crate::SandboxProfile,
+) -> Command {
     if !Path::new(SANDBOX_EXEC).exists() {
         warn!("sandbox-exec not found at {SANDBOX_EXEC}; falling back to code-level protection");
         return Command::new(program);
     }
 
-    let profile = build_profile(data_dir);
+    let built_profile = build_profile(data_dir, profile);
     let mut cmd = Command::new(SANDBOX_EXEC);
-    cmd.arg("-p").arg(profile).arg("--").arg(program);
+    cmd.arg("-p").arg(built_profile).arg("--").arg(program);
     cmd
 }
 
@@ -74,7 +90,8 @@ mod tests {
     #[test]
     fn test_profile_blocks_system_dirs() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        let profile = build_profile(&data_dir);
+        let profile_obj = crate::SandboxProfile::default();
+        let profile = build_profile(&data_dir, &profile_obj);
         assert!(profile.contains("(deny file-write*"));
         assert!(profile.contains(r#"(subpath "/System")"#));
         assert!(profile.contains(r#"(subpath "/bin")"#));
@@ -90,7 +107,8 @@ mod tests {
     #[test]
     fn test_profile_blocks_data_dir() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        let profile = build_profile(&data_dir);
+        let profile_obj = crate::SandboxProfile::default();
+        let profile = build_profile(&data_dir, &profile_obj);
         assert!(
             profile.contains("/home/user/.kernex/data"),
             "should block data dir (memory.db)"
@@ -100,7 +118,8 @@ mod tests {
     #[test]
     fn test_profile_allows_usr_local() {
         let data_dir = PathBuf::from("/tmp/ws");
-        let profile = build_profile(&data_dir);
+        let profile_obj = crate::SandboxProfile::default();
+        let profile = build_profile(&data_dir, &profile_obj);
         assert!(
             !profile.contains(r#"(subpath "/usr/local")"#),
             "/usr/local should not be blocked"
@@ -110,7 +129,8 @@ mod tests {
     #[test]
     fn test_profile_allows_by_default() {
         let data_dir = PathBuf::from("/tmp/ws");
-        let profile = build_profile(&data_dir);
+        let profile_obj = crate::SandboxProfile::default();
+        let profile = build_profile(&data_dir, &profile_obj);
         assert!(
             profile.contains("(allow default)"),
             "should allow everything by default"
@@ -120,7 +140,8 @@ mod tests {
     #[test]
     fn test_profile_blocks_data_dir_reads() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        let profile = build_profile(&data_dir);
+        let profile_obj = crate::SandboxProfile::default();
+        let profile = build_profile(&data_dir, &profile_obj);
         assert!(
             profile.contains("(deny file-read*"),
             "should have file-read* deny"
@@ -136,7 +157,8 @@ mod tests {
     #[test]
     fn test_profile_blocks_config_writes() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        let profile = build_profile(&data_dir);
+        let profile_obj = crate::SandboxProfile::default();
+        let profile = build_profile(&data_dir, &profile_obj);
         let write_deny_pos = profile.find("(deny file-write*").unwrap();
         let read_deny_pos = profile.find("(deny file-read*").unwrap();
         let write_section = &profile[write_deny_pos..read_deny_pos];
@@ -149,7 +171,8 @@ mod tests {
     #[test]
     fn test_profile_blocks_config_reads() {
         let data_dir = PathBuf::from("/home/user/.kernex");
-        let profile = build_profile(&data_dir);
+        let profile_obj = crate::SandboxProfile::default();
+        let profile = build_profile(&data_dir, &profile_obj);
         assert!(
             profile.contains(r#"(literal "/home/user/.kernex/config.toml")"#),
             "should block reads to config.toml"
@@ -159,7 +182,8 @@ mod tests {
     #[test]
     fn test_command_structure() {
         let data_dir = PathBuf::from("/tmp/ws");
-        let cmd = protected_command("claude", &data_dir);
+        let profile = crate::SandboxProfile::default();
+        let cmd = protected_command("claude", &data_dir, &profile);
         let program = cmd.as_std().get_program().to_string_lossy().to_string();
         assert!(
             program.contains("sandbox-exec") || program.contains("claude"),

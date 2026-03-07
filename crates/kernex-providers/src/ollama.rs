@@ -22,6 +22,7 @@ pub struct OllamaProvider {
     base_url: String,
     model: String,
     workspace_path: Option<PathBuf>,
+    sandbox_profile: kernex_sandbox::SandboxProfile,
 }
 
 impl OllamaProvider {
@@ -39,7 +40,14 @@ impl OllamaProvider {
             base_url,
             model,
             workspace_path,
+            sandbox_profile: Default::default(),
         })
+    }
+
+    /// Set a custom sandbox profile.
+    pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
+        self.sandbox_profile = profile;
+        self
     }
 }
 
@@ -157,7 +165,8 @@ impl Provider for OllamaProvider {
 
         if has_tools {
             if let Some(ref ws) = self.workspace_path {
-                let mut executor = ToolExecutor::new(ws.clone());
+                let mut executor = ToolExecutor::new(ws.clone())
+                    .with_sandbox_profile(self.sandbox_profile.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 

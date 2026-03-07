@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use kernex_core::{context::Context, error::KernexError, message::Response, traits::Provider};
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
@@ -22,10 +23,11 @@ const DEFAULT_MAX_TURNS: u32 = 50;
 /// Anthropic Messages API provider.
 pub struct AnthropicProvider {
     client: reqwest::Client,
-    api_key: String,
+    api_key: SecretString,
     model: String,
     max_tokens: u32,
     workspace_path: Option<PathBuf>,
+    sandbox_profile: kernex_sandbox::SandboxProfile,
 }
 
 impl AnthropicProvider {
@@ -41,11 +43,18 @@ impl AnthropicProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .map_err(|e| KernexError::Provider(format!("failed to build HTTP client: {e}")))?,
-            api_key,
+            api_key: SecretString::new(api_key),
             model,
             max_tokens,
             workspace_path,
+            sandbox_profile: Default::default(),
         })
+    }
+
+    /// Set a custom sandbox profile.
+    pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
+        self.sandbox_profile = profile;
+        self
     }
 }
 
@@ -165,7 +174,8 @@ impl Provider for AnthropicProvider {
 
         if has_tools {
             if let Some(ref ws) = self.workspace_path {
-                let mut executor = ToolExecutor::new(ws.clone());
+                let mut executor = ToolExecutor::new(ws.clone())
+                    .with_sandbox_profile(self.sandbox_profile.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 
@@ -213,7 +223,7 @@ impl Provider for AnthropicProvider {
             send_with_retry("anthropic", || {
                 let req = client
                     .post(ANTHROPIC_API_URL)
-                    .header("x-api-key", api_key.as_str())
+                    .header("x-api-key", api_key.expose_secret().as_str())
                     .header("anthropic-version", ANTHROPIC_VERSION)
                     .header("content-type", "application/json")
                     .body(body_json.clone());
@@ -252,7 +262,7 @@ impl Provider for AnthropicProvider {
     }
 
     async fn is_available(&self) -> bool {
-        if self.api_key.is_empty() {
+        if self.api_key.expose_secret().is_empty() {
             warn!("anthropic: no API key configured");
             return false;
         }
@@ -310,7 +320,7 @@ impl AnthropicProvider {
                 send_with_retry("anthropic", || {
                     let req = client
                         .post(ANTHROPIC_API_URL)
-                        .header("x-api-key", api_key.as_str())
+                        .header("x-api-key", api_key.expose_secret().as_str())
                         .header("anthropic-version", ANTHROPIC_VERSION)
                         .header("content-type", "application/json")
                         .body(body_json.clone());
