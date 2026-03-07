@@ -10,7 +10,7 @@ Kernex is a Rust runtime engine for AI agents. It provides sandboxed execution, 
 
 ## Origin
 
-Extracted from the Omega project (`github.com/omgagi/omega`), keeping the battle-tested core (sandbox, providers, memory, skills, pipelines) and discarding the monolithic personal-agent shell (Telegram/WhatsApp channels, hardcoded gateway, system prompt).
+Extracted from a prior internal monolithic codebase, keeping the battle-tested core (sandbox, providers, memory, skills, pipelines) and discarding the monolithic personal-agent shell (hardcoded messaging channels, hardcoded gateway, system prompt).
 
 ## Git Rules
 
@@ -79,7 +79,7 @@ Cargo workspace with composable crates:
 - **README in crates.io:** Every crate Cargo.toml has `readme = "../../README.md"` pointing to the workspace README.
 - After publishing, verify the crate pages on crates.io show the README correctly.
 
-## What We Keep from Omega (proven, battle-tested)
+## What We Keep from the Internal Monolith (proven, battle-tested)
 
 - Sandbox dual-layer design (OS + code-level)
 - Provider trait + 6 implementations + tool executor + MCP client
@@ -87,9 +87,9 @@ Cargo workspace with composable crates:
 - Skill loader with trigger matching and MCP activation
 - Multi-agent pipeline with topologies, corrective loops, file-mediated handoffs
 - Prompt sanitization
-- Error handling patterns (OmegaError -> KernexError)
+- Error handling patterns (LegacyError -> KernexError)
 
-## What We Discard from Omega
+## What We Discard from the Internal Monolith
 
 - Telegram/WhatsApp channel implementations (users bring their own)
 - Hardcoded gateway pipeline (replaced by composable Runtime)
@@ -99,7 +99,7 @@ Cargo workspace with composable crates:
 - CLI wizard (init.rs) — out of scope
 - Commands module — out of scope
 
-## What We Fix from Omega (audit findings)
+## What We Fix from the Internal Monolith (audit findings)
 
 - HTTP retry with backoff for all providers (was missing)
 - `with_config_path()` wired up (was dead code)
