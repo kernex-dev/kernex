@@ -1,4 +1,6 @@
 //! Skill and project loader for Kernex.
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 //!
 //! Scans `{data_dir}/skills/*/SKILL.md` and `{data_dir}/projects/*/ROLE.md`
 //! for definitions and exposes them to the system prompt so the AI knows
