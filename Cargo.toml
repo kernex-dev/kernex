@@ -8,6 +8,9 @@ edition = "2021"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/kernex-dev/kernex"
 description = "The Rust runtime for AI agents"
+documentation = "https://docs.rs/kernex-runtime"
+keywords = ["ai", "agent", "sandbox", "runtime", "async"]
+categories = ["api-bindings", "development-tools", "asynchronous"]
 
 [workspace.dependencies]
 tokio = "1"
