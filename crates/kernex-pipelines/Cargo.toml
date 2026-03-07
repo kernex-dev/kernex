@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Topology-driven multi-agent pipelines with corrective loops for Kernex"
+readme = "../../README.md"
 
 [dependencies]
 kernex-core = { workspace = true }

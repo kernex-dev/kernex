@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Pluggable storage for Kernex — conversations, learning, and scheduled tasks"
+readme = "../../README.md"
 
 [dependencies]
 kernex-core = { workspace = true }

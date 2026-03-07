@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "AI backend providers for Kernex (Claude Code, Anthropic, OpenAI, Ollama, OpenRouter, Gemini, MCP)"
+readme = "../../README.md"
 
 [dependencies]
 kernex-core = { workspace = true }

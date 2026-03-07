@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The Rust runtime for AI agents — composable engine with sandbox, providers, learning, and pipelines"
+readme = "../../README.md"
 
 [dependencies]
 kernex-core = { workspace = true }
