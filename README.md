@@ -44,15 +44,34 @@
 
 Kernex is a Cargo workspace with 7 composable crates:
 
+```mermaid
+graph TD
+    classDef facade fill:#2B6CB0,stroke:#2C5282,stroke-width:2px,color:#fff
+    classDef core fill:#4A5568,stroke:#2D3748,stroke-width:2px,color:#fff
+    classDef impl fill:#319795,stroke:#285E61,stroke-width:2px,color:#fff
+
+    R[kernex-runtime]:::facade
+    C[kernex-core]:::core
+    S[kernex-sandbox]:::impl
+    P[kernex-providers]:::impl
+    M[kernex-memory]:::impl
+    K[kernex-skills]:::impl
+    PL[kernex-pipelines]:::impl
+
+    R --> C
+    R --> S
+    R --> P
+    R --> M
+    R --> K
+    R --> PL
+
+    P --> C
+    M --> C
+    K --> C
+    PL --> C
+    S -.o|OS Protection| P
 ```
-kernex-runtime          Facade — composes all crates into a RuntimeBuilder
-  ├── kernex-core       Shared types, traits (Provider, Store), config, error handling
-  ├── kernex-sandbox    OS-level protection (Seatbelt/Landlock)
-  ├── kernex-providers  AI backends + tool executor + MCP client
-  ├── kernex-memory     SQLite storage, conversations, learning, tasks
-  ├── kernex-skills     Skill/project loader, trigger matching, MCP activation
-  └── kernex-pipelines  Topology-driven multi-agent pipelines
-```
+
 
 | Crate | crates.io | Description |
 |-------|-----------|-------------|
