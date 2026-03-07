@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-03-07
+
+### Added
+
+- **docs**: CONTRIBUTING.md with development setup and PR process
+- **docs**: ARCHITECTURE.md expanded with custom Provider guide and kernex-agent reference
+
+### Changed
+
+- **crates.io**: Added documentation URL, keywords, and categories for discoverability
+- **clippy**: Enforced `deny(clippy::unwrap_used, clippy::expect_used)` across all crates
+
+## [0.3.0] - 2026-03-07
+
+### Added
+
+- **kernex-providers**: SandboxProfile integration for AI Providers and ProviderFactory
+- **kernex-runtime**: `Runtime::complete()` API for simplified completions
+- **fuzz**: cargo-fuzz support for `truncate_output`
+
+### Changed
+
+- Anonymized codebase by removing original project name references
+
 ## [0.2.0] - 2026-03-06
 
 ### Added
