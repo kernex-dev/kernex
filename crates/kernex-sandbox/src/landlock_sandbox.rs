@@ -6,6 +6,14 @@
 //! and `{data_dir}/config.toml` (Refer-only access blocks both reads and
 //! writes via Landlock's intersection semantics).
 //!
+//! **Linux Edge Cases and Fallback:**
+//! Not all Linux kernels or environments support Landlock (e.g., older kernels,
+//! WSL1, or containerized environments without the kernel security module enabled).
+//! In such cases, `landlock_available()` silently falls back to executing a standard
+//! `tokio::process::Command`. The framework still provides a robust code-level
+//! enforcement layer via `is_read_blocked()` and `is_write_blocked()` which
+//! protects sensitive tool inputs independent of OS-level sandboxing.
+//!
 //! Code-level enforcement via `is_read_blocked()` and `is_write_blocked()`
 //! provides additional protection on all platforms.
 
