@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod claude_code;
+pub mod factory;
 pub mod gemini;
 pub mod http_retry;
 pub(crate) mod mcp_client;

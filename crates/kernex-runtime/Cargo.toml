@@ -11,13 +11,17 @@ readme = "../../README.md"
 kernex-core = { workspace = true }
 kernex-sandbox = { workspace = true }
 kernex-providers = { workspace = true }
-kernex-memory = { workspace = true }
+kernex-memory = { workspace = true, optional = true }
 kernex-skills = { workspace = true }
 kernex-pipelines = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+
+[features]
+default = ["sqlite-store"]
+sqlite-store = ["dep:kernex-memory"]
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
