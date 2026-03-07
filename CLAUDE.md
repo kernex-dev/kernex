@@ -65,6 +65,16 @@ Cargo workspace with composable crates:
 | 4 | `cargo fmt --check` |
 | 5 | Commit only after 1-4 pass |
 
+## Versioning & Publishing
+
+- All crates share the same version via `workspace.package.version`.
+- **Bump rule:** Minor (0.x → 0.y) for new features or breaking changes. Patch (0.x.y) for bug fixes only.
+- **Never publish without asking.** Always confirm before `cargo publish`.
+- **Publish order** (leaf crates first): `kernex-core` → `kernex-sandbox` → `kernex-memory` → `kernex-pipelines` → `kernex-skills` → `kernex-providers` → `kernex-runtime`.
+- **Version bump commit:** Use `chore: bump version to X.Y.Z` as a separate commit after the feature commit.
+- **README in crates.io:** Every crate Cargo.toml has `readme = "../../README.md"` pointing to the workspace README.
+- After publishing, verify the crate pages on crates.io show the README correctly.
+
 ## What We Keep from Omega (proven, battle-tested)
 
 - Sandbox dual-layer design (OS + code-level)
