@@ -75,3 +75,91 @@ Markdown body injected into the agent's system prompt when the skill is active.
 
 Kernex supports both TOML and YAML frontmatter, compatible with the
 [Skills.sh](https://skills.sh) standard.
+
+## Create Your First Skill (5 minutes)
+
+### Step 1: Copy the Template
+
+```bash
+mkdir -p ~/.kernex/skills
+cp -r examples/skills/_template ~/.kernex/skills/my-skill
+```
+
+### Step 2: Edit SKILL.md
+
+Open `~/.kernex/skills/my-skill/SKILL.md` and customize:
+
+```toml
+---
+name = "my-skill"
+description = "What this skill does"
+requires = ["npx"]  # CLI tools needed
+trigger = "keyword1|keyword2|search term"
+
+[mcp.my-server]
+command = "npx"
+args = ["-y", "@scope/mcp-server-name"]
+---
+
+# My Skill
+
+Instructions for the AI about how to use this skill.
+
+## Tools Available
+
+- `tool_name` — What it does
+```
+
+### Step 3: Test Your Skill
+
+```bash
+cargo run --example skill_loader
+# Should show: my-skill — What this skill does [ready]
+```
+
+### Step 4: Use in kx
+
+```bash
+kx "keyword1 something"
+# Kernex detects trigger and activates your skill
+```
+
+## Skill Activation by Trigger
+
+When you mention these keywords, the corresponding skill activates:
+
+| Say This | Activates | Example |
+|----------|-----------|---------|
+| "read the file", "list directory" | filesystem | "read the config file" |
+| "git log", "commit changes" | git | "show recent commits" |
+| "browse website", "screenshot" | playwright | "browse docs.rs" |
+| "check PR", "github issue" | github | "list open issues" |
+| "search for" | brave-search | "search for rust async" |
+
+## MCP Server Requirements
+
+Most skills use MCP servers via npx. Ensure you have:
+
+1. **Node.js 18+** — [nodejs.org](https://nodejs.org)
+2. **npx** — Comes with Node.js
+
+Some skills need API keys:
+- **brave-search**: Set `BRAVE_SEARCH_API_KEY`
+- **github**: Set `GITHUB_TOKEN` (for private repos)
+
+## Troubleshooting
+
+### "Skill not loading"
+- Check `~/.kernex/skills/` exists
+- Verify SKILL.md has valid TOML frontmatter
+- Run `cargo run --example skill_loader` to debug
+
+### "MCP server failed"
+- Ensure `npx` is installed: `npx --version`
+- Check the MCP package exists: `npx -y @package/name --help`
+- Look for missing env vars (API keys)
+
+### "Trigger not matching"
+- Triggers are case-insensitive
+- Use `|` to separate multiple triggers
+- Be specific: "read file" matches, "r" doesn't

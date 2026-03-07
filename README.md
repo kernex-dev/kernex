@@ -17,17 +17,27 @@
 </p>
 
 <p align="center">
+  <a href="#prerequisites">Prerequisites</a> &bull;
   <a href="#features">Features</a> &bull;
-  <a href="#architecture">Architecture</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
+  <a href="#examples">Examples</a> &bull;
+  <a href="#skills">Skills</a> &bull;
   <a href="#providers">Providers</a> &bull;
-  <a href="#contributing">Contributing</a> &bull;
-  <a href="#license">License</a>
+  <a href="#contributing">Contributing</a>
 </p>
 
 ---
 
 **Kernex** is a composable Rust framework for building AI agent systems. It provides sandboxed execution, multi-provider AI backends, persistent memory with reward-based learning, skill loading, and topology-driven multi-agent pipelines — all as independent, embeddable crates.
+
+## Prerequisites
+
+- **Rust 1.70+** — Install from [rustup.rs](https://rustup.rs)
+- **Cargo** — Comes with Rust
+
+For running examples:
+- **Ollama** (optional) — For local AI without API keys. [Install](https://ollama.com)
+- **Node.js 18+** (optional) — For MCP-based skills. [Install](https://nodejs.org)
 
 ## Features
 
@@ -223,23 +233,37 @@ impl Provider for MyProvider {
 
 ## Examples
 
-Runnable examples in [`crates/kernex-runtime/examples/`](crates/kernex-runtime/examples/):
+| Example | Description | Prerequisites | Run |
+|---------|-------------|---------------|-----|
+| `simple_chat` | Interactive chat with local LLM | Ollama running | `cargo run --example simple_chat` |
+| `memory_agent` | Persistent facts and lessons | None | `cargo run --example memory_agent` |
+| `skill_loader` | Load skills and match triggers | None | `cargo run --example skill_loader` |
+| `pipeline_loader` | Multi-agent topology demo | None | `cargo run --example pipeline_loader` |
+
+All examples are in [`crates/kernex-runtime/examples/`](crates/kernex-runtime/examples/).
+
+## Skills
+
+Kernex supports [Skills.sh](https://skills.sh) compatible skills. 7 ready-to-use skills included:
+
+- **filesystem** — File operations via MCP
+- **git** — Repository operations
+- **playwright** — Browser automation
+- **github** — GitHub API integration
+- **postgres** / **sqlite** — Database operations
+- **brave-search** — Web search
+
+See [examples/skills/](examples/skills/) for documentation and templates.
+
+### Creating Custom Skills
 
 ```bash
-# Interactive chat with Ollama (local, no API key)
-cargo run --example simple_chat
+# Copy the template
+cp -r examples/skills/_template ~/.kernex/skills/my-skill
 
-# Persistent memory: facts, lessons, outcomes
-cargo run --example memory_agent
-
-# Load skills and match triggers
-cargo run --example skill_loader
-
-# Load and inspect a multi-agent pipeline topology
-cargo run --example pipeline_loader
+# Edit SKILL.md with your triggers and MCP config
+# See examples/skills/README.md for full guide
 ```
-
-Reference skills for common MCP servers in [`examples/skills/`](examples/skills/).
 
 ## Development
 
