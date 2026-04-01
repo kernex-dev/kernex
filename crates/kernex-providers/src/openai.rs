@@ -530,7 +530,7 @@ mod tests {
     fn test_to_openai_tools() {
         let defs = crate::tools::builtin_tool_defs();
         let tools = to_openai_tools(&defs);
-        assert_eq!(tools.len(), 4);
+        assert_eq!(tools.len(), 7);
         assert_eq!(tools[0].tool_type, "function");
         assert!(!tools[0].function.name.is_empty());
     }
@@ -565,6 +565,6 @@ mod tests {
             tools: Some(to_openai_tools(&defs)),
         };
         let json = serde_json::to_value(&req).unwrap();
-        assert!(json.get("tools").unwrap().as_array().unwrap().len() == 4);
+        assert!(json.get("tools").unwrap().as_array().unwrap().len() == 7);
     }
 }

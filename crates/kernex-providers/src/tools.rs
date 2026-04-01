@@ -1,7 +1,7 @@
 //! Shared tool executor for HTTP-based providers.
 //!
-//! Provides 4 built-in tools (Bash, Read, Write, Edit) with sandbox enforcement,
-//! plus MCP server tool routing. Used by all agentic loops.
+//! Provides 7 built-in tools (Bash, Read, Write, Edit, Grep, Glob, WebFetch)
+//! with sandbox enforcement, plus MCP server tool routing. Used by all agentic loops.
 
 use crate::mcp_client::McpClient;
 use kernex_core::context::{McpServer, Toolbox};
@@ -153,14 +153,19 @@ impl ToolExecutor {
             });
         }
 
-        // Add MCP tools.
-        for client in self.mcp_clients.values() {
-            for mcp_tool in &client.tools {
-                defs.push(ToolDef {
-                    name: mcp_tool.name.clone(),
-                    description: mcp_tool.description.clone(),
-                    parameters: mcp_tool.input_schema.clone(),
-                });
+        // Add MCP tools — sorted by server name for deterministic ordering
+        // (avoids prompt cache misses caused by HashMap non-determinism).
+        let mut mcp_server_names: Vec<&str> = self.mcp_clients.keys().map(|s| s.as_str()).collect();
+        mcp_server_names.sort_unstable();
+        for server_name in mcp_server_names {
+            if let Some(client) = self.mcp_clients.get(server_name) {
+                for mcp_tool in &client.tools {
+                    defs.push(ToolDef {
+                        name: mcp_tool.name.clone(),
+                        description: mcp_tool.description.clone(),
+                        parameters: mcp_tool.input_schema.clone(),
+                    });
+                }
             }
         }
 
@@ -206,6 +211,9 @@ impl ToolExecutor {
             "read" => self.exec_read(args).await,
             "write" => self.exec_write(args).await,
             "edit" => self.exec_edit(args).await,
+            "grep" => self.exec_grep(args).await,
+            "glob" => self.exec_glob(args).await,
+            "web_fetch" => self.exec_web_fetch(args).await,
             _ => {
                 // Try toolbox routing.
                 if let Some(tb) = self.toolboxes.get(tool_name).cloned() {
@@ -549,6 +557,219 @@ impl ToolExecutor {
             },
         }
     }
+
+    /// Run ripgrep (or grep) to search file contents.
+    ///
+    /// Arguments are passed as a pre-split argv array — no shell interpolation —
+    /// to prevent command injection.
+    async fn exec_grep(&self, args: &Value) -> ToolResult {
+        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+        if pattern.is_empty() {
+            return ToolResult {
+                content: "Error: 'pattern' parameter is required".to_string(),
+                is_error: true,
+            };
+        }
+
+        let search_path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| self.resolve_path(p))
+            .unwrap_or_else(|| self.workspace_path.clone());
+
+        let glob_pattern = args.get("glob").and_then(|v| v.as_str());
+
+        debug!(
+            "tool/grep: pattern={pattern} path={}",
+            search_path.display()
+        );
+
+        // Prefer `rg` (ripgrep) when available; fall back to `grep -r`.
+        let (cmd_name, mut argv): (&str, Vec<String>) = if which_exists("rg") {
+            let mut a = vec!["--line-number".to_string(), "--color=never".to_string()];
+            if let Some(g) = glob_pattern {
+                a.push("--glob".to_string());
+                a.push(g.to_string());
+            }
+            a.push(pattern.to_string());
+            a.push(search_path.to_string_lossy().to_string());
+            ("rg", a)
+        } else {
+            let mut a = vec![
+                "-r".to_string(),
+                "-n".to_string(),
+                "--include=*".to_string(),
+            ];
+            if let Some(g) = glob_pattern {
+                // grep --include only supports simple globs; best-effort.
+                a.push(format!("--include={g}"));
+            }
+            a.push(pattern.to_string());
+            a.push(search_path.to_string_lossy().to_string());
+            ("grep", a)
+        };
+
+        let mut cmd =
+            kernex_sandbox::protected_command(cmd_name, &self.data_dir, &self.sandbox_profile);
+        cmd.args(&argv);
+        cmd.kill_on_drop(true);
+        // Drain argv so the borrow checker is happy.
+        argv.clear();
+
+        match tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await {
+            Ok(Ok(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                // grep/rg exit code 1 = no matches (not an error for us).
+                if stdout.is_empty() && !output.status.success() {
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if stderr.is_empty() {
+                        ToolResult {
+                            content: "(no matches found)".to_string(),
+                            is_error: false,
+                        }
+                    } else {
+                        ToolResult {
+                            content: format!("grep error: {stderr}"),
+                            is_error: true,
+                        }
+                    }
+                } else if stdout.is_empty() {
+                    ToolResult {
+                        content: "(no matches found)".to_string(),
+                        is_error: false,
+                    }
+                } else {
+                    ToolResult {
+                        content: truncate_output(&stdout, MAX_READ_OUTPUT),
+                        is_error: false,
+                    }
+                }
+            }
+            Ok(Err(e)) => ToolResult {
+                content: format!("grep execution failed: {e}"),
+                is_error: true,
+            },
+            Err(_) => ToolResult {
+                content: "grep timed out after 30s".to_string(),
+                is_error: true,
+            },
+        }
+    }
+
+    /// Walk a directory tree matching files against a glob pattern.
+    async fn exec_glob(&self, args: &Value) -> ToolResult {
+        let pattern = args.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
+        if pattern.is_empty() {
+            return ToolResult {
+                content: "Error: 'pattern' parameter is required".to_string(),
+                is_error: true,
+            };
+        }
+
+        let base = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(|p| self.resolve_path(p))
+            .unwrap_or_else(|| self.workspace_path.clone());
+
+        debug!("tool/glob: pattern={pattern} base={}", base.display());
+
+        // Shell out to `find` with safe pre-split argv (no shell interpolation).
+        // Translate glob to find -name; for recursive patterns (**) use -path.
+        let (flag, pat) = if pattern.contains('/') || pattern.contains("**") {
+            ("-path", format!("./{pattern}"))
+        } else {
+            ("-name", pattern.to_string())
+        };
+
+        let mut cmd =
+            kernex_sandbox::protected_command("find", &self.data_dir, &self.sandbox_profile);
+        cmd.arg(base.as_os_str())
+            .arg(flag)
+            .arg(&pat)
+            .arg("-not")
+            .arg("-path")
+            .arg("*/.git/*");
+        cmd.kill_on_drop(true);
+
+        match tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output()).await {
+            Ok(Ok(output)) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if stdout.is_empty() {
+                    ToolResult {
+                        content: "(no files matched)".to_string(),
+                        is_error: false,
+                    }
+                } else {
+                    ToolResult {
+                        content: truncate_output(&stdout, MAX_READ_OUTPUT),
+                        is_error: false,
+                    }
+                }
+            }
+            Ok(Err(e)) => ToolResult {
+                content: format!("glob execution failed: {e}"),
+                is_error: true,
+            },
+            Err(_) => ToolResult {
+                content: "glob timed out after 15s".to_string(),
+                is_error: true,
+            },
+        }
+    }
+
+    /// Fetch a URL and return its text content.
+    async fn exec_web_fetch(&self, args: &Value) -> ToolResult {
+        let url = args.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        if url.is_empty() {
+            return ToolResult {
+                content: "Error: 'url' parameter is required".to_string(),
+                is_error: true,
+            };
+        }
+
+        debug!("tool/web_fetch: {url}");
+
+        let client = match reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("Failed to build HTTP client: {e}"),
+                    is_error: true,
+                }
+            }
+        };
+
+        match client.get(url).send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                match resp.text().await {
+                    Ok(body) => ToolResult {
+                        content: truncate_output(&body, MAX_READ_OUTPUT),
+                        is_error: !status.is_success(),
+                    },
+                    Err(e) => ToolResult {
+                        content: format!("Failed to read response body: {e}"),
+                        is_error: true,
+                    },
+                }
+            }
+            Err(e) => ToolResult {
+                content: format!("HTTP request failed: {e}"),
+                is_error: true,
+            },
+        }
+    }
+}
+
+/// Check whether a command exists in PATH without spawning a shell.
+fn which_exists(cmd: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).any(|dir| dir.join(cmd).is_file()))
+        .unwrap_or(false)
 }
 
 /// Lexically normalize a path by resolving `.` and `..` components.
@@ -589,13 +810,16 @@ pub fn truncate_output(s: &str, max_bytes: usize) -> String {
 /// Cached builtin tool definitions — `schemars` reflection runs once per process.
 static BUILTIN_TOOL_DEFS_CACHE: std::sync::OnceLock<Vec<ToolDef>> = std::sync::OnceLock::new();
 
-/// Return the definitions of the 4 built-in tools.
+/// Return the definitions of the 7 built-in tools.
 ///
 /// Schema generation runs once per process via `OnceLock`; subsequent calls
 /// clone from the cache. This avoids repeated `schemars` reflection and
 /// `serde_json` serialization on every provider request.
 pub fn builtin_tool_defs() -> Vec<ToolDef> {
-    use crate::tool_params::{tool_schema_for, BashParams, EditParams, ReadParams, WriteParams};
+    use crate::tool_params::{
+        tool_schema_for, BashParams, EditParams, GlobParams, GrepParams, ReadParams,
+        WebFetchParams, WriteParams,
+    };
 
     BUILTIN_TOOL_DEFS_CACHE
         .get_or_init(|| {
@@ -621,6 +845,26 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
                         with new_string."
                         .to_string(),
                     parameters: tool_schema_for::<EditParams>(),
+                },
+                ToolDef {
+                    name: "grep".to_string(),
+                    description:
+                        "Search file contents with a regex pattern. Returns matching lines \
+                        with file paths and line numbers."
+                            .to_string(),
+                    parameters: tool_schema_for::<GrepParams>(),
+                },
+                ToolDef {
+                    name: "glob".to_string(),
+                    description: "Find files matching a glob pattern (e.g. \"**/*.rs\"). \
+                        Returns matching file paths sorted by modification time."
+                        .to_string(),
+                    parameters: tool_schema_for::<GlobParams>(),
+                },
+                ToolDef {
+                    name: "web_fetch".to_string(),
+                    description: "Fetch a URL and return its text content.".to_string(),
+                    parameters: tool_schema_for::<WebFetchParams>(),
                 },
             ]
         })
@@ -683,12 +927,15 @@ mod tests {
     #[test]
     fn test_builtin_tool_defs_count() {
         let defs = builtin_tool_defs();
-        assert_eq!(defs.len(), 4);
+        assert_eq!(defs.len(), 7);
         let names: Vec<&str> = defs.iter().map(|d| d.name.as_str()).collect();
         assert!(names.contains(&"bash"));
         assert!(names.contains(&"read"));
         assert!(names.contains(&"write"));
         assert!(names.contains(&"edit"));
+        assert!(names.contains(&"grep"));
+        assert!(names.contains(&"glob"));
+        assert!(names.contains(&"web_fetch"));
     }
 
     #[test]
@@ -847,6 +1094,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["lint.sh".into()],
             env: std::collections::HashMap::new(),
+            search_hints: Vec::new(),
         }];
         executor.register_toolboxes(&toolboxes);
         assert!(executor.toolboxes.contains_key("lint"));
@@ -862,11 +1110,12 @@ mod tests {
             command: "bash".into(),
             args: vec!["lint.sh".into()],
             env: std::collections::HashMap::new(),
+            search_hints: Vec::new(),
         }];
         executor.register_toolboxes(&toolboxes);
         let defs = executor.all_tool_defs();
         assert!(defs.iter().any(|d| d.name == "lint"));
-        assert_eq!(defs.len(), 5); // 4 built-in + 1 toolbox
+        assert_eq!(defs.len(), 8); // 7 built-in + 1 toolbox
     }
 
     #[tokio::test]
@@ -879,6 +1128,7 @@ mod tests {
             command: "echo".into(),
             args: vec!["hello from toolbox".into()],
             env: std::collections::HashMap::new(),
+            search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
         let result = executor.execute("greet", &serde_json::json!({})).await;
@@ -896,6 +1146,7 @@ mod tests {
             command: "cat".into(),
             args: Vec::new(),
             env: std::collections::HashMap::new(),
+            search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
         let result = executor
@@ -915,6 +1166,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["-c".into(), "echo error >&2; exit 1".into()],
             env: std::collections::HashMap::new(),
+            search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
         let result = executor.execute("fail", &serde_json::json!({})).await;
@@ -934,6 +1186,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["-c".into(), "echo $GREETING".into()],
             env,
+            search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
         let result = executor.execute("env-test", &serde_json::json!({})).await;
@@ -951,6 +1204,7 @@ mod tests {
             command: "__nonexistent_cmd_xyz__".into(),
             args: Vec::new(),
             env: std::collections::HashMap::new(),
+            search_hints: Vec::new(),
         };
         let result = executor.exec_toolbox(&tb, &serde_json::json!({})).await;
         assert!(result.is_error);

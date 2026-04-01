@@ -92,6 +92,9 @@ pub struct Toolbox {
     /// Environment variables passed to the script process.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
+    /// Keywords for dynamic tool discovery via tool search.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub search_hints: Vec<String>,
 }
 
 fn default_object_schema() -> serde_json::Value {
@@ -452,6 +455,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["scripts/lint.sh".into()],
             env: HashMap::new(),
+            search_hints: Vec::new(),
         };
         let json = serde_json::to_string(&tb).unwrap();
         let deserialized: Toolbox = serde_json::from_str(&json).unwrap();
@@ -479,6 +483,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["lint.sh".into()],
             env: HashMap::new(),
+            search_hints: Vec::new(),
         });
         let json = serde_json::to_string(&ctx).unwrap();
         assert!(json.contains("toolboxes"));
