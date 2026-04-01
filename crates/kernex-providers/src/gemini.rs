@@ -184,7 +184,8 @@ impl Provider for GeminiProvider {
         if has_tools {
             if let Some(ref ws) = self.workspace_path {
                 let mut executor = ToolExecutor::new(ws.clone())
-                    .with_sandbox_profile(self.sandbox_profile.clone());
+                    .with_sandbox_profile(self.sandbox_profile.clone())
+                    .with_hook_runner_opt(context.hook_runner.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 

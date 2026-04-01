@@ -211,6 +211,7 @@ impl Store {
             model: None,
             session_id: None,
             agent_name: None,
+            hook_runner: None,
         })
     }
 }
