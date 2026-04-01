@@ -98,6 +98,10 @@ fn default_object_schema() -> serde_json::Value {
     serde_json::json!({"type": "object"})
 }
 
+fn is_false(b: &bool) -> bool {
+    !b
+}
+
 /// Conversation context passed to an AI provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Context {
@@ -132,6 +136,10 @@ pub struct Context {
     /// Hook runner for tool lifecycle events. Not serialized.
     #[serde(skip)]
     pub hook_runner: Option<std::sync::Arc<dyn crate::hooks::HookRunner>>,
+    /// Request extended thinking (chain-of-thought) for Anthropic requests.
+    /// Sends the `interleaved-thinking-2025-05-14` beta header when true.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub extended_thinking: bool,
 }
 
 /// A structured message for API-based providers (OpenAI, Anthropic, etc.).
@@ -158,6 +166,7 @@ impl Context {
             session_id: None,
             agent_name: None,
             hook_runner: None,
+            extended_thinking: false,
         }
     }
 
@@ -301,6 +310,7 @@ mod tests {
             session_id: None,
             agent_name: None,
             hook_runner: None,
+            extended_thinking: false,
         };
         let (system, messages) = ctx.to_api_messages();
         assert_eq!(system, "Be helpful.");
@@ -324,6 +334,7 @@ mod tests {
             session_id: None,
             agent_name: None,
             hook_runner: None,
+            extended_thinking: false,
         };
         let prompt = ctx.to_prompt_string();
         assert!(prompt.contains("[System]\nBe helpful."));
@@ -348,6 +359,7 @@ mod tests {
             session_id: Some("sess-abc".into()),
             agent_name: None,
             hook_runner: None,
+            extended_thinking: false,
         };
         let prompt = ctx.to_prompt_string();
         assert!(!prompt.contains("[System]"));
@@ -371,6 +383,7 @@ mod tests {
             session_id: None,
             agent_name: Some("build-analyst".into()),
             hook_runner: None,
+            extended_thinking: false,
         };
         let prompt = ctx.to_prompt_string();
         assert_eq!(prompt, "Build me a task tracker.");
@@ -390,6 +403,7 @@ mod tests {
             session_id: Some("sess-456".into()),
             agent_name: Some("build-architect".into()),
             hook_runner: None,
+            extended_thinking: false,
         };
         assert_eq!(ctx.to_prompt_string(), "Build something.");
     }
@@ -408,6 +422,7 @@ mod tests {
             session_id: Some("sess-123".into()),
             agent_name: None,
             hook_runner: None,
+            extended_thinking: false,
         };
         let json = serde_json::to_string(&ctx).unwrap();
         let deserialized: Context = serde_json::from_str(&json).unwrap();

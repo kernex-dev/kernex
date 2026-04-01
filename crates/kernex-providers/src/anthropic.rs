@@ -264,6 +264,7 @@ impl Provider for AnthropicProvider {
                         effective_model,
                         &system_blocks,
                         use_cache,
+                        context.extended_thinking,
                         &api_messages,
                         &mut executor,
                         max_turns,
@@ -276,6 +277,7 @@ impl Provider for AnthropicProvider {
         }
 
         // Fallback: no tools.
+        let extended_thinking = context.extended_thinking;
         let start = Instant::now();
         let messages: Vec<AnthropicMessage> = api_messages
             .iter()
@@ -307,8 +309,15 @@ impl Provider for AnthropicProvider {
                     .header("x-api-key", api_key.expose_secret().as_str())
                     .header("anthropic-version", ANTHROPIC_VERSION)
                     .header("content-type", "application/json");
+                let mut betas: Vec<&str> = Vec::new();
                 if use_cache {
-                    req = req.header("anthropic-beta", "prompt-caching-2024-07-31");
+                    betas.push("prompt-caching-2024-07-31");
+                }
+                if extended_thinking {
+                    betas.push("interleaved-thinking-2025-05-14");
+                }
+                if !betas.is_empty() {
+                    req = req.header("anthropic-beta", betas.join(","));
                 }
                 let req = req.body(body_json.clone());
                 async move { req.send().await }
@@ -356,11 +365,13 @@ impl Provider for AnthropicProvider {
 
 impl AnthropicProvider {
     /// Anthropic-specific agentic loop using content blocks.
+    #[allow(clippy::too_many_arguments)]
     async fn agentic_loop(
         &self,
         model: &str,
         system_blocks: &[SystemBlock],
         use_cache: bool,
+        extended_thinking: bool,
         api_messages: &[kernex_core::context::ApiMessage],
         executor: &mut ToolExecutor,
         max_turns: u32,
@@ -403,13 +414,16 @@ impl AnthropicProvider {
                 let client = &self.client;
                 let api_key = &self.api_key;
                 // Build combined beta flags: token-efficient-tools is always
-                // active in the agentic loop; prompt-caching is added when the
-                // system prompt was split at CACHE_BOUNDARY.
-                let beta_header = if use_cache {
-                    "token-efficient-tools-2026-03-28,prompt-caching-2024-07-31".to_string()
-                } else {
-                    "token-efficient-tools-2026-03-28".to_string()
-                };
+                // active in the agentic loop; prompt-caching and extended
+                // thinking are added when enabled.
+                let mut betas = vec!["token-efficient-tools-2026-03-28"];
+                if use_cache {
+                    betas.push("prompt-caching-2024-07-31");
+                }
+                if extended_thinking {
+                    betas.push("interleaved-thinking-2025-05-14");
+                }
+                let beta_header = betas.join(",");
                 send_with_retry("anthropic", || {
                     let req = client
                         .post(ANTHROPIC_API_URL)
@@ -587,6 +601,7 @@ impl StreamingProvider for AnthropicProvider {
 
         let system_blocks = build_system_blocks(&system);
         let use_cache = system_blocks.iter().any(|b| b.cache_control.is_some());
+        let extended_thinking = context.extended_thinking;
 
         let messages: Vec<AnthropicMessage> = api_messages
             .iter()
@@ -617,8 +632,15 @@ impl StreamingProvider for AnthropicProvider {
             .header("x-api-key", &api_key_str)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
+        let mut betas: Vec<&str> = Vec::new();
         if use_cache {
-            req = req.header("anthropic-beta", "prompt-caching-2024-07-31");
+            betas.push("prompt-caching-2024-07-31");
+        }
+        if extended_thinking {
+            betas.push("interleaved-thinking-2025-05-14");
+        }
+        if !betas.is_empty() {
+            req = req.header("anthropic-beta", betas.join(","));
         }
 
         debug!("anthropic: POST {ANTHROPIC_API_URL} (stream=true)");
