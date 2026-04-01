@@ -269,6 +269,7 @@ impl Store {
             session_id: None,
             agent_name: None,
             hook_runner: None,
+            permission_rules: None,
             extended_thinking: false,
         })
     }
