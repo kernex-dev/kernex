@@ -449,7 +449,7 @@ mod tests {
             tools: Some(tools),
         };
         let json = serde_json::to_value(&body).unwrap();
-        assert_eq!(json["tools"].as_array().unwrap().len(), 4);
+        assert_eq!(json["tools"].as_array().unwrap().len(), 7);
     }
 
     #[test]

@@ -95,6 +95,10 @@ pub struct Skill {
     /// inject a `skill_search` tool (see `skill_search_toolbox()`) and load
     /// schemas on demand via `get_toolboxes_for_skill()`.
     pub lazy: bool,
+    /// Optional model override for requests using this skill.
+    ///
+    /// When set, the runtime should prefer this model over the provider default.
+    pub model: Option<String>,
 }
 
 /// MCP server definition in TOML frontmatter (`[mcp.name]`).
@@ -201,6 +205,7 @@ fn load_toolbox_json(skill_dir: &Path) -> Vec<Toolbox> {
                     command: entry.command,
                     args: entry.args,
                     env: entry.env,
+                    search_hints: Vec::new(),
                 })
             } else {
                 warn!(
@@ -276,6 +281,8 @@ struct SkillFrontmatter {
     permissions: Permissions,
     #[serde(default)]
     lazy: bool,
+    #[serde(default)]
+    model: Option<String>,
 }
 
 /// Scan `{data_dir}/skills/*/SKILL.md` and return all valid skill definitions.
@@ -355,6 +362,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                         command: tbf.command,
                         args: tbf.args,
                         env: tbf.env,
+                        search_hints: Vec::new(),
                     })
                 } else {
                     warn!(
@@ -399,6 +407,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             permissions: fm.permissions,
             source,
             lazy: fm.lazy,
+            model: fm.model,
         });
     }
 
@@ -406,12 +415,27 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
     skills
 }
 
+/// Output of [`build_skill_prompt`]: the prompt text plus an optional model override.
+///
+/// When a skill sets `model`, the runtime should prefer that model for the request.
+/// If multiple skills match, the first non-`None` model wins.
+#[derive(Debug, Clone)]
+pub struct SkillContext {
+    /// The prompt block to append to the system prompt.
+    pub prompt: String,
+    /// Optional model override from the first skill that declares one.
+    pub model: Option<String>,
+}
+
 /// Build the skill block appended to the system prompt.
 ///
-/// Returns an empty string if there are no skills.
-pub fn build_skill_prompt(skills: &[Skill]) -> String {
+/// Returns a [`SkillContext`] with an empty prompt if there are no skills.
+pub fn build_skill_prompt(skills: &[Skill]) -> SkillContext {
     if skills.is_empty() {
-        return String::new();
+        return SkillContext {
+            prompt: String::new(),
+            model: None,
+        };
     }
 
     let mut out = String::from(
@@ -420,6 +444,8 @@ pub fn build_skill_prompt(skills: &[Skill]) -> String {
          If a tool is not installed, the skill file contains installation \
          instructions — install it first, then use it.\n\nSkills:\n",
     );
+
+    let mut model_override: Option<String> = None;
 
     for s in skills {
         let status = if s.available {
@@ -434,9 +460,15 @@ pub fn build_skill_prompt(skills: &[Skill]) -> String {
             s.description,
             s.path.display(),
         ));
+        if model_override.is_none() {
+            model_override = s.model.clone();
+        }
     }
 
-    out
+    SkillContext {
+        prompt: out,
+        model: model_override,
+    }
 }
 
 /// Extract frontmatter delimited by `---` lines.
@@ -472,6 +504,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
     let mut mcp = HashMap::new();
     let mut metadata_line = None;
     let mut lazy = false;
+    let mut model: Option<String> = None;
 
     for line in block.lines() {
         let line = line.trim();
@@ -485,6 +518,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
                 "requires" => requires = parse_yaml_list(val),
                 "trigger" => trigger = Some(unquote(val)),
                 "lazy" => lazy = val == "true" || val == "yes",
+                "model" => model = Some(unquote(val)),
                 "metadata" => metadata_line = Some(val.to_string()),
                 k if k.starts_with("mcp-") => {
                     let server_name = k.strip_prefix("mcp-").unwrap_or("").to_string();
@@ -521,6 +555,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
         toolbox: HashMap::new(),
         permissions: Permissions::default(),
         lazy,
+        model,
     })
 }
 
@@ -640,6 +675,11 @@ pub fn skill_search_toolbox() -> Toolbox {
         command: "skill_search".to_string(),
         args: Vec::new(),
         env: std::collections::HashMap::new(),
+        search_hints: vec![
+            "tool".to_string(),
+            "skill".to_string(),
+            "search".to_string(),
+        ],
     }
 }
 
@@ -732,7 +772,9 @@ description = \"No deps.\"
 
     #[test]
     fn test_build_skill_prompt_empty() {
-        assert!(build_skill_prompt(&[]).is_empty());
+        let ctx = build_skill_prompt(&[]);
+        assert!(ctx.prompt.is_empty());
+        assert!(ctx.model.is_none());
     }
 
     #[test]
@@ -752,6 +794,7 @@ description = \"No deps.\"
                 permissions: Permissions::default(),
                 source: String::new(),
                 lazy: false,
+                model: None,
             },
             Skill {
                 name: "missing".into(),
@@ -767,12 +810,38 @@ description = \"No deps.\"
                 permissions: Permissions::default(),
                 source: String::new(),
                 lazy: false,
+                model: None,
             },
         ];
-        let prompt = build_skill_prompt(&skills);
-        assert!(prompt.contains("gog [installed]"));
-        assert!(prompt.contains("missing [not installed]"));
-        assert!(prompt.contains("Read /home/user/.kernex/skills/gog/SKILL.md"));
+        let ctx = build_skill_prompt(&skills);
+        assert!(ctx.prompt.contains("gog [installed]"));
+        assert!(ctx.prompt.contains("missing [not installed]"));
+        assert!(ctx
+            .prompt
+            .contains("Read /home/user/.kernex/skills/gog/SKILL.md"));
+        assert!(ctx.model.is_none());
+    }
+
+    #[test]
+    fn test_build_skill_prompt_model_override() {
+        let skills = vec![Skill {
+            name: "fast".into(),
+            description: "Uses a fast model.".into(),
+            version: None,
+            requires: Vec::new(),
+            homepage: String::new(),
+            available: true,
+            path: PathBuf::from("/skills/fast/SKILL.md"),
+            trigger: None,
+            mcp_servers: Vec::new(),
+            toolboxes: Vec::new(),
+            permissions: Permissions::default(),
+            source: String::new(),
+            lazy: false,
+            model: Some("claude-haiku-4-5".into()),
+        }];
+        let ctx = build_skill_prompt(&skills);
+        assert_eq!(ctx.model, Some("claude-haiku-4-5".into()));
     }
 
     #[test]
@@ -945,6 +1014,7 @@ description = \"No trigger or MCP.\"
             permissions: Permissions::default(),
             source: String::new(),
             lazy: false,
+            model: None,
         }
     }
 
@@ -1445,6 +1515,7 @@ Body text.
             command: "echo".into(),
             args: Vec::new(),
             env: HashMap::new(),
+            search_hints: Vec::new(),
         }
     }
 

@@ -558,7 +558,7 @@ mod tests {
         };
         let json = serde_json::to_value(&body).unwrap();
         let decls = &json["tools"][0]["functionDeclarations"];
-        assert_eq!(decls.as_array().unwrap().len(), 4);
+        assert_eq!(decls.as_array().unwrap().len(), 7);
     }
 
     #[test]
