@@ -50,6 +50,7 @@ pub struct ToolExecutor {
     mcp_clients: HashMap<String, McpClient>,
     mcp_tool_map: HashMap<String, String>,
     toolboxes: HashMap<String, Toolbox>,
+    hook_runner: Option<std::sync::Arc<dyn kernex_core::hooks::HookRunner>>,
 }
 
 impl ToolExecutor {
@@ -71,6 +72,7 @@ impl ToolExecutor {
             mcp_clients: HashMap::new(),
             mcp_tool_map: HashMap::new(),
             toolboxes: HashMap::new(),
+            hook_runner: None,
         }
     }
 
@@ -88,6 +90,25 @@ impl ToolExecutor {
     /// Set a custom sandbox profile.
     pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
         self.sandbox_profile = profile;
+        self
+    }
+
+    /// Attach a hook runner for pre/post tool lifecycle events.
+    #[allow(dead_code)]
+    pub fn with_hook_runner(
+        mut self,
+        runner: std::sync::Arc<dyn kernex_core::hooks::HookRunner>,
+    ) -> Self {
+        self.hook_runner = Some(runner);
+        self
+    }
+
+    /// Optionally attach a hook runner (no-op when `None`).
+    pub fn with_hook_runner_opt(
+        mut self,
+        runner: Option<std::sync::Arc<dyn kernex_core::hooks::HookRunner>>,
+    ) -> Self {
+        self.hook_runner = runner;
         self
     }
 
@@ -147,7 +168,39 @@ impl ToolExecutor {
     }
 
     /// Execute a tool call by name, routing to built-in or MCP.
+    ///
+    /// Fires pre/post hooks when a [`HookRunner`] is attached. A blocked
+    /// pre-hook short-circuits execution and returns an error result.
+    ///
+    /// [`HookRunner`]: kernex_core::hooks::HookRunner
     pub async fn execute(&mut self, tool_name: &str, args: &Value) -> ToolResult {
+        // Pre-tool hook.
+        if let Some(runner) = &self.hook_runner.clone() {
+            match runner.pre_tool(tool_name, args).await {
+                kernex_core::hooks::HookOutcome::Allow => {}
+                kernex_core::hooks::HookOutcome::Blocked(reason) => {
+                    return ToolResult {
+                        content: format!("Tool blocked by hook: {reason}"),
+                        is_error: true,
+                    };
+                }
+            }
+        }
+
+        let result = self.dispatch(tool_name, args).await;
+
+        // Post-tool hook.
+        if let Some(runner) = &self.hook_runner.clone() {
+            runner
+                .post_tool(tool_name, &result.content, result.is_error)
+                .await;
+        }
+
+        result
+    }
+
+    /// Route a tool call to the appropriate implementation.
+    async fn dispatch(&mut self, tool_name: &str, args: &Value) -> ToolResult {
         match tool_name.to_lowercase().as_str() {
             "bash" => self.exec_bash(args).await,
             "read" => self.exec_read(args).await,

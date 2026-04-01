@@ -39,13 +39,16 @@
 use kernex_core::config::MemoryConfig;
 use kernex_core::context::ContextNeeds;
 use kernex_core::error::KernexError;
+use kernex_core::hooks::{HookRunner, NoopHookRunner};
 use kernex_core::message::{Request, Response};
+use kernex_core::run::{RunConfig, RunOutcome};
 use kernex_core::traits::Provider;
 #[cfg(feature = "sqlite-store")]
 use kernex_memory::Store;
 use kernex_skills::{
     build_skill_prompt, match_skill_toolboxes, match_skill_triggers, Project, Skill,
 };
+use std::sync::Arc;
 
 /// Re-export sub-crates for convenience.
 pub use kernex_core as core;
@@ -73,6 +76,8 @@ pub struct Runtime {
     pub channel: String,
     /// Active project key for scoping memory and lessons.
     pub project: Option<String>,
+    /// Hook runner for tool lifecycle events.
+    pub hook_runner: Arc<dyn HookRunner>,
 }
 
 impl Runtime {
@@ -142,6 +147,9 @@ impl Runtime {
             context.toolboxes = toolboxes;
         }
 
+        // Wire hooks into context.
+        context.hook_runner = Some(self.hook_runner.clone());
+
         // Send to provider.
         let response = provider.complete(&context).await?;
 
@@ -156,6 +164,77 @@ impl Runtime {
 
         Ok(response)
     }
+
+    /// Run the agent with explicit lifecycle control.
+    ///
+    /// Sets `max_turns` in context so the provider's agentic loop respects it,
+    /// wires the runtime hook runner, calls the provider, fires the `on_stop`
+    /// hook, and wraps the outcome in [`RunOutcome`].
+    pub async fn run(
+        &self,
+        provider: &dyn Provider,
+        request: &Request,
+        config: &RunConfig,
+    ) -> Result<RunOutcome, KernexError> {
+        let needs = ContextNeeds::default();
+        let project_ref = self.project.as_deref();
+
+        let skill_prompt = build_skill_prompt(&self.skills);
+        let full_system_prompt = if skill_prompt.is_empty() {
+            self.system_prompt.clone()
+        } else if self.system_prompt.is_empty() {
+            skill_prompt
+        } else {
+            format!("{}\n\n{}", self.system_prompt, skill_prompt)
+        };
+
+        #[cfg(feature = "sqlite-store")]
+        let mut context = self
+            .store
+            .build_context(
+                &self.channel,
+                request,
+                &full_system_prompt,
+                &needs,
+                project_ref,
+            )
+            .await?;
+
+        #[cfg(not(feature = "sqlite-store"))]
+        let mut context = {
+            let mut ctx = kernex_core::context::Context::new(&request.text);
+            ctx.system_prompt = full_system_prompt;
+            ctx
+        };
+
+        let mcp_servers = match_skill_triggers(&self.skills, &request.text);
+        if !mcp_servers.is_empty() {
+            context.mcp_servers = mcp_servers;
+        }
+        let toolboxes = match_skill_toolboxes(&self.skills, &request.text);
+        if !toolboxes.is_empty() {
+            context.toolboxes = toolboxes;
+        }
+
+        // Set max_turns and hooks.
+        context.max_turns = Some(config.max_turns);
+        context.hook_runner = Some(self.hook_runner.clone());
+
+        let response = provider.complete(&context).await?;
+
+        // Fire on_stop hook.
+        self.hook_runner.on_stop(&response.text).await;
+
+        // Persist exchange.
+        #[allow(unused_variables)]
+        let project_key = project_ref.unwrap_or("default");
+        #[cfg(feature = "sqlite-store")]
+        self.store
+            .store_exchange(&self.channel, request, &response, project_key)
+            .await?;
+
+        Ok(RunOutcome::EndTurn(response))
+    }
 }
 
 /// Builder for constructing a `Runtime` with the desired configuration.
@@ -166,6 +245,7 @@ pub struct RuntimeBuilder {
     system_prompt: String,
     channel: String,
     project: Option<String>,
+    hook_runner: Option<Arc<dyn HookRunner>>,
 }
 
 impl RuntimeBuilder {
@@ -178,6 +258,7 @@ impl RuntimeBuilder {
             system_prompt: String::new(),
             channel: "cli".to_string(),
             project: None,
+            hook_runner: None,
         }
     }
 
@@ -243,6 +324,12 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Set a hook runner for tool lifecycle events.
+    pub fn hook_runner(mut self, runner: Arc<dyn HookRunner>) -> Self {
+        self.hook_runner = Some(runner);
+        self
+    }
+
     /// Build and initialize the runtime.
     pub async fn build(self) -> Result<Runtime, KernexError> {
         let expanded_dir = kernex_core::shellexpand(&self.data_dir);
@@ -275,6 +362,9 @@ impl RuntimeBuilder {
             projects.len()
         );
 
+        let hook_runner: Arc<dyn HookRunner> =
+            self.hook_runner.unwrap_or_else(|| Arc::new(NoopHookRunner));
+
         Ok(Runtime {
             #[cfg(feature = "sqlite-store")]
             store,
@@ -284,6 +374,7 @@ impl RuntimeBuilder {
             system_prompt: self.system_prompt,
             channel: self.channel,
             project: self.project,
+            hook_runner,
         })
     }
 }

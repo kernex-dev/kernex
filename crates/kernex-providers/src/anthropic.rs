@@ -20,6 +20,76 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Default max agentic loop iterations.
 const DEFAULT_MAX_TURNS: u32 = 50;
 
+/// Marker that splits a system prompt into a cacheable stable prefix and a
+/// dynamic per-turn suffix. Place this string between the two sections:
+///
+/// ```text
+/// You are a helpful assistant. <--- stable rules, skills, etc.
+/// KERNEX_CACHE_BOUNDARY
+/// Today is Monday. User context: Alice. <--- dynamic per-turn context
+/// ```
+///
+/// Anthropic will cache the stable prefix across turns, reducing cost
+/// on long sessions.
+pub const CACHE_BOUNDARY: &str = "KERNEX_CACHE_BOUNDARY";
+
+/// A single block in the Anthropic `system` array.
+#[derive(Serialize, Clone)]
+struct SystemBlock {
+    #[serde(rename = "type")]
+    block_type: &'static str,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+/// Anthropic prompt cache control directive.
+#[derive(Serialize, Clone)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: &'static str,
+}
+
+/// Build Anthropic system blocks from a system prompt string.
+///
+/// If the prompt contains [`CACHE_BOUNDARY`], the text before it gets
+/// `cache_control: ephemeral` (stable cacheable prefix) and the text after
+/// has no cache control (dynamic per-turn suffix). Otherwise a single plain
+/// block is returned.
+fn build_system_blocks(system_prompt: &str) -> Vec<SystemBlock> {
+    if system_prompt.is_empty() {
+        return Vec::new();
+    }
+    if let Some(idx) = system_prompt.find(CACHE_BOUNDARY) {
+        let stable = system_prompt[..idx].trim_end();
+        let dynamic = system_prompt[idx + CACHE_BOUNDARY.len()..].trim_start();
+        let mut blocks = Vec::new();
+        if !stable.is_empty() {
+            blocks.push(SystemBlock {
+                block_type: "text",
+                text: stable.to_string(),
+                cache_control: Some(CacheControl {
+                    cache_type: "ephemeral",
+                }),
+            });
+        }
+        if !dynamic.is_empty() {
+            blocks.push(SystemBlock {
+                block_type: "text",
+                text: dynamic.to_string(),
+                cache_control: None,
+            });
+        }
+        blocks
+    } else {
+        vec![SystemBlock {
+            block_type: "text",
+            text: system_prompt.to_string(),
+            cache_control: None,
+        }]
+    }
+}
+
 /// Anthropic Messages API provider.
 pub struct AnthropicProvider {
     client: reqwest::Client,
@@ -64,8 +134,8 @@ impl AnthropicProvider {
 struct AnthropicRequest {
     model: String,
     max_tokens: u32,
-    #[serde(skip_serializing_if = "String::is_empty")]
-    system: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    system: Vec<SystemBlock>,
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicToolDef>>,
@@ -170,19 +240,24 @@ impl Provider for AnthropicProvider {
         let effective_model = context.model.as_deref().unwrap_or(&self.model);
         let max_turns = context.max_turns.unwrap_or(DEFAULT_MAX_TURNS);
 
+        let system_blocks = build_system_blocks(&system);
+        let use_cache = system_blocks.iter().any(|b| b.cache_control.is_some());
+
         let has_tools = tools_enabled(context);
 
         if has_tools {
             if let Some(ref ws) = self.workspace_path {
                 let mut executor = ToolExecutor::new(ws.clone())
-                    .with_sandbox_profile(self.sandbox_profile.clone());
+                    .with_sandbox_profile(self.sandbox_profile.clone())
+                    .with_hook_runner_opt(context.hook_runner.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 
                 let result = self
                     .agentic_loop(
                         effective_model,
-                        &system,
+                        &system_blocks,
+                        use_cache,
                         &api_messages,
                         &mut executor,
                         max_turns,
@@ -207,7 +282,7 @@ impl Provider for AnthropicProvider {
         let body = AnthropicRequest {
             model: effective_model.to_string(),
             max_tokens: self.max_tokens,
-            system,
+            system: system_blocks,
             messages,
             tools: None,
         };
@@ -221,12 +296,15 @@ impl Provider for AnthropicProvider {
             let client = &self.client;
             let api_key = &self.api_key;
             send_with_retry("anthropic", || {
-                let req = client
+                let mut req = client
                     .post(ANTHROPIC_API_URL)
                     .header("x-api-key", api_key.expose_secret().as_str())
                     .header("anthropic-version", ANTHROPIC_VERSION)
-                    .header("content-type", "application/json")
-                    .body(body_json.clone());
+                    .header("content-type", "application/json");
+                if use_cache {
+                    req = req.header("anthropic-beta", "prompt-caching-2024-07-31");
+                }
+                let req = req.body(body_json.clone());
                 async move { req.send().await }
             })
             .await?
@@ -275,7 +353,8 @@ impl AnthropicProvider {
     async fn agentic_loop(
         &self,
         model: &str,
-        system: &str,
+        system_blocks: &[SystemBlock],
+        use_cache: bool,
         api_messages: &[kernex_core::context::ApiMessage],
         executor: &mut ToolExecutor,
         max_turns: u32,
@@ -304,7 +383,7 @@ impl AnthropicProvider {
             let body = AnthropicRequest {
                 model: model.to_string(),
                 max_tokens: self.max_tokens,
-                system: system.to_string(),
+                system: system_blocks.to_vec(),
                 messages: messages.clone(),
                 tools: tools.clone(),
             };
@@ -318,12 +397,15 @@ impl AnthropicProvider {
                 let client = &self.client;
                 let api_key = &self.api_key;
                 send_with_retry("anthropic", || {
-                    let req = client
+                    let mut req = client
                         .post(ANTHROPIC_API_URL)
                         .header("x-api-key", api_key.expose_secret().as_str())
                         .header("anthropic-version", ANTHROPIC_VERSION)
-                        .header("content-type", "application/json")
-                        .body(body_json.clone());
+                        .header("content-type", "application/json");
+                    if use_cache {
+                        req = req.header("anthropic-beta", "prompt-caching-2024-07-31");
+                    }
+                    let req = req.body(body_json.clone());
                     async move { req.send().await }
                 })
                 .await?
@@ -474,7 +556,7 @@ mod tests {
         let body = AnthropicRequest {
             model: "claude-sonnet-4-20250514".into(),
             max_tokens: 8192,
-            system: "Be helpful.".into(),
+            system: build_system_blocks("Be helpful."),
             messages: vec![AnthropicMessage {
                 role: "user".into(),
                 content: AnthropicContent::Text("Hello".into()),
@@ -484,7 +566,9 @@ mod tests {
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["model"], "claude-sonnet-4-20250514");
         assert_eq!(json["max_tokens"], 8192);
-        assert_eq!(json["system"], "Be helpful.");
+        assert_eq!(json["system"][0]["type"], "text");
+        assert_eq!(json["system"][0]["text"], "Be helpful.");
+        assert!(json["system"][0].get("cache_control").is_none());
         assert_eq!(json["messages"][0]["role"], "user");
         assert!(json.get("tools").is_none());
     }
@@ -494,7 +578,7 @@ mod tests {
         let body = AnthropicRequest {
             model: "claude-sonnet-4-20250514".into(),
             max_tokens: 8192,
-            system: String::new(),
+            system: Vec::new(),
             messages: vec![AnthropicMessage {
                 role: "user".into(),
                 content: AnthropicContent::Text("Hello".into()),
@@ -503,6 +587,34 @@ mod tests {
         };
         let json = serde_json::to_value(&body).unwrap();
         assert!(json.get("system").is_none());
+    }
+
+    #[test]
+    fn test_cache_boundary_splits_system_blocks() {
+        let prompt = "Stable rules.\nKERNEX_CACHE_BOUNDARY\nDynamic context.";
+        let blocks = build_system_blocks(prompt);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].text, "Stable rules.");
+        assert!(blocks[0].cache_control.is_some());
+        assert_eq!(blocks[1].text, "Dynamic context.");
+        assert!(blocks[1].cache_control.is_none());
+    }
+
+    #[test]
+    fn test_cache_boundary_absent_is_single_block() {
+        let blocks = build_system_blocks("No boundary here.");
+        assert_eq!(blocks.len(), 1);
+        assert!(blocks[0].cache_control.is_none());
+    }
+
+    #[test]
+    fn test_cache_boundary_serializes_cache_control() {
+        let prompt = "Stable.\nKERNEX_CACHE_BOUNDARY\nDynamic.";
+        let blocks = build_system_blocks(prompt);
+        let json = serde_json::to_value(&blocks).unwrap();
+        let arr = json.as_array().unwrap();
+        assert_eq!(arr[0]["cache_control"]["type"], "ephemeral");
+        assert!(arr[1].get("cache_control").is_none());
     }
 
     #[test]
@@ -543,7 +655,7 @@ mod tests {
         let body = AnthropicRequest {
             model: "claude-sonnet-4-20250514".into(),
             max_tokens: 8192,
-            system: "test".into(),
+            system: build_system_blocks("test"),
             messages: vec![AnthropicMessage {
                 role: "user".into(),
                 content: AnthropicContent::Text("list files".into()),
