@@ -65,9 +65,12 @@ fn main() {
     }
 
     // Show what gets injected into the system prompt.
-    let prompt_block = build_skill_prompt(&skills);
-    if !prompt_block.is_empty() {
+    let skill_ctx = build_skill_prompt(&skills);
+    if !skill_ctx.prompt.is_empty() {
         println!("\n--- System prompt injection ---\n");
-        println!("{prompt_block}");
+        println!("{}", skill_ctx.prompt);
+        if let Some(model) = &skill_ctx.model {
+            println!("Model override: {model}");
+        }
     }
 }

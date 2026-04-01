@@ -52,6 +52,39 @@ pub struct EditParams {
     pub replace_all: bool,
 }
 
+/// Parameters for the `grep` tool.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GrepParams {
+    /// Regular expression pattern to search for.
+    pub pattern: String,
+    /// File or directory to search in (defaults to current directory).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+    /// Glob pattern to filter files (e.g. "*.rs", "**/*.ts").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glob: Option<String>,
+}
+
+/// Parameters for the `glob` tool.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct GlobParams {
+    /// Glob pattern to match files against (e.g. "**/*.rs").
+    pub pattern: String,
+    /// Directory to search in (defaults to current directory).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+/// Parameters for the `web_fetch` tool.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WebFetchParams {
+    /// URL to fetch.
+    pub url: String,
+    /// Optional prompt or extraction hint (informational; not used for AI processing).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
 /// Generate a JSON Schema for a type that implements `JsonSchema`.
 pub fn schema_for<T: JsonSchema>() -> serde_json::Value {
     let schema = schemars::schema_for!(T);
