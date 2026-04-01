@@ -22,6 +22,9 @@ config.toml
 # Internal docs (extraction reference, not public)
 /docs/
 
+# Research reference (never committed)
+claurst-main/
+
 # Logs
 *.log
 

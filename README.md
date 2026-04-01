@@ -20,9 +20,10 @@
   <a href="#prerequisites">Prerequisites</a> &bull;
   <a href="#features">Features</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
-  <a href="#examples">Examples</a> &bull;
-  <a href="#skills">Skills</a> &bull;
+  <a href="#runtime-api">Runtime API</a> &bull;
+  <a href="#hooks">Hooks</a> &bull;
   <a href="#providers">Providers</a> &bull;
+  <a href="#skills">Skills</a> &bull;
   <a href="#contributing">Contributing</a>
 </p>
 
@@ -44,14 +45,16 @@ For running examples:
 - **Sandbox-first execution** — OS-level protection via Seatbelt (macOS) and Landlock (Linux) combined with highly configurable `SandboxProfile` allow/deny lists
 - **6 AI providers** — Claude Code CLI, Anthropic, OpenAI, Ollama, OpenRouter, Gemini
 - **OpenAI-compatible base URL** — works with LiteLLM, Cerebras, DeepSeek, Hugging Face, and any compatible endpoint
-- **Dynamic instantiation** — instantiate robust AI Providers completely dynamically from configuration maps using `ProviderFactory`
+- **Dynamic instantiation** — instantiate any provider from a config map at runtime via `ProviderFactory`
+- **Agentic run loop** — `Runtime::run()` with configurable turn limits; providers handle tool dispatch internally
+- **Hook system** — intercept every tool call with `HookRunner`: allow, block, audit, or rate-limit before execution
 - **Typed tool schemas** — Auto-generated JSON Schema for tool parameters via `schemars`
 - **MCP client** — stdio-based Model Context Protocol for external tool integration
 - **Persistent memory** — SQLite-backed conversations, facts, reward-based learning, scheduled tasks
-- **Skills.sh compatible** — load skills from `SKILL.md` files with TOML/YAML frontmatter
+- **Skills.sh compatible** — load skills from `SKILL.md` files with TOML/YAML frontmatter; 12 builtin agent personas included
 - **Multi-agent pipelines** — TOML-defined topologies with corrective loops and file-mediated handoffs
 - **Trait-based composition** — implement `Provider` or `Store` to plug in your own backends
-- **Secure by default** — All API keys are protected in memory with `secrecy::SecretString`
+- **Secure by default** — API keys protected in memory via `secrecy::SecretString`; prompt caching support for Anthropic
 
 ## Architecture
 
@@ -149,6 +152,74 @@ use kernex_skills::load_skills;
 use kernex_pipelines::load_topology;
 ```
 
+## Runtime API
+
+`RuntimeBuilder` assembles all subsystems. All options are optional — defaults work out of the box:
+
+```rust
+use std::sync::Arc;
+use kernex_runtime::RuntimeBuilder;
+
+let runtime = RuntimeBuilder::new()
+    .data_dir("~/.my-agent")         // persistent data root, default: ~/.kernex
+    .system_prompt("You are...")     // base system prompt prepended every turn
+    .channel("cli")                  // channel ID for memory scoping
+    .project("my-project")           // project scope for facts and lessons
+    .hook_runner(Arc::new(my_hooks)) // lifecycle hook runner (see Hooks section)
+    .build()
+    .await?;
+```
+
+Two completion methods:
+
+| Method | When to use |
+|--------|-------------|
+| `runtime.complete(&provider, &request)` | Single context-enriched turn. Memory is built, provider runs its internal loop. |
+| `runtime.run(&provider, &request, &config)` | Explicit turn-limit control. Sets `max_turns` on the context and fires `on_stop` after completion. |
+
+```rust
+use kernex_core::run::{RunConfig, RunOutcome};
+
+let config = RunConfig { max_turns: 20 };
+
+match runtime.run(&provider, &request, &config).await? {
+    RunOutcome::EndTurn(response) => println!("{}", response.text),
+    RunOutcome::MaxTurns => eprintln!("turn limit reached"),
+}
+```
+
+## Hooks
+
+Implement `HookRunner` to intercept every tool call across all providers:
+
+```rust
+use kernex_core::hooks::{HookRunner, HookOutcome};
+use async_trait::async_trait;
+use serde_json::Value;
+
+#[derive(Debug)]
+struct AuditHooks;
+
+#[async_trait]
+impl HookRunner for AuditHooks {
+    async fn pre_tool(&self, tool_name: &str, _input: &Value) -> HookOutcome {
+        tracing::info!("tool: {tool_name}");
+        HookOutcome::Allow
+        // or: HookOutcome::Blocked("reason".into())  to cancel execution
+    }
+    async fn post_tool(&self, tool_name: &str, _result: &str, is_error: bool) {
+        tracing::debug!("{tool_name} finished, error={is_error}");
+    }
+    async fn on_stop(&self, _final_text: &str) {}
+}
+
+let runtime = RuntimeBuilder::new()
+    .hook_runner(Arc::new(AuditHooks))
+    .build().await?;
+```
+
+`pre_tool` runs before dispatch; returning `Blocked` cancels the tool and returns the reason as a tool error. `post_tool` fires after completion. `on_stop` fires at the end of `Runtime::run()`.
+
 ## Providers
 
 Kernex ships with 6 built-in AI providers:
@@ -161,6 +232,25 @@ Kernex ships with 6 built-in AI providers:
 | Ollama | `ollama` | No (local) |
 | OpenRouter | `openrouter` | Yes |
 | Gemini | `gemini` | Yes |
+
+### Prompt caching (Anthropic)
+
+Place `KERNEX_CACHE_BOUNDARY` in your system prompt to split it into a cached stable prefix and a dynamic per-turn suffix. Anthropic caches the stable prefix across turns, reducing token costs on long sessions.
+
+```rust
+use kernex_providers::anthropic::CACHE_BOUNDARY;
+
+let system = format!(
+    "You are a coding assistant.\n{CACHE_BOUNDARY}\nActive project: {}.",
+    project_name
+);
+
+let runtime = RuntimeBuilder::new()
+    .system_prompt(&system)
+    .build().await?;
+```
+
+Text before the marker gets `cache_control: ephemeral`. Text after is sent as a plain block each turn. The `anthropic-beta: prompt-caching-2024-07-31` header is added automatically when the boundary is present.
 
 ### Using any OpenAI-compatible endpoint
 
@@ -245,7 +335,9 @@ All examples are in [`crates/kernex-runtime/examples/`](crates/kernex-runtime/ex
 
 ## Skills
 
-Kernex supports [Skills.sh](https://skills.sh) compatible skills. 9 ready-to-use skills included:
+Kernex supports [Skills.sh](https://skills.sh) compatible skills. 21 ready-to-use skills included: 9 tool-integration skills and 12 builtin agent personas.
+
+### Tool skills
 
 | Skill | Backend | Description |
 |-------|---------|-------------|
@@ -257,11 +349,36 @@ Kernex supports [Skills.sh](https://skills.sh) compatible skills. 9 ready-to-use
 | **sqlite** | MCP | SQLite read/write access |
 | **brave-search** | MCP | Web search via Brave API |
 | **pdf** | CLI | Extract text from PDFs |
-| **webhook** | CLI | Send HTTP webhooks to external services |
+| **webhook** | CLI | Send HTTP webhooks |
 
 See [examples/skills/](examples/skills/) for documentation and templates.
 
-### Creating Custom Skills
+### Builtin agent skills
+
+12 agent persona skills ship in `examples/skills/builtin/`. Install all at once:
+
+```bash
+cp -r examples/skills/builtin/* ~/.kernex/skills/
+```
+
+| Skill | Purpose |
+|-------|---------|
+| `frontend-developer` | UI/UX, component architecture |
+| `backend-architect` | APIs, databases, system design |
+| `security-engineer` | Threat modeling, secure code review |
+| `devops-automator` | CI/CD, infrastructure, containers |
+| `reality-checker` | Assumptions audit, edge case analysis |
+| `api-tester` | API contract and integration testing |
+| `performance-benchmarker` | Profiling and optimization |
+| `senior-developer` | Cross-domain code review |
+| `ai-engineer` | ML/AI integration patterns |
+| `accessibility-auditor` | WCAG, a11y review |
+| `agents-orchestrator` | Multi-agent workflow design |
+| `project-manager` | Planning, scope, delivery |
+
+Skills activate automatically when a message matches their `triggers` frontmatter. No configuration needed beyond placing the file.
+
+### Creating custom skills
 
 ```bash
 # Copy the template
