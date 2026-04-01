@@ -14,3 +14,4 @@ pub mod traits;
 
 pub use config::shellexpand;
 pub use error::KernexError;
+pub use run::ModelTier;
