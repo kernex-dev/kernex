@@ -17,6 +17,6 @@ pub use permissions::{
 };
 pub use projects::{ensure_projects_dir, get_project_instructions, load_projects, Project};
 pub use skills::{
-    build_skill_prompt, load_skills, match_skill_toolboxes, match_skill_triggers,
-    migrate_flat_skills, Skill,
+    build_skill_prompt, get_toolboxes_for_skill, lazy_skill_directory, load_skills,
+    match_skill_toolboxes, match_skill_triggers, migrate_flat_skills, skill_search_toolbox, Skill,
 };
