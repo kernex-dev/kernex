@@ -1,4 +1,5 @@
 use kernex_core::error::KernexError;
+use kernex_core::run::ModelTier;
 use kernex_core::traits::Provider;
 use std::path::PathBuf;
 
@@ -7,10 +8,41 @@ use std::path::PathBuf;
 pub struct ProviderConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
+    /// Explicit model name. Takes precedence over `tier`.
     pub model: Option<String>,
     pub max_tokens: Option<u32>,
     pub workspace_path: Option<PathBuf>,
     pub sandbox_profile: Option<kernex_sandbox::SandboxProfile>,
+    /// Performance/cost tier used to select a model when `model` is `None`.
+    pub tier: Option<ModelTier>,
+}
+
+/// Resolve the model name: explicit `model` wins; else derive from `tier`; else `None`.
+///
+/// A `None` return means the caller's hardcoded default should apply.
+fn resolve_model(provider: &str, model: Option<String>, tier: Option<ModelTier>) -> Option<String> {
+    model.or_else(|| {
+        tier.map(|t| model_from_tier(provider, t).to_string())
+            .filter(|s| !s.is_empty())
+    })
+}
+
+/// Map a provider name + tier to a concrete model identifier.
+fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
+    match (provider, tier) {
+        ("openai", ModelTier::Standard) => "gpt-4o-mini",
+        ("openai", ModelTier::Flagship) => "gpt-4o",
+        ("anthropic", ModelTier::Standard) => "claude-sonnet-4-6",
+        ("anthropic", ModelTier::Flagship) => "claude-opus-4-6",
+        ("gemini", ModelTier::Standard) => "gemini-2.0-flash",
+        ("gemini", ModelTier::Flagship) => "gemini-2.5-pro",
+        ("ollama", ModelTier::Standard) => "llama3.2",
+        ("ollama", ModelTier::Flagship) => "llama3.1:70b",
+        ("openrouter", ModelTier::Standard) => "anthropic/claude-sonnet-4-6",
+        ("openrouter", ModelTier::Flagship) => "anthropic/claude-opus-4-6",
+        // claude-code: model is passed as a hint to the CLI; tier does not apply.
+        _ => "",
+    }
 }
 
 /// Factory to instantiate providers by string name.
@@ -24,23 +56,25 @@ impl ProviderFactory {
     ) -> Result<Box<dyn Provider>, KernexError> {
         match provider.to_lowercase().as_str() {
             "openai" => {
+                let model = resolve_model("openai", config.model, config.tier)
+                    .unwrap_or_else(|| "gpt-4o".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
                         .unwrap_or_else(|| "https://api.openai.com/v1".to_string()),
                     config.api_key.unwrap_or_default(),
-                    config.model.unwrap_or_else(|| "gpt-4o".to_string()),
+                    model,
                     config.workspace_path,
                 )?
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
             "anthropic" => {
+                let model = resolve_model("anthropic", config.model, config.tier)
+                    .unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
                 let p = crate::anthropic::AnthropicProvider::from_config(
                     config.api_key.unwrap_or_default(),
-                    config
-                        .model
-                        .unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string()),
+                    model,
                     config.max_tokens.unwrap_or(8192),
                     config.workspace_path,
                 )?
@@ -48,33 +82,35 @@ impl ProviderFactory {
                 Ok(Box::new(p))
             }
             "gemini" => {
+                let model = resolve_model("gemini", config.model, config.tier)
+                    .unwrap_or_else(|| "gemini-2.5-flash".to_string());
                 let p = crate::gemini::GeminiProvider::from_config(
                     config.api_key.unwrap_or_default(),
-                    config
-                        .model
-                        .unwrap_or_else(|| "gemini-2.5-flash".to_string()),
+                    model,
                     config.workspace_path,
                 )?
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
             "ollama" => {
+                let model = resolve_model("ollama", config.model, config.tier)
+                    .unwrap_or_else(|| "llama3.2".to_string());
                 let p = crate::ollama::OllamaProvider::from_config(
                     config
                         .base_url
                         .unwrap_or_else(|| "http://localhost:11434".to_string()),
-                    config.model.unwrap_or_else(|| "llama3.2".to_string()),
+                    model,
                     config.workspace_path,
                 )?
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
             "openrouter" => {
+                let model = resolve_model("openrouter", config.model, config.tier)
+                    .unwrap_or_else(|| "anthropic/claude-3.5-sonnet".to_string());
                 let p = crate::openrouter::OpenRouterProvider::from_config(
                     config.api_key.unwrap_or_default(),
-                    config
-                        .model
-                        .unwrap_or_else(|| "anthropic/claude-3.5-sonnet".to_string()),
+                    model,
                     config.workspace_path,
                 )?
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
@@ -136,6 +172,7 @@ mod tests {
             max_tokens: Some(4096),
             workspace_path: Some(PathBuf::from("/tmp")),
             sandbox_profile: None,
+            tier: None,
         };
         assert_eq!(config.base_url, Some("https://api.example.com".to_string()));
         assert_eq!(config.model, Some("gpt-4".to_string()));
@@ -243,5 +280,82 @@ mod tests {
         assert!(result.is_ok());
         let provider = result.unwrap();
         assert_eq!(provider.name(), "claude-code");
+    }
+
+    #[test]
+    fn model_from_tier_standard() {
+        assert_eq!(
+            model_from_tier("anthropic", ModelTier::Standard),
+            "claude-sonnet-4-6"
+        );
+        assert_eq!(
+            model_from_tier("openai", ModelTier::Standard),
+            "gpt-4o-mini"
+        );
+        assert_eq!(
+            model_from_tier("gemini", ModelTier::Standard),
+            "gemini-2.0-flash"
+        );
+        assert_eq!(model_from_tier("ollama", ModelTier::Standard), "llama3.2");
+        assert_eq!(
+            model_from_tier("openrouter", ModelTier::Standard),
+            "anthropic/claude-sonnet-4-6"
+        );
+    }
+
+    #[test]
+    fn model_from_tier_flagship() {
+        assert_eq!(
+            model_from_tier("anthropic", ModelTier::Flagship),
+            "claude-opus-4-6"
+        );
+        assert_eq!(model_from_tier("openai", ModelTier::Flagship), "gpt-4o");
+        assert_eq!(
+            model_from_tier("gemini", ModelTier::Flagship),
+            "gemini-2.5-pro"
+        );
+        assert_eq!(
+            model_from_tier("ollama", ModelTier::Flagship),
+            "llama3.1:70b"
+        );
+        assert_eq!(
+            model_from_tier("openrouter", ModelTier::Flagship),
+            "anthropic/claude-opus-4-6"
+        );
+    }
+
+    #[test]
+    fn resolve_model_explicit_wins_over_tier() {
+        let result = resolve_model(
+            "anthropic",
+            Some("my-custom-model".to_string()),
+            Some(ModelTier::Flagship),
+        );
+        assert_eq!(result, Some("my-custom-model".to_string()));
+    }
+
+    #[test]
+    fn resolve_model_tier_used_when_no_explicit_model() {
+        let result = resolve_model("anthropic", None, Some(ModelTier::Standard));
+        assert_eq!(result, Some("claude-sonnet-4-6".to_string()));
+    }
+
+    #[test]
+    fn resolve_model_returns_none_when_both_absent() {
+        let result = resolve_model("anthropic", None, None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn factory_creates_anthropic_with_tier() {
+        let config = ProviderConfig {
+            api_key: Some("sk-test".to_string()),
+            workspace_path: Some(PathBuf::from("/tmp")),
+            tier: Some(ModelTier::Standard),
+            ..Default::default()
+        };
+        let result = ProviderFactory::create("anthropic", config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "anthropic");
     }
 }
