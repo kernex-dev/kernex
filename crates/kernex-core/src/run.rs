@@ -2,6 +2,18 @@
 
 use crate::message::Response;
 
+/// Selects a performance/cost tier when creating a provider via `ProviderConfig`.
+///
+/// The factory resolves the concrete model name from the tier and provider type.
+/// An explicit `model` string on `ProviderConfig` always takes precedence over tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelTier {
+    /// Cost-efficient model for standard tasks (e.g. Sonnet, GPT-4o-mini, Gemini Flash).
+    Standard,
+    /// Most capable model for complex tasks (e.g. Opus, GPT-4o, Gemini Pro).
+    Flagship,
+}
+
 /// Configuration for a [`Runtime::run`] invocation.
 ///
 /// [`Runtime::run`]: crate::traits::Provider
