@@ -113,6 +113,9 @@ pub struct Context {
     /// the agent definition and `to_prompt_string()` emits only `current_message`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_name: Option<String>,
+    /// Hook runner for tool lifecycle events. Not serialized.
+    #[serde(skip)]
+    pub hook_runner: Option<std::sync::Arc<dyn crate::hooks::HookRunner>>,
 }
 
 /// A structured message for API-based providers (OpenAI, Anthropic, etc.).
@@ -138,7 +141,14 @@ impl Context {
             model: None,
             session_id: None,
             agent_name: None,
+            hook_runner: None,
         }
+    }
+
+    /// Attach a hook runner to this context.
+    pub fn with_hooks(mut self, runner: std::sync::Arc<dyn crate::hooks::HookRunner>) -> Self {
+        self.hook_runner = Some(runner);
+        self
     }
 
     /// Flatten the context into a single prompt string for providers
@@ -274,6 +284,7 @@ mod tests {
             model: None,
             session_id: None,
             agent_name: None,
+            hook_runner: None,
         };
         let (system, messages) = ctx.to_api_messages();
         assert_eq!(system, "Be helpful.");
@@ -296,6 +307,7 @@ mod tests {
             model: None,
             session_id: None,
             agent_name: None,
+            hook_runner: None,
         };
         let prompt = ctx.to_prompt_string();
         assert!(prompt.contains("[System]\nBe helpful."));
@@ -319,6 +331,7 @@ mod tests {
             model: None,
             session_id: Some("sess-abc".into()),
             agent_name: None,
+            hook_runner: None,
         };
         let prompt = ctx.to_prompt_string();
         assert!(!prompt.contains("[System]"));
@@ -341,6 +354,7 @@ mod tests {
             model: None,
             session_id: None,
             agent_name: Some("build-analyst".into()),
+            hook_runner: None,
         };
         let prompt = ctx.to_prompt_string();
         assert_eq!(prompt, "Build me a task tracker.");
@@ -359,6 +373,7 @@ mod tests {
             model: None,
             session_id: Some("sess-456".into()),
             agent_name: Some("build-architect".into()),
+            hook_runner: None,
         };
         assert_eq!(ctx.to_prompt_string(), "Build something.");
     }
@@ -376,6 +391,7 @@ mod tests {
             model: None,
             session_id: Some("sess-123".into()),
             agent_name: None,
+            hook_runner: None,
         };
         let json = serde_json::to_string(&ctx).unwrap();
         let deserialized: Context = serde_json::from_str(&json).unwrap();

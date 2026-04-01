@@ -5,7 +5,9 @@
 pub mod config;
 pub mod context;
 pub mod error;
+pub mod hooks;
 pub mod message;
+pub mod run;
 pub mod sanitize;
 pub mod traits;
 
