@@ -2,8 +2,10 @@ use super::context::format_user_profile;
 use super::tasks::{descriptions_are_similar, normalize_due_at};
 use super::Store;
 use kernex_core::config::MemoryConfig;
-use kernex_core::context::ContextNeeds;
+use kernex_core::context::{CompactionStrategy, ContextNeeds};
+use kernex_core::error::Result as KernexResult;
 use kernex_core::message::Request;
+use kernex_core::traits::Summarizer;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use std::str::FromStr;
 
@@ -770,7 +772,7 @@ async fn test_build_context_advances_onboarding_stage() {
     let msg = Request::text(sender, "hello");
     let needs = ContextNeeds::default();
     let ctx = store
-        .build_context("api", &msg, "Base rules", &needs, None)
+        .build_context("api", &msg, "Base rules", &needs, None, None)
         .await
         .unwrap();
     assert!(
@@ -782,7 +784,7 @@ async fn test_build_context_advances_onboarding_stage() {
     store.store_fact(sender, "name", "Alice").await.unwrap();
 
     let ctx2 = store
-        .build_context("api", &msg, "Base rules", &needs, None)
+        .build_context("api", &msg, "Base rules", &needs, None, None)
         .await
         .unwrap();
     assert!(
@@ -791,12 +793,129 @@ async fn test_build_context_advances_onboarding_stage() {
     );
 
     let ctx3 = store
-        .build_context("api", &msg, "Base rules", &needs, None)
+        .build_context("api", &msg, "Base rules", &needs, None, None)
         .await
         .unwrap();
     assert!(
         !ctx3.system_prompt.contains("Onboarding hint"),
         "no hint when stage hasn't changed"
+    );
+}
+
+// --- Auto-compact tests ---
+
+struct MockSummarizer;
+
+#[async_trait::async_trait]
+impl Summarizer for MockSummarizer {
+    async fn summarize(&self, text: &str) -> KernexResult<String> {
+        Ok(format!("SUMMARY({}chars)", text.len()))
+    }
+}
+
+/// Build a small store with `max_context_messages = 2` and pre-insert N messages.
+async fn compact_test_store(sender: &str, message_count: u32) -> (Store, String) {
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap();
+    Store::run_migrations(&pool).await.unwrap();
+
+    let store = Store {
+        pool,
+        max_context_messages: 2,
+    };
+
+    let conv_id = store
+        .get_or_create_conversation("api", sender, "")
+        .await
+        .unwrap();
+
+    for i in 0..message_count {
+        sqlx::query(
+            "INSERT INTO messages (id, conversation_id, role, content) VALUES (?, ?, 'user', ?)",
+        )
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(&conv_id)
+        .bind(format!("msg_{i}"))
+        .execute(store.pool())
+        .await
+        .unwrap();
+    }
+
+    (store, conv_id)
+}
+
+#[tokio::test]
+async fn test_compact_strategy_drop_no_summary_injected() {
+    // Default strategy (Drop) should never inject a summary, even with overflow.
+    let sender = "compact_drop_user";
+    let (store, _) = compact_test_store(sender, 4).await;
+    let msg = Request::text(sender, "latest");
+
+    let needs = ContextNeeds {
+        compact: CompactionStrategy::Drop,
+        ..Default::default()
+    };
+    let ctx = store
+        .build_context("api", &msg, "base", &needs, None, Some(&MockSummarizer))
+        .await
+        .unwrap();
+
+    assert!(
+        !ctx.system_prompt.contains("Earlier conversation summary"),
+        "Drop strategy must not inject summary"
+    );
+}
+
+#[tokio::test]
+async fn test_compact_strategy_summarize_injects_summary() {
+    let sender = "compact_summarize_user";
+    let (store, _) = compact_test_store(sender, 4).await;
+    let msg = Request::text(sender, "latest");
+
+    let needs = ContextNeeds {
+        compact: CompactionStrategy::Summarize,
+        ..Default::default()
+    };
+    let ctx = store
+        .build_context("api", &msg, "base", &needs, None, Some(&MockSummarizer))
+        .await
+        .unwrap();
+
+    assert!(
+        ctx.system_prompt.contains("[Earlier conversation summary]"),
+        "Summarize strategy must inject summary header"
+    );
+    assert!(
+        ctx.system_prompt.contains("SUMMARY("),
+        "Summary text from MockSummarizer must appear in system prompt"
+    );
+}
+
+#[tokio::test]
+async fn test_compact_no_overflow_no_summary() {
+    // Within limit — no summary should appear even with Summarize strategy.
+    let sender = "compact_no_overflow_user";
+    let (store, _) = compact_test_store(sender, 1).await;
+    let msg = Request::text(sender, "latest");
+
+    let needs = ContextNeeds {
+        compact: CompactionStrategy::Summarize,
+        ..Default::default()
+    };
+    let ctx = store
+        .build_context("api", &msg, "base", &needs, None, Some(&MockSummarizer))
+        .await
+        .unwrap();
+
+    assert!(
+        !ctx.system_prompt.contains("[Earlier conversation summary]"),
+        "No overflow means no summary injection"
     );
 }
 

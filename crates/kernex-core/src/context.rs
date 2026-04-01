@@ -3,6 +3,19 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Strategy applied when conversation history exceeds `max_context_messages`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CompactionStrategy {
+    /// Drop the oldest messages silently (default, preserves existing behavior).
+    #[default]
+    Drop,
+    /// Summarize overflow messages and prepend the summary to the system prompt.
+    ///
+    /// Requires a [`Summarizer`](crate::traits::Summarizer) to be injected at
+    /// `build_context` time. Falls back to `Drop` if none is provided.
+    Summarize,
+}
+
 /// Controls which optional context blocks are loaded and injected.
 ///
 /// Used by the runtime to skip expensive DB queries and prompt sections
@@ -18,6 +31,8 @@ pub struct ContextNeeds {
     pub summaries: bool,
     /// Load and inject recent reward outcomes.
     pub outcomes: bool,
+    /// How to handle history overflow (default: silently drop oldest).
+    pub compact: CompactionStrategy,
 }
 
 impl Default for ContextNeeds {
@@ -28,6 +43,7 @@ impl Default for ContextNeeds {
             profile: true,
             summaries: true,
             outcomes: true,
+            compact: CompactionStrategy::default(),
         }
     }
 }
