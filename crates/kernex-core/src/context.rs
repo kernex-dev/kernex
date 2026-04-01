@@ -139,6 +139,10 @@ pub struct Context {
     /// Hook runner for tool lifecycle events. Not serialized.
     #[serde(skip)]
     pub hook_runner: Option<std::sync::Arc<dyn crate::hooks::HookRunner>>,
+    /// Declarative allow/deny permission rules applied before each tool call.
+    /// Not serialized — set at runtime by the caller.
+    #[serde(skip)]
+    pub permission_rules: Option<std::sync::Arc<crate::permissions::PermissionRules>>,
     /// Request extended thinking (chain-of-thought) for Anthropic requests.
     /// Sends the `interleaved-thinking-2025-05-14` beta header when true.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -169,6 +173,7 @@ impl Context {
             session_id: None,
             agent_name: None,
             hook_runner: None,
+            permission_rules: None,
             extended_thinking: false,
         }
     }
@@ -313,6 +318,7 @@ mod tests {
             session_id: None,
             agent_name: None,
             hook_runner: None,
+            permission_rules: None,
             extended_thinking: false,
         };
         let (system, messages) = ctx.to_api_messages();
@@ -337,6 +343,7 @@ mod tests {
             session_id: None,
             agent_name: None,
             hook_runner: None,
+            permission_rules: None,
             extended_thinking: false,
         };
         let prompt = ctx.to_prompt_string();
@@ -362,6 +369,7 @@ mod tests {
             session_id: Some("sess-abc".into()),
             agent_name: None,
             hook_runner: None,
+            permission_rules: None,
             extended_thinking: false,
         };
         let prompt = ctx.to_prompt_string();
@@ -386,6 +394,7 @@ mod tests {
             session_id: None,
             agent_name: Some("build-analyst".into()),
             hook_runner: None,
+            permission_rules: None,
             extended_thinking: false,
         };
         let prompt = ctx.to_prompt_string();
@@ -406,6 +415,7 @@ mod tests {
             session_id: Some("sess-456".into()),
             agent_name: Some("build-architect".into()),
             hook_runner: None,
+            permission_rules: None,
             extended_thinking: false,
         };
         assert_eq!(ctx.to_prompt_string(), "Build something.");
@@ -425,6 +435,7 @@ mod tests {
             session_id: Some("sess-123".into()),
             agent_name: None,
             hook_runner: None,
+            permission_rules: None,
             extended_thinking: false,
         };
         let json = serde_json::to_string(&ctx).unwrap();

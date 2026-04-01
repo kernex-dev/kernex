@@ -7,6 +7,7 @@ pub mod context;
 pub mod error;
 pub mod hooks;
 pub mod message;
+pub mod permissions;
 pub mod pricing;
 pub mod run;
 pub mod sanitize;
@@ -15,4 +16,5 @@ pub mod traits;
 
 pub use config::shellexpand;
 pub use error::KernexError;
+pub use permissions::{PermissionOutcome, PermissionRules};
 pub use run::ModelTier;
