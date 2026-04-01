@@ -7,6 +7,7 @@ pub mod context;
 pub mod error;
 pub mod hooks;
 pub mod message;
+pub mod pricing;
 pub mod run;
 pub mod sanitize;
 pub mod stream;
