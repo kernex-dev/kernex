@@ -6,9 +6,10 @@
 use super::Store;
 use kernex_core::{
     config::SYSTEM_FACT_KEYS,
-    context::{Context, ContextEntry, ContextNeeds},
+    context::{CompactionStrategy, Context, ContextEntry, ContextNeeds},
     error::KernexError,
     message::Request,
+    traits::Summarizer,
 };
 
 // Re-export helpers so existing `super::context::*` paths in tests keep working.
@@ -30,6 +31,11 @@ impl Store {
     ///
     /// The `channel` parameter identifies the communication channel since
     /// `Request` is channel-agnostic.
+    ///
+    /// When `needs.compact` is [`CompactionStrategy::Summarize`] and a
+    /// `summarizer` is provided, overflow messages (those beyond
+    /// `max_context_messages`) are summarized and prepended to the system
+    /// prompt instead of being silently dropped.
     pub async fn build_context(
         &self,
         channel: &str,
@@ -37,6 +43,7 @@ impl Store {
         base_system_prompt: &str,
         needs: &ContextNeeds,
         active_project: Option<&str>,
+        summarizer: Option<&dyn Summarizer>,
     ) -> Result<Context, KernexError> {
         let project_key = active_project.unwrap_or("");
         let conv_id = self
@@ -127,6 +134,50 @@ impl Store {
 
         let history = history_res?;
 
+        // Auto-compact: summarize overflow messages instead of silently dropping.
+        let compact_summary =
+            if let (CompactionStrategy::Summarize, Some(s)) = (&needs.compact, summarizer) {
+                let total: (i64,) =
+                    sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
+                        .bind(&conv_id)
+                        .fetch_one(&self.pool)
+                        .await
+                        .map_err(|e| KernexError::Store(format!("count failed: {e}")))?;
+
+                let overflow_count = (total.0 as usize).saturating_sub(self.max_context_messages);
+
+                if overflow_count > 0 {
+                    let overflow_rows: Vec<(String, String)> = sqlx::query_as(
+                        "SELECT role, content FROM messages \
+                     WHERE conversation_id = ? ORDER BY timestamp ASC LIMIT ?",
+                    )
+                    .bind(&conv_id)
+                    .bind(overflow_count as i64)
+                    .fetch_all(&self.pool)
+                    .await
+                    .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+
+                    if !overflow_rows.is_empty() {
+                        let text = overflow_rows
+                            .iter()
+                            .map(|(role, content)| format!("{role}: {content}"))
+                            .collect::<Vec<_>>()
+                            .join("\n");
+
+                        match s.summarize(&text).await {
+                            Ok(summary) if !summary.is_empty() => Some(summary),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
         // Resolve language: stored preference > auto-detect > English.
         let language =
             if let Some((_, lang)) = facts.iter().find(|(k, _)| k == "preferred_language") {
@@ -188,7 +239,7 @@ impl Store {
         };
 
         let facts_for_prompt: &[(String, String)] = if needs.profile { &facts } else { &[] };
-        let system_prompt = build_system_prompt(&SystemPromptContext {
+        let built_prompt = build_system_prompt(&SystemPromptContext {
             base_rules: base_system_prompt,
             facts: facts_for_prompt,
             summaries: &summaries,
@@ -199,6 +250,12 @@ impl Store {
             language: &language,
             onboarding_hint,
         });
+
+        let system_prompt = if let Some(summary) = compact_summary {
+            format!("[Earlier conversation summary]\n{summary}\n\n{built_prompt}")
+        } else {
+            built_prompt
+        };
 
         Ok(Context {
             system_prompt,

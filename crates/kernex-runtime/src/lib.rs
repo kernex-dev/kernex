@@ -125,6 +125,7 @@ impl Runtime {
                 &full_system_prompt,
                 needs,
                 project_ref,
+                None,
             )
             .await?;
 
@@ -197,6 +198,7 @@ impl Runtime {
                 &full_system_prompt,
                 &needs,
                 project_ref,
+                None,
             )
             .await?;
 
