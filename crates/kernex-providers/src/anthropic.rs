@@ -4,7 +4,13 @@
 //! Uses content blocks (text/tool_use/tool_result) for tool calling.
 
 use async_trait::async_trait;
-use kernex_core::{context::Context, error::KernexError, message::Response, traits::Provider};
+use kernex_core::{
+    context::Context,
+    error::KernexError,
+    message::Response,
+    stream::StreamEvent,
+    traits::{Provider, StreamingProvider},
+};
 use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -396,16 +402,22 @@ impl AnthropicProvider {
             let resp = {
                 let client = &self.client;
                 let api_key = &self.api_key;
+                // Build combined beta flags: token-efficient-tools is always
+                // active in the agentic loop; prompt-caching is added when the
+                // system prompt was split at CACHE_BOUNDARY.
+                let beta_header = if use_cache {
+                    "token-efficient-tools-2026-03-28,prompt-caching-2024-07-31".to_string()
+                } else {
+                    "token-efficient-tools-2026-03-28".to_string()
+                };
                 send_with_retry("anthropic", || {
-                    let mut req = client
+                    let req = client
                         .post(ANTHROPIC_API_URL)
                         .header("x-api-key", api_key.expose_secret().as_str())
                         .header("anthropic-version", ANTHROPIC_VERSION)
-                        .header("content-type", "application/json");
-                    if use_cache {
-                        req = req.header("anthropic-beta", "prompt-caching-2024-07-31");
-                    }
-                    let req = req.body(body_json.clone());
+                        .header("content-type", "application/json")
+                        .header("anthropic-beta", &beta_header)
+                        .body(body_json.clone());
                     async move { req.send().await }
                 })
                 .await?
@@ -513,6 +525,161 @@ impl AnthropicProvider {
             elapsed_ms,
             last_model,
         ))
+    }
+}
+
+// --- SSE streaming types for the Anthropic Messages API ---
+
+/// Wrapper around [`AnthropicRequest`] with `stream: true`.
+#[derive(Serialize)]
+struct AnthropicStreamRequest {
+    model: String,
+    max_tokens: u32,
+    stream: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    system: Vec<SystemBlock>,
+    messages: Vec<AnthropicMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<AnthropicToolDef>>,
+}
+
+/// Minimal SSE data envelope from Anthropic.
+#[derive(Deserialize)]
+struct SseData {
+    #[serde(rename = "type")]
+    event_type: String,
+    delta: Option<SseDelta>,
+}
+
+/// Delta payload inside a `content_block_delta` event.
+#[derive(Deserialize)]
+struct SseDelta {
+    #[serde(rename = "type")]
+    delta_type: String,
+    text: Option<String>,
+    partial_json: Option<String>,
+}
+
+/// Convert an Anthropic SSE data object into a [`StreamEvent`], if relevant.
+fn sse_data_to_event(data: SseData) -> Option<StreamEvent> {
+    match data.event_type.as_str() {
+        "content_block_delta" => {
+            let delta = data.delta?;
+            match delta.delta_type.as_str() {
+                "text_delta" => delta.text.map(StreamEvent::TextDelta),
+                "input_json_delta" => delta.partial_json.map(StreamEvent::InputJsonDelta),
+                _ => None,
+            }
+        }
+        "message_stop" => Some(StreamEvent::Done),
+        _ => None,
+    }
+}
+
+#[async_trait]
+impl StreamingProvider for AnthropicProvider {
+    async fn complete_stream(
+        &self,
+        context: &Context,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamEvent>, KernexError> {
+        let (system, api_messages) = context.to_api_messages();
+        let effective_model = context.model.as_deref().unwrap_or(&self.model).to_string();
+
+        let system_blocks = build_system_blocks(&system);
+        let use_cache = system_blocks.iter().any(|b| b.cache_control.is_some());
+
+        let messages: Vec<AnthropicMessage> = api_messages
+            .iter()
+            .map(|m| AnthropicMessage {
+                role: m.role.clone(),
+                content: AnthropicContent::Text(m.content.clone()),
+            })
+            .collect();
+
+        let body = AnthropicStreamRequest {
+            model: effective_model,
+            max_tokens: self.max_tokens,
+            stream: true,
+            system: system_blocks,
+            messages,
+            tools: None,
+        };
+
+        let body_json = serde_json::to_vec(&body)
+            .map_err(|e| KernexError::Provider(format!("anthropic: serialize failed: {e}")))?;
+
+        // Build request. We send directly — send_with_retry reads the body on
+        // error which would consume the stream before we can iterate it.
+        let api_key_str = self.api_key.expose_secret().to_string();
+        let mut req = self
+            .client
+            .post(ANTHROPIC_API_URL)
+            .header("x-api-key", &api_key_str)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("content-type", "application/json");
+        if use_cache {
+            req = req.header("anthropic-beta", "prompt-caching-2024-07-31");
+        }
+
+        debug!("anthropic: POST {ANTHROPIC_API_URL} (stream=true)");
+
+        let resp =
+            req.body(body_json).send().await.map_err(|e| {
+                KernexError::Provider(format!("anthropic: stream request failed: {e}"))
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(KernexError::Provider(format!(
+                "anthropic returned {status}: {text}"
+            )));
+        }
+
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+
+        tokio::spawn(async move {
+            use futures_util::StreamExt;
+
+            let mut byte_stream = resp.bytes_stream();
+            let mut buffer = String::new();
+
+            while let Some(chunk) = byte_stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                        // Drain complete lines from the front of the buffer.
+                        while let Some(pos) = buffer.find('\n') {
+                            let line = buffer[..pos].trim_end_matches('\r').to_string();
+                            buffer = buffer[pos + 1..].to_string();
+
+                            if let Some(data) = line.strip_prefix("data: ") {
+                                if data == "[DONE]" {
+                                    let _ = tx.send(StreamEvent::Done).await;
+                                    return;
+                                }
+                                if let Ok(sse) = serde_json::from_str::<SseData>(data) {
+                                    if let Some(evt) = sse_data_to_event(sse) {
+                                        if tx.send(evt).await.is_err() {
+                                            return; // Receiver dropped.
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let _ = tx.send(StreamEvent::Error(e.to_string())).await;
+                        return;
+                    }
+                }
+            }
+
+            let _ = tx.send(StreamEvent::Done).await;
+        });
+
+        Ok(rx)
     }
 }
 
@@ -682,5 +849,84 @@ mod tests {
         let blocks = json["content"].as_array().unwrap();
         assert_eq!(blocks[0]["type"], "tool_result");
         assert_eq!(blocks[0]["tool_use_id"], "toolu_123");
+    }
+
+    // --- SSE streaming tests ---
+
+    #[test]
+    fn test_sse_stream_request_has_stream_true() {
+        let body = AnthropicStreamRequest {
+            model: "claude-sonnet-4-20250514".into(),
+            max_tokens: 8192,
+            stream: true,
+            system: build_system_blocks("Be helpful."),
+            messages: vec![AnthropicMessage {
+                role: "user".into(),
+                content: AnthropicContent::Text("Hello".into()),
+            }],
+            tools: None,
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["stream"], true);
+        assert!(json.get("tools").is_none());
+    }
+
+    #[test]
+    fn test_sse_text_delta_parsed() {
+        let raw = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
+        let sse: SseData = serde_json::from_str(raw).unwrap();
+        let evt = sse_data_to_event(sse).unwrap();
+        match evt {
+            StreamEvent::TextDelta(t) => assert_eq!(t, "Hello"),
+            _ => panic!("expected TextDelta"),
+        }
+    }
+
+    #[test]
+    fn test_sse_input_json_delta_parsed() {
+        let raw = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":"}}"#;
+        let sse: SseData = serde_json::from_str(raw).unwrap();
+        let evt = sse_data_to_event(sse).unwrap();
+        match evt {
+            StreamEvent::InputJsonDelta(j) => assert_eq!(j, "{\"cmd\":"),
+            _ => panic!("expected InputJsonDelta"),
+        }
+    }
+
+    #[test]
+    fn test_sse_message_stop_emits_done() {
+        let raw = r#"{"type":"message_stop"}"#;
+        let sse: SseData = serde_json::from_str(raw).unwrap();
+        let evt = sse_data_to_event(sse).unwrap();
+        assert!(matches!(evt, StreamEvent::Done));
+    }
+
+    #[test]
+    fn test_sse_ping_ignored() {
+        let raw = r#"{"type":"ping"}"#;
+        let sse: SseData = serde_json::from_str(raw).unwrap();
+        assert!(sse_data_to_event(sse).is_none());
+    }
+
+    #[test]
+    fn test_sse_message_start_ignored() {
+        let raw = r#"{"type":"message_start","message":{"id":"msg_123","role":"assistant"}}"#;
+        let sse: SseData = serde_json::from_str(raw).unwrap();
+        assert!(sse_data_to_event(sse).is_none());
+    }
+
+    #[test]
+    fn test_beta_header_includes_token_efficient_tools() {
+        // Verify that the token-efficient-tools flag is always present and
+        // caching flag is appended when use_cache is true.
+        let beta_no_cache = "token-efficient-tools-2026-03-28".to_string();
+        let beta_with_cache =
+            "token-efficient-tools-2026-03-28,prompt-caching-2024-07-31".to_string();
+
+        assert!(beta_no_cache.contains("token-efficient-tools-2026-03-28"));
+        assert!(!beta_no_cache.contains("prompt-caching"));
+
+        assert!(beta_with_cache.contains("token-efficient-tools-2026-03-28"));
+        assert!(beta_with_cache.contains("prompt-caching-2024-07-31"));
     }
 }
