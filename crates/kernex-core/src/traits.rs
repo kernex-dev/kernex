@@ -41,6 +41,17 @@ pub trait StreamingProvider: Provider {
     ) -> Result<tokio::sync::mpsc::Receiver<StreamEvent>>;
 }
 
+/// Provides text summarization. Used for context auto-compact.
+///
+/// Implement this trait on any type that can summarize a block of text
+/// (e.g. a `Provider` wrapper). Inject it into `build_context` to enable
+/// the [`CompactionStrategy::Summarize`](crate::context::CompactionStrategy) strategy.
+#[async_trait::async_trait]
+pub trait Summarizer: Send + Sync {
+    /// Summarize `text` into a shorter form.
+    async fn summarize(&self, text: &str) -> Result<String>;
+}
+
 /// Persistent storage backend. Implement to use a different database.
 #[async_trait::async_trait]
 pub trait Store: Send + Sync {
