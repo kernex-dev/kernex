@@ -9,6 +9,7 @@ pub mod hooks;
 pub mod message;
 pub mod run;
 pub mod sanitize;
+pub mod stream;
 pub mod traits;
 
 pub use config::shellexpand;
