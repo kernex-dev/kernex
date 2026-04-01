@@ -586,36 +586,45 @@ pub fn truncate_output(s: &str, max_bytes: usize) -> String {
     }
 }
 
+/// Cached builtin tool definitions — `schemars` reflection runs once per process.
+static BUILTIN_TOOL_DEFS_CACHE: std::sync::OnceLock<Vec<ToolDef>> = std::sync::OnceLock::new();
+
 /// Return the definitions of the 4 built-in tools.
 ///
-/// Uses typed parameters from `tool_params` module with auto-generated JSON schemas.
+/// Schema generation runs once per process via `OnceLock`; subsequent calls
+/// clone from the cache. This avoids repeated `schemars` reflection and
+/// `serde_json` serialization on every provider request.
 pub fn builtin_tool_defs() -> Vec<ToolDef> {
     use crate::tool_params::{tool_schema_for, BashParams, EditParams, ReadParams, WriteParams};
 
-    vec![
-        ToolDef {
-            name: "bash".to_string(),
-            description: "Execute a bash command and return its output.".to_string(),
-            parameters: tool_schema_for::<BashParams>(),
-        },
-        ToolDef {
-            name: "read".to_string(),
-            description: "Read the contents of a file.".to_string(),
-            parameters: tool_schema_for::<ReadParams>(),
-        },
-        ToolDef {
-            name: "write".to_string(),
-            description: "Write content to a file (creates or overwrites).".to_string(),
-            parameters: tool_schema_for::<WriteParams>(),
-        },
-        ToolDef {
-            name: "edit".to_string(),
-            description:
-                "Edit a file by replacing the first occurrence of old_string with new_string."
-                    .to_string(),
-            parameters: tool_schema_for::<EditParams>(),
-        },
-    ]
+    BUILTIN_TOOL_DEFS_CACHE
+        .get_or_init(|| {
+            vec![
+                ToolDef {
+                    name: "bash".to_string(),
+                    description: "Execute a bash command and return its output.".to_string(),
+                    parameters: tool_schema_for::<BashParams>(),
+                },
+                ToolDef {
+                    name: "read".to_string(),
+                    description: "Read the contents of a file.".to_string(),
+                    parameters: tool_schema_for::<ReadParams>(),
+                },
+                ToolDef {
+                    name: "write".to_string(),
+                    description: "Write content to a file (creates or overwrites).".to_string(),
+                    parameters: tool_schema_for::<WriteParams>(),
+                },
+                ToolDef {
+                    name: "edit".to_string(),
+                    description: "Edit a file by replacing the first occurrence of old_string \
+                        with new_string."
+                        .to_string(),
+                    parameters: tool_schema_for::<EditParams>(),
+                },
+            ]
+        })
+        .clone()
 }
 
 // --- Shared provider utilities ---
@@ -658,6 +667,18 @@ pub(crate) fn tools_enabled(context: &kernex_core::context::Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_builtin_tool_defs_cached() {
+        // Multiple calls must return identical results (cache hit path).
+        let first = builtin_tool_defs();
+        let second = builtin_tool_defs();
+        assert_eq!(first.len(), second.len());
+        for (a, b) in first.iter().zip(second.iter()) {
+            assert_eq!(a.name, b.name);
+            assert_eq!(a.parameters, b.parameters);
+        }
+    }
 
     #[test]
     fn test_builtin_tool_defs_count() {
