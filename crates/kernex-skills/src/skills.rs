@@ -89,6 +89,12 @@ pub struct Skill {
     pub permissions: Permissions,
     /// Source of the skill (e.g. "anthropics/skills", local path).
     pub source: String,
+    /// Defer toolbox schemas from the initial context.
+    ///
+    /// When `true`, `match_skill_toolboxes()` skips this skill. Callers
+    /// inject a `skill_search` tool (see `skill_search_toolbox()`) and load
+    /// schemas on demand via `get_toolboxes_for_skill()`.
+    pub lazy: bool,
 }
 
 /// MCP server definition in TOML frontmatter (`[mcp.name]`).
@@ -268,6 +274,8 @@ struct SkillFrontmatter {
     toolbox: HashMap<String, ToolboxFrontmatter>,
     #[serde(default)]
     permissions: Permissions,
+    #[serde(default)]
+    lazy: bool,
 }
 
 /// Scan `{data_dir}/skills/*/SKILL.md` and return all valid skill definitions.
@@ -390,6 +398,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             toolboxes,
             permissions: fm.permissions,
             source,
+            lazy: fm.lazy,
         });
     }
 
@@ -462,6 +471,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
     let mut trigger = None;
     let mut mcp = HashMap::new();
     let mut metadata_line = None;
+    let mut lazy = false;
 
     for line in block.lines() {
         let line = line.trim();
@@ -474,6 +484,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
                 "homepage" => homepage = unquote(val),
                 "requires" => requires = parse_yaml_list(val),
                 "trigger" => trigger = Some(unquote(val)),
+                "lazy" => lazy = val == "true" || val == "yes",
                 "metadata" => metadata_line = Some(val.to_string()),
                 k if k.starts_with("mcp-") => {
                     let server_name = k.strip_prefix("mcp-").unwrap_or("").to_string();
@@ -509,6 +520,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
         mcp,
         toolbox: HashMap::new(),
         permissions: Permissions::default(),
+        lazy,
     })
 }
 
@@ -555,7 +567,7 @@ pub fn match_skill_toolboxes(skills: &[Skill], message: &str) -> Vec<Toolbox> {
     let mut toolboxes = Vec::new();
 
     for skill in skills {
-        if !skill.available || skill.toolboxes.is_empty() {
+        if !skill.available || skill.toolboxes.is_empty() || skill.lazy {
             continue;
         }
         let Some(ref trigger) = skill.trigger else {
@@ -574,6 +586,61 @@ pub fn match_skill_toolboxes(skills: &[Skill], message: &str) -> Vec<Toolbox> {
     }
 
     toolboxes
+}
+
+/// Return the toolboxes declared by a named skill.
+///
+/// Used for on-demand schema resolution when a lazy skill is triggered via
+/// the `skill_search` tool. Returns an empty vec if the skill is not found.
+pub fn get_toolboxes_for_skill(skills: &[Skill], name: &str) -> Vec<Toolbox> {
+    skills
+        .iter()
+        .find(|s| s.name == name)
+        .map(|s| s.toolboxes.clone())
+        .unwrap_or_default()
+}
+
+/// Build a compact listing of available lazy skills for prompt injection.
+///
+/// Returns an empty string when no available lazy skills exist.
+pub fn lazy_skill_directory(skills: &[Skill]) -> String {
+    let lazy: Vec<&Skill> = skills.iter().filter(|s| s.lazy && s.available).collect();
+    if lazy.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("Deferred skills (call skill_search to load their full tool schemas):\n");
+    for s in lazy {
+        out.push_str(&format!("- {}: {}\n", s.name, s.description));
+    }
+    out
+}
+
+/// Return the `Toolbox` definition for the virtual `skill_search` tool.
+///
+/// Inject this into `Context::toolboxes` when lazy skills are present.
+/// The runtime intercepts calls to this tool and returns the output of
+/// `get_toolboxes_for_skill()` as the tool result.
+pub fn skill_search_toolbox() -> Toolbox {
+    Toolbox {
+        name: "skill_search".to_string(),
+        description: "Look up the full tool schemas for a deferred skill. Returns the toolbox \
+             definitions that were omitted from the initial context to reduce token usage."
+            .to_string(),
+        parameters: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "The name of the skill to look up (e.g. \"playwright\")."
+                }
+            },
+            "required": ["skill_name"]
+        }),
+        command: "skill_search".to_string(),
+        args: Vec::new(),
+        env: std::collections::HashMap::new(),
+    }
 }
 
 #[cfg(test)]
@@ -684,6 +751,7 @@ description = \"No deps.\"
                 toolboxes: Vec::new(),
                 permissions: Permissions::default(),
                 source: String::new(),
+                lazy: false,
             },
             Skill {
                 name: "missing".into(),
@@ -698,6 +766,7 @@ description = \"No deps.\"
                 toolboxes: Vec::new(),
                 permissions: Permissions::default(),
                 source: String::new(),
+                lazy: false,
             },
         ];
         let prompt = build_skill_prompt(&skills);
@@ -875,6 +944,7 @@ description = \"No trigger or MCP.\"
             toolboxes: Vec::new(),
             permissions: Permissions::default(),
             source: String::new(),
+            lazy: false,
         }
     }
 
@@ -1411,5 +1481,93 @@ Body text.
         skill.toolboxes = vec![make_toolbox("linter")];
         let toolboxes = match_skill_toolboxes(&[skill], "lint this");
         assert!(toolboxes.is_empty());
+    }
+
+    // --- Lazy / deferred tool schema tests ---
+
+    #[test]
+    fn test_lazy_field_defaults_to_false() {
+        let content = "---\nname = \"simple\"\ndescription = \"No lazy key.\"\n---\n";
+        let fm = parse_skill_file(content).unwrap();
+        assert!(!fm.lazy);
+    }
+
+    #[test]
+    fn test_lazy_field_parsed_from_toml() {
+        let content =
+            "---\nname = \"big-skill\"\ndescription = \"Many tools.\"\nlazy = true\n---\n";
+        let fm = parse_skill_file(content).unwrap();
+        assert!(fm.lazy);
+    }
+
+    #[test]
+    fn test_lazy_field_parsed_from_yaml() {
+        let content = "---\nname: big-skill\ndescription: Many tools.\nlazy: true\n---\n";
+        let fm = parse_skill_file(content).unwrap();
+        assert!(fm.lazy);
+    }
+
+    #[test]
+    fn test_match_skill_toolboxes_skips_lazy() {
+        let mut skill = make_skill("lint", true, Some("lint"), Vec::new());
+        skill.toolboxes = vec![make_toolbox("linter")];
+        skill.lazy = true;
+        let toolboxes = match_skill_toolboxes(&[skill], "lint this file");
+        assert!(
+            toolboxes.is_empty(),
+            "lazy skill toolboxes must not be returned eagerly"
+        );
+    }
+
+    #[test]
+    fn test_get_toolboxes_for_skill_found() {
+        let mut skill = make_skill("lint", true, Some("lint"), Vec::new());
+        skill.toolboxes = vec![make_toolbox("linter"), make_toolbox("fixer")];
+        skill.lazy = true;
+        let result = get_toolboxes_for_skill(&[skill], "lint");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].name, "linter");
+        assert_eq!(result[1].name, "fixer");
+    }
+
+    #[test]
+    fn test_get_toolboxes_for_skill_not_found() {
+        let skill = make_skill("lint", true, Some("lint"), Vec::new());
+        let result = get_toolboxes_for_skill(&[skill], "unknown");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_lazy_skill_directory_empty_when_none() {
+        let skills = vec![make_skill("lint", true, Some("lint"), Vec::new())];
+        assert!(lazy_skill_directory(&skills).is_empty());
+    }
+
+    #[test]
+    fn test_lazy_skill_directory_lists_available_lazy() {
+        let mut skill = make_skill("playwright", true, Some("browse"), Vec::new());
+        skill.description = "Browser automation.".into();
+        skill.lazy = true;
+        let dir = lazy_skill_directory(&[skill]);
+        assert!(dir.contains("playwright"));
+        assert!(dir.contains("Browser automation."));
+        assert!(dir.contains("skill_search"));
+    }
+
+    #[test]
+    fn test_lazy_skill_directory_skips_unavailable() {
+        let mut skill = make_skill("playwright", false, Some("browse"), Vec::new());
+        skill.lazy = true;
+        assert!(lazy_skill_directory(&[skill]).is_empty());
+    }
+
+    #[test]
+    fn test_skill_search_toolbox_schema() {
+        let tb = skill_search_toolbox();
+        assert_eq!(tb.name, "skill_search");
+        let props = tb.parameters.get("properties").unwrap();
+        assert!(props.get("skill_name").is_some());
+        let required = tb.parameters.get("required").unwrap().as_array().unwrap();
+        assert!(required.iter().any(|v| v.as_str() == Some("skill_name")));
     }
 }
