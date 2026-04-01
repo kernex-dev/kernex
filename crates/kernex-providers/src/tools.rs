@@ -51,6 +51,7 @@ pub struct ToolExecutor {
     mcp_tool_map: HashMap<String, String>,
     toolboxes: HashMap<String, Toolbox>,
     hook_runner: Option<std::sync::Arc<dyn kernex_core::hooks::HookRunner>>,
+    permission_rules: Option<std::sync::Arc<kernex_core::permissions::PermissionRules>>,
 }
 
 impl ToolExecutor {
@@ -73,6 +74,7 @@ impl ToolExecutor {
             mcp_tool_map: HashMap::new(),
             toolboxes: HashMap::new(),
             hook_runner: None,
+            permission_rules: None,
         }
     }
 
@@ -109,6 +111,15 @@ impl ToolExecutor {
         runner: Option<std::sync::Arc<dyn kernex_core::hooks::HookRunner>>,
     ) -> Self {
         self.hook_runner = runner;
+        self
+    }
+
+    /// Optionally attach declarative permission rules (no-op when `None`).
+    pub fn with_permission_rules_opt(
+        mut self,
+        rules: Option<std::sync::Arc<kernex_core::permissions::PermissionRules>>,
+    ) -> Self {
+        self.permission_rules = rules;
         self
     }
 
@@ -189,6 +200,18 @@ impl ToolExecutor {
                         is_error: true,
                     };
                 }
+            }
+        }
+
+        // Permission rules check.
+        if let Some(rules) = &self.permission_rules {
+            if let kernex_core::permissions::PermissionOutcome::Deny(reason) =
+                rules.check(tool_name, args)
+            {
+                return ToolResult {
+                    content: format!("Tool call denied: {reason}"),
+                    is_error: true,
+                };
             }
         }
 

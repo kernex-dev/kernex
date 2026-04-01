@@ -41,6 +41,7 @@ use kernex_core::context::ContextNeeds;
 use kernex_core::error::KernexError;
 use kernex_core::hooks::{HookRunner, NoopHookRunner};
 use kernex_core::message::{Request, Response};
+use kernex_core::permissions::PermissionRules;
 use kernex_core::run::{RunConfig, RunOutcome};
 use kernex_core::traits::Provider;
 #[cfg(feature = "sqlite-store")]
@@ -78,6 +79,8 @@ pub struct Runtime {
     pub project: Option<String>,
     /// Hook runner for tool lifecycle events.
     pub hook_runner: Arc<dyn HookRunner>,
+    /// Declarative allow/deny rules applied before each tool call.
+    pub permission_rules: Option<Arc<PermissionRules>>,
 }
 
 impl Runtime {
@@ -153,8 +156,9 @@ impl Runtime {
             context.toolboxes = toolboxes;
         }
 
-        // Wire hooks into context.
+        // Wire hooks and permission rules into context.
         context.hook_runner = Some(self.hook_runner.clone());
+        context.permission_rules = self.permission_rules.clone();
 
         // Send to provider.
         let response = provider.complete(&context).await?;
@@ -242,9 +246,10 @@ impl Runtime {
             context.toolboxes = toolboxes;
         }
 
-        // Set max_turns and hooks.
+        // Set max_turns, hooks, and permission rules.
         context.max_turns = Some(config.max_turns);
         context.hook_runner = Some(self.hook_runner.clone());
+        context.permission_rules = self.permission_rules.clone();
 
         let response = provider.complete(&context).await?;
 
@@ -286,6 +291,7 @@ pub struct RuntimeBuilder {
     channel: String,
     project: Option<String>,
     hook_runner: Option<Arc<dyn HookRunner>>,
+    permission_rules: Option<Arc<PermissionRules>>,
 }
 
 impl RuntimeBuilder {
@@ -299,6 +305,7 @@ impl RuntimeBuilder {
             channel: "cli".to_string(),
             project: None,
             hook_runner: None,
+            permission_rules: None,
         }
     }
 
@@ -370,6 +377,12 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Set declarative allow/deny permission rules for tool calls.
+    pub fn permission_rules(mut self, rules: PermissionRules) -> Self {
+        self.permission_rules = Some(Arc::new(rules));
+        self
+    }
+
     /// Build and initialize the runtime.
     pub async fn build(self) -> Result<Runtime, KernexError> {
         let expanded_dir = kernex_core::shellexpand(&self.data_dir);
@@ -415,6 +428,7 @@ impl RuntimeBuilder {
             channel: self.channel,
             project: self.project,
             hook_runner,
+            permission_rules: self.permission_rules,
         })
     }
 }
