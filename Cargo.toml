@@ -3,7 +3,7 @@ members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.74"
 license = "Apache-2.0 OR MIT"
@@ -31,10 +31,10 @@ http = "1"
 schemars = "0.8"
 
 # Internal crates
-kernex-core = { version = "0.3.0", path = "crates/kernex-core" }
-kernex-sandbox = { version = "0.3.0", path = "crates/kernex-sandbox" }
-kernex-providers = { version = "0.3.0", path = "crates/kernex-providers" }
-kernex-memory = { version = "0.3.0", path = "crates/kernex-memory" }
-kernex-skills = { version = "0.3.0", path = "crates/kernex-skills" }
-kernex-pipelines = { version = "0.3.0", path = "crates/kernex-pipelines" }
-kernex-runtime = { version = "0.3.0", path = "crates/kernex-runtime" }
+kernex-core = { version = "0.4.0", path = "crates/kernex-core" }
+kernex-sandbox = { version = "0.4.0", path = "crates/kernex-sandbox" }
+kernex-providers = { version = "0.4.0", path = "crates/kernex-providers" }
+kernex-memory = { version = "0.4.0", path = "crates/kernex-memory" }
+kernex-skills = { version = "0.4.0", path = "crates/kernex-skills" }
+kernex-pipelines = { version = "0.4.0", path = "crates/kernex-pipelines" }
+kernex-runtime = { version = "0.4.0", path = "crates/kernex-runtime" }
