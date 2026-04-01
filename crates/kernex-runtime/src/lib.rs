@@ -105,14 +105,14 @@ impl Runtime {
     ) -> Result<Response, KernexError> {
         let project_ref = self.project.as_deref();
 
-        // Build skill prompt and append to base system prompt.
-        let skill_prompt = build_skill_prompt(&self.skills);
-        let full_system_prompt = if skill_prompt.is_empty() {
+        // Build skill context (prompt block + optional model override).
+        let skill_ctx = build_skill_prompt(&self.skills);
+        let full_system_prompt = if skill_ctx.prompt.is_empty() {
             self.system_prompt.clone()
         } else if self.system_prompt.is_empty() {
-            skill_prompt
+            skill_ctx.prompt.clone()
         } else {
-            format!("{}\n\n{}", self.system_prompt, skill_prompt)
+            format!("{}\n\n{}", self.system_prompt, skill_ctx.prompt)
         };
 
         // Build context from memory (history, recall, facts, lessons, etc).
@@ -135,6 +135,11 @@ impl Runtime {
             ctx.system_prompt = full_system_prompt;
             ctx
         };
+
+        // Apply skill model override when no model was already set on context.
+        if context.model.is_none() {
+            context.model = skill_ctx.model;
+        }
 
         // Enrich context with triggered MCP servers.
         let mcp_servers = match_skill_triggers(&self.skills, &request.text);
@@ -163,6 +168,20 @@ impl Runtime {
             .store_exchange(&self.channel, request, &response, project_key)
             .await?;
 
+        // Record token usage if the provider reported a count.
+        #[cfg(feature = "sqlite-store")]
+        if let Some(tokens) = response.metadata.tokens_used {
+            let model = response.metadata.model.as_deref().unwrap_or("unknown");
+            let session = response.metadata.session_id.as_deref().unwrap_or("default");
+            if let Err(e) = self
+                .store
+                .record_usage(&request.sender_id, session, tokens, model)
+                .await
+            {
+                tracing::warn!("failed to record token usage: {e}");
+            }
+        }
+
         Ok(response)
     }
 
@@ -180,13 +199,13 @@ impl Runtime {
         let needs = ContextNeeds::default();
         let project_ref = self.project.as_deref();
 
-        let skill_prompt = build_skill_prompt(&self.skills);
-        let full_system_prompt = if skill_prompt.is_empty() {
+        let skill_ctx = build_skill_prompt(&self.skills);
+        let full_system_prompt = if skill_ctx.prompt.is_empty() {
             self.system_prompt.clone()
         } else if self.system_prompt.is_empty() {
-            skill_prompt
+            skill_ctx.prompt.clone()
         } else {
-            format!("{}\n\n{}", self.system_prompt, skill_prompt)
+            format!("{}\n\n{}", self.system_prompt, skill_ctx.prompt)
         };
 
         #[cfg(feature = "sqlite-store")]
@@ -208,6 +227,11 @@ impl Runtime {
             ctx.system_prompt = full_system_prompt;
             ctx
         };
+
+        // Apply skill model override when no model was already set on context.
+        if context.model.is_none() {
+            context.model = skill_ctx.model;
+        }
 
         let mcp_servers = match_skill_triggers(&self.skills, &request.text);
         if !mcp_servers.is_empty() {
@@ -234,6 +258,20 @@ impl Runtime {
         self.store
             .store_exchange(&self.channel, request, &response, project_key)
             .await?;
+
+        // Record token usage if the provider reported a count.
+        #[cfg(feature = "sqlite-store")]
+        if let Some(tokens) = response.metadata.tokens_used {
+            let model = response.metadata.model.as_deref().unwrap_or("unknown");
+            let session = response.metadata.session_id.as_deref().unwrap_or("default");
+            if let Err(e) = self
+                .store
+                .record_usage(&request.sender_id, session, tokens, model)
+                .await
+            {
+                tracing::warn!("failed to record token usage: {e}");
+            }
+        }
 
         Ok(RunOutcome::EndTurn(response))
     }

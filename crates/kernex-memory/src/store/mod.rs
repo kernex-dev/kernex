@@ -16,9 +16,11 @@ mod messages;
 mod outcomes;
 mod sessions;
 mod tasks;
+mod usage;
 
 pub use context::{detect_language, format_user_profile};
 pub use tasks::DueTask;
+pub use usage::UsageSummary;
 
 use kernex_core::{config::MemoryConfig, error::KernexError, shellexpand};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -180,6 +182,10 @@ impl Store {
             (
                 "013_multi_lessons",
                 include_str!("../../migrations/013_multi_lessons.sql"),
+            ),
+            (
+                "014_token_usage",
+                include_str!("../../migrations/014_token_usage.sql"),
             ),
         ];
 
