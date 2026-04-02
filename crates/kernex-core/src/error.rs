@@ -34,6 +34,10 @@ pub enum KernexError {
     /// Serialization error.
     #[error(transparent)]
     Serialization(#[from] serde_json::Error),
+
+    /// Guardrail blocked the request or response.
+    #[error("guardrail blocked: {0}")]
+    Guardrail(String),
 }
 
 pub type Result<T> = std::result::Result<T, KernexError>;
