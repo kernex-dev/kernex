@@ -4,7 +4,7 @@ use kernex_core::traits::Provider;
 use std::path::PathBuf;
 
 /// Configuration for dynamically creating a provider.
-#[derive(Default, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct ProviderConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -15,6 +15,23 @@ pub struct ProviderConfig {
     pub sandbox_profile: Option<kernex_sandbox::SandboxProfile>,
     /// Performance/cost tier used to select a model when `model` is `None`.
     pub tier: Option<ModelTier>,
+    /// HTTP request timeout in seconds (default: 120). Applies to all HTTP-based providers.
+    pub timeout_secs: u64,
+}
+
+impl Default for ProviderConfig {
+    fn default() -> Self {
+        Self {
+            base_url: None,
+            api_key: None,
+            model: None,
+            max_tokens: None,
+            workspace_path: None,
+            sandbox_profile: None,
+            tier: None,
+            timeout_secs: 120,
+        }
+    }
 }
 
 /// Resolve the model name: explicit `model` wins; else derive from `tier`; else `None`.
@@ -78,6 +95,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
@@ -90,6 +108,7 @@ impl ProviderFactory {
                     config.max_tokens.unwrap_or(8192),
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
@@ -101,6 +120,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
@@ -114,6 +134,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
@@ -125,6 +146,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
@@ -153,6 +175,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_name("groq")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
@@ -168,6 +191,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_name("mistral")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
@@ -183,6 +207,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_name("deepseek")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
@@ -200,6 +225,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_name("fireworks")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
@@ -215,6 +241,7 @@ impl ProviderFactory {
                     model,
                     config.workspace_path,
                 )?
+                .with_timeout(config.timeout_secs)
                 .with_name("xai")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
@@ -294,6 +321,7 @@ mod tests {
         assert!(config.model.is_none());
         assert!(config.max_tokens.is_none());
         assert!(config.workspace_path.is_none());
+        assert_eq!(config.timeout_secs, 120);
     }
 
     #[test]
@@ -306,9 +334,11 @@ mod tests {
             workspace_path: Some(PathBuf::from("/tmp")),
             sandbox_profile: None,
             tier: None,
+            timeout_secs: 60,
         };
         assert_eq!(config.base_url, Some("https://api.example.com".to_string()));
         assert_eq!(config.model, Some("gpt-4".to_string()));
+        assert_eq!(config.timeout_secs, 60);
     }
 
     #[test]
