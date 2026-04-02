@@ -18,10 +18,13 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 
 [features]
 default = ["sqlite-store"]
 sqlite-store = ["dep:kernex-memory"]
+opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
