@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **kernex-providers**: Groq, Mistral, DeepSeek, Fireworks, and xAI as named provider strings in `ProviderFactory::create()` — each resolves to the OpenAI provider with the correct `base_url` and default model. Provider count: 11 built-in (+ Bedrock feature-gated).
+- **kernex-providers**: AWS Bedrock provider with SigV4 request signing — supports Anthropic Claude models on Bedrock; opt-in via the `bedrock` Cargo feature.
+- **kernex-runtime**: `Runtime::complete_stream()` and `complete_stream_with_needs()` — surfaces streaming from `StreamingProvider` implementations through the public `Runtime` API, returning a `tokio::sync::mpsc::Receiver<StreamEvent>`.
+- **kernex-runtime**: `RuntimeBuilder::from_file(path)` — load a declarative TOML or YAML agent definition; maps `[runtime]` and `[memory]` sections into the builder without Rust code.
+- **kernex-runtime**: `opentelemetry` optional Cargo feature — enables `tracing-opentelemetry` and `opentelemetry` crates for export to Jaeger, Honeycomb, Grafana, and any OTel-compatible backend.
+- **kernex-core**: `GuardrailRunner` trait with `check_input` / `check_output` lifecycle hooks and `GuardrailAction::Allow`, `Block(String)`, `Sanitize(String)` outcomes; injectable via `RuntimeBuilder::with_guardrails()`.
+- **kernex-memory**: `PhaseCheckpoint` — pipeline run checkpointing to SQLite; `Store::upsert_phase_checkpoint()` and `Store::get_run_checkpoints()` enable crash-safe phase state tracking (pending, in_progress, completed, failed).
+- **kernex-core**: `MemoryConfig::max_connections` — configurable SQLite connection pool size (default: 4).
+- **kernex-providers**: `timeout_secs` field on all five HTTP provider TOML configs (`AnthropicConfig`, `OpenAiConfig`, `OllamaConfig`, `OpenRouterConfig`, `GeminiConfig`) and `ProviderConfig::timeout_secs` in `ProviderFactory` (default: 120 s); all HTTP providers expose a `with_timeout(secs) -> Self` builder.
+- **kernex-pipelines**: `Phase::parallel_group` — optional named group field; consecutive phases sharing a name are collected by `LoadedTopology::phase_groups()` into `PhaseGroup` structs for concurrent execution. Single-phase groups remain sequential.
+- **kernex-runtime**: `full_stack` example — end-to-end demo using `MockProvider`, memory, skills, and a 2-phase pipeline with corrective loop; no API key required.
+
+### Changed
+
+- **docs**: Landlock module doc updated with full ABI version table (V1/5.13 through V5/6.12), WSL1 and container edge cases, and partial-enforcement warning behavior.
+- **kernex-sandbox** (`lib.rs`): Linux Landlock description clarified — 5.13 is the minimum for any OS-level enforcement; 6.12 gives full ABI::V5 coverage; older kernels apply best-effort protection.
+
 ## [0.4.0] - 2026-03-09
 
 ### Added
