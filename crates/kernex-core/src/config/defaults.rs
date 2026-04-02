@@ -70,3 +70,6 @@ pub fn default_channel() -> String {
 pub fn default_max_connections() -> u32 {
     4
 }
+pub fn default_http_timeout_secs() -> u64 {
+    120
+}

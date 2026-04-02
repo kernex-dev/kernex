@@ -63,6 +63,9 @@ pub struct AnthropicConfig {
     pub model: String,
     #[serde(default = "default_anthropic_max_tokens")]
     pub max_tokens: u32,
+    /// HTTP request timeout in seconds (default: 120).
+    #[serde(default = "default_http_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 fn default_anthropic_max_tokens() -> u32 {
@@ -80,6 +83,9 @@ pub struct OpenAiConfig {
     pub model: String,
     #[serde(default = "default_openai_base_url")]
     pub base_url: String,
+    /// HTTP request timeout in seconds (default: 120).
+    #[serde(default = "default_http_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 /// Ollama local provider config.
@@ -91,6 +97,9 @@ pub struct OllamaConfig {
     pub base_url: String,
     #[serde(default = "default_ollama_model")]
     pub model: String,
+    /// HTTP request timeout in seconds (default: 120).
+    #[serde(default = "default_http_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 /// OpenRouter proxy config.
@@ -102,6 +111,9 @@ pub struct OpenRouterConfig {
     pub api_key: String,
     #[serde(default)]
     pub model: String,
+    /// HTTP request timeout in seconds (default: 120).
+    #[serde(default = "default_http_timeout_secs")]
+    pub timeout_secs: u64,
 }
 
 /// Google Gemini API provider config.
@@ -113,4 +125,7 @@ pub struct GeminiConfig {
     pub api_key: String,
     #[serde(default = "default_gemini_model")]
     pub model: String,
+    /// HTTP request timeout in seconds (default: 120).
+    #[serde(default = "default_http_timeout_secs")]
+    pub timeout_secs: u64,
 }
