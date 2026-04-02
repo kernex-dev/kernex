@@ -42,6 +42,7 @@ pub mod telemetry;
 use kernex_core::config::MemoryConfig;
 use kernex_core::context::ContextNeeds;
 use kernex_core::error::KernexError;
+use kernex_core::guardrails::{GuardrailAction, GuardrailRunner};
 use kernex_core::hooks::{HookRunner, NoopHookRunner};
 use kernex_core::message::{CompletionMeta, Request, Response};
 use kernex_core::permissions::PermissionRules;
@@ -86,6 +87,8 @@ pub struct Runtime {
     pub hook_runner: Arc<dyn HookRunner>,
     /// Declarative allow/deny rules applied before each tool call.
     pub permission_rules: Option<Arc<PermissionRules>>,
+    /// Optional guardrail applied to input before provider call and output after.
+    pub guardrail_runner: Option<Arc<dyn GuardrailRunner>>,
 }
 
 impl Runtime {
@@ -117,6 +120,25 @@ impl Runtime {
         #[allow(unused_variables)] needs: &ContextNeeds,
     ) -> Result<Response, KernexError> {
         let project_ref = self.project.as_deref();
+
+        // Input guardrail: check (and optionally sanitize) the request text
+        // before it reaches the provider or is stored in memory.
+        let owned_req;
+        let request = if let Some(gr) = &self.guardrail_runner {
+            match gr.check_input(&request.text).await {
+                GuardrailAction::Allow => request,
+                GuardrailAction::Block(reason) => return Err(KernexError::Guardrail(reason)),
+                GuardrailAction::Sanitize(clean) => {
+                    owned_req = Request {
+                        text: clean,
+                        ..request.clone()
+                    };
+                    &owned_req
+                }
+            }
+        } else {
+            request
+        };
 
         // Build skill context (prompt block + optional model override).
         let skill_ctx = build_skill_prompt(&self.skills);
@@ -171,7 +193,21 @@ impl Runtime {
         context.permission_rules = self.permission_rules.clone();
 
         // Send to provider.
-        let response = provider.complete(&context).await?;
+        let raw_response = provider.complete(&context).await?;
+
+        // Output guardrail: check (and optionally sanitize) the response text.
+        let response = if let Some(gr) = &self.guardrail_runner {
+            match gr.check_output(&raw_response.text).await {
+                GuardrailAction::Allow => raw_response,
+                GuardrailAction::Block(reason) => return Err(KernexError::Guardrail(reason)),
+                GuardrailAction::Sanitize(clean) => Response {
+                    text: clean,
+                    metadata: raw_response.metadata,
+                },
+            }
+        } else {
+            raw_response
+        };
 
         // Persist exchange in memory.
         #[allow(unused_variables)]
@@ -227,6 +263,25 @@ impl Runtime {
         #[allow(unused_variables)] needs: &ContextNeeds,
     ) -> Result<tokio::sync::mpsc::Receiver<StreamEvent>, KernexError> {
         let project_ref = self.project.as_deref();
+
+        // Input guardrail: check (and optionally sanitize) the request text
+        // before the stream is opened. Block returns early; Sanitize clones the request.
+        let owned_req;
+        let request = if let Some(gr) = &self.guardrail_runner {
+            match gr.check_input(&request.text).await {
+                GuardrailAction::Allow => request,
+                GuardrailAction::Block(reason) => return Err(KernexError::Guardrail(reason)),
+                GuardrailAction::Sanitize(clean) => {
+                    owned_req = Request {
+                        text: clean,
+                        ..request.clone()
+                    };
+                    &owned_req
+                }
+            }
+        } else {
+            request
+        };
 
         let skill_ctx = build_skill_prompt(&self.skills);
         let full_system_prompt = if skill_ctx.prompt.is_empty() {
@@ -287,6 +342,7 @@ impl Runtime {
         let request_clone = request.clone();
         #[allow(unused_variables)]
         let project_key = project_ref.unwrap_or("default").to_string();
+        let guardrail_runner = self.guardrail_runner.clone();
 
         tokio::spawn(async move {
             use kernex_core::stream::{StreamAccumulator, StreamEvent as SE};
@@ -304,11 +360,24 @@ impl Runtime {
             }
 
             // Persist accumulated exchange to memory.
+            // Output guardrail runs on the full accumulated text before storage.
+            // The stream has already been forwarded to the caller so the guardrail
+            // only affects what is persisted — it does not modify the streamed tokens.
             #[cfg(feature = "sqlite-store")]
             {
                 let elapsed_ms = started.elapsed().as_millis() as u64;
+                let accumulated = acc.into_text();
+                let persisted_text = if let Some(gr) = &guardrail_runner {
+                    match gr.check_output(&accumulated).await {
+                        GuardrailAction::Allow => accumulated,
+                        GuardrailAction::Block(_) => String::new(),
+                        GuardrailAction::Sanitize(clean) => clean,
+                    }
+                } else {
+                    accumulated
+                };
                 let response = Response {
-                    text: acc.into_text(),
+                    text: persisted_text,
                     metadata: CompletionMeta {
                         provider_used: provider_name,
                         tokens_used: None,
@@ -329,6 +398,7 @@ impl Runtime {
                 let _ = acc;
                 let _ = started;
                 let _ = provider_name;
+                let _ = guardrail_runner;
             }
         });
 
@@ -353,6 +423,24 @@ impl Runtime {
     ) -> Result<RunOutcome, KernexError> {
         let needs = ContextNeeds::default();
         let project_ref = self.project.as_deref();
+
+        // Input guardrail.
+        let owned_req;
+        let request = if let Some(gr) = &self.guardrail_runner {
+            match gr.check_input(&request.text).await {
+                GuardrailAction::Allow => request,
+                GuardrailAction::Block(reason) => return Err(KernexError::Guardrail(reason)),
+                GuardrailAction::Sanitize(clean) => {
+                    owned_req = Request {
+                        text: clean,
+                        ..request.clone()
+                    };
+                    &owned_req
+                }
+            }
+        } else {
+            request
+        };
 
         let skill_ctx = build_skill_prompt(&self.skills);
         let full_system_prompt = if skill_ctx.prompt.is_empty() {
@@ -402,7 +490,21 @@ impl Runtime {
         context.hook_runner = Some(self.hook_runner.clone());
         context.permission_rules = self.permission_rules.clone();
 
-        let response = provider.complete(&context).await?;
+        let raw_response = provider.complete(&context).await?;
+
+        // Output guardrail.
+        let response = if let Some(gr) = &self.guardrail_runner {
+            match gr.check_output(&raw_response.text).await {
+                GuardrailAction::Allow => raw_response,
+                GuardrailAction::Block(reason) => return Err(KernexError::Guardrail(reason)),
+                GuardrailAction::Sanitize(clean) => Response {
+                    text: clean,
+                    metadata: raw_response.metadata,
+                },
+            }
+        } else {
+            raw_response
+        };
 
         // Fire on_stop hook.
         self.hook_runner.on_stop(&response.text).await;
@@ -443,6 +545,7 @@ pub struct RuntimeBuilder {
     project: Option<String>,
     hook_runner: Option<Arc<dyn HookRunner>>,
     permission_rules: Option<Arc<PermissionRules>>,
+    guardrail_runner: Option<Arc<dyn GuardrailRunner>>,
 }
 
 impl RuntimeBuilder {
@@ -457,6 +560,7 @@ impl RuntimeBuilder {
             project: None,
             hook_runner: None,
             permission_rules: None,
+            guardrail_runner: None,
         }
     }
 
@@ -534,6 +638,12 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Set a guardrail runner that intercepts and filters input/output text.
+    pub fn guardrail_runner(mut self, runner: Arc<dyn GuardrailRunner>) -> Self {
+        self.guardrail_runner = Some(runner);
+        self
+    }
+
     /// Build and initialize the runtime.
     pub async fn build(self) -> Result<Runtime, KernexError> {
         let expanded_dir = kernex_core::shellexpand(&self.data_dir);
@@ -580,6 +690,7 @@ impl RuntimeBuilder {
             project: self.project,
             hook_runner,
             permission_rules: self.permission_rules,
+            guardrail_runner: self.guardrail_runner,
         })
     }
 }
