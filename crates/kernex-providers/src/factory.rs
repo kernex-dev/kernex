@@ -40,6 +40,16 @@ fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
         ("ollama", ModelTier::Flagship) => "llama3.1:70b",
         ("openrouter", ModelTier::Standard) => "anthropic/claude-sonnet-4-6",
         ("openrouter", ModelTier::Flagship) => "anthropic/claude-opus-4-6",
+        ("groq", ModelTier::Standard) => "llama-3.3-70b-versatile",
+        ("groq", ModelTier::Flagship) => "deepseek-r1-distill-llama-70b",
+        ("mistral", ModelTier::Standard) => "mistral-small-latest",
+        ("mistral", ModelTier::Flagship) => "mistral-large-latest",
+        ("deepseek", ModelTier::Standard) => "deepseek-chat",
+        ("deepseek", ModelTier::Flagship) => "deepseek-reasoner",
+        ("fireworks", ModelTier::Standard) => "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        ("fireworks", ModelTier::Flagship) => "accounts/fireworks/models/deepseek-r1",
+        ("xai", ModelTier::Standard) => "grok-3-mini",
+        ("xai", ModelTier::Flagship) => "grok-3",
         // claude-code: model is passed as a hint to the CLI; tier does not apply.
         _ => "",
     }
@@ -129,6 +139,84 @@ impl ProviderFactory {
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
+            // OpenAI-compatible third-party providers.
+            "groq" => {
+                let model = resolve_model("groq", config.model, config.tier)
+                    .unwrap_or_else(|| "llama-3.3-70b-versatile".to_string());
+                let p = crate::openai::OpenAiProvider::from_config(
+                    config
+                        .base_url
+                        .unwrap_or_else(|| "https://api.groq.com/openai/v1".to_string()),
+                    config.api_key.unwrap_or_default(),
+                    model,
+                    config.workspace_path,
+                )?
+                .with_name("groq")
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                Ok(Box::new(p))
+            }
+            "mistral" => {
+                let model = resolve_model("mistral", config.model, config.tier)
+                    .unwrap_or_else(|| "mistral-small-latest".to_string());
+                let p = crate::openai::OpenAiProvider::from_config(
+                    config
+                        .base_url
+                        .unwrap_or_else(|| "https://api.mistral.ai/v1".to_string()),
+                    config.api_key.unwrap_or_default(),
+                    model,
+                    config.workspace_path,
+                )?
+                .with_name("mistral")
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                Ok(Box::new(p))
+            }
+            "deepseek" => {
+                let model = resolve_model("deepseek", config.model, config.tier)
+                    .unwrap_or_else(|| "deepseek-chat".to_string());
+                let p = crate::openai::OpenAiProvider::from_config(
+                    config
+                        .base_url
+                        .unwrap_or_else(|| "https://api.deepseek.com/v1".to_string()),
+                    config.api_key.unwrap_or_default(),
+                    model,
+                    config.workspace_path,
+                )?
+                .with_name("deepseek")
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                Ok(Box::new(p))
+            }
+            "fireworks" => {
+                let model = resolve_model("fireworks", config.model, config.tier)
+                    .unwrap_or_else(|| {
+                        "accounts/fireworks/models/llama-v3p3-70b-instruct".to_string()
+                    });
+                let p = crate::openai::OpenAiProvider::from_config(
+                    config
+                        .base_url
+                        .unwrap_or_else(|| "https://api.fireworks.ai/inference/v1".to_string()),
+                    config.api_key.unwrap_or_default(),
+                    model,
+                    config.workspace_path,
+                )?
+                .with_name("fireworks")
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                Ok(Box::new(p))
+            }
+            "xai" => {
+                let model = resolve_model("xai", config.model, config.tier)
+                    .unwrap_or_else(|| "grok-3-mini".to_string());
+                let p = crate::openai::OpenAiProvider::from_config(
+                    config
+                        .base_url
+                        .unwrap_or_else(|| "https://api.x.ai/v1".to_string()),
+                    config.api_key.unwrap_or_default(),
+                    model,
+                    config.workspace_path,
+                )?
+                .with_name("xai")
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                Ok(Box::new(p))
+            }
             _ => Err(KernexError::Provider(format!(
                 "Unknown provider type: {}",
                 provider
@@ -145,6 +233,11 @@ impl ProviderFactory {
             "ollama",
             "openrouter",
             "claude-code",
+            "groq",
+            "mistral",
+            "deepseek",
+            "fireworks",
+            "xai",
         ]
     }
 }
@@ -196,7 +289,12 @@ mod tests {
         assert!(providers.contains(&"ollama"));
         assert!(providers.contains(&"openrouter"));
         assert!(providers.contains(&"claude-code"));
-        assert_eq!(providers.len(), 6);
+        assert!(providers.contains(&"groq"));
+        assert!(providers.contains(&"mistral"));
+        assert!(providers.contains(&"deepseek"));
+        assert!(providers.contains(&"fireworks"));
+        assert!(providers.contains(&"xai"));
+        assert_eq!(providers.len(), 11);
     }
 
     #[test]
@@ -357,5 +455,107 @@ mod tests {
         let result = ProviderFactory::create("anthropic", config);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name(), "anthropic");
+    }
+
+    #[test]
+    fn factory_creates_groq() {
+        let config = ProviderConfig {
+            api_key: Some("gsk_test".to_string()),
+            workspace_path: Some(PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        let result = ProviderFactory::create("groq", config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "groq");
+    }
+
+    #[test]
+    fn factory_creates_mistral() {
+        let config = ProviderConfig {
+            api_key: Some("test-key".to_string()),
+            workspace_path: Some(PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        let result = ProviderFactory::create("mistral", config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "mistral");
+    }
+
+    #[test]
+    fn factory_creates_deepseek() {
+        let config = ProviderConfig {
+            api_key: Some("test-key".to_string()),
+            workspace_path: Some(PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        let result = ProviderFactory::create("deepseek", config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "deepseek");
+    }
+
+    #[test]
+    fn factory_creates_fireworks() {
+        let config = ProviderConfig {
+            api_key: Some("fw_test".to_string()),
+            workspace_path: Some(PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        let result = ProviderFactory::create("fireworks", config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "fireworks");
+    }
+
+    #[test]
+    fn factory_creates_xai() {
+        let config = ProviderConfig {
+            api_key: Some("xai_test".to_string()),
+            workspace_path: Some(PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        let result = ProviderFactory::create("xai", config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "xai");
+    }
+
+    #[test]
+    fn factory_compat_providers_use_custom_base_url() {
+        let config = ProviderConfig {
+            api_key: Some("test".to_string()),
+            base_url: Some("https://my-proxy.example.com/v1".to_string()),
+            workspace_path: Some(PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        let result = ProviderFactory::create("groq", config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn model_from_tier_compat_providers() {
+        assert_eq!(
+            model_from_tier("groq", ModelTier::Standard),
+            "llama-3.3-70b-versatile"
+        );
+        assert_eq!(
+            model_from_tier("groq", ModelTier::Flagship),
+            "deepseek-r1-distill-llama-70b"
+        );
+        assert_eq!(
+            model_from_tier("mistral", ModelTier::Standard),
+            "mistral-small-latest"
+        );
+        assert_eq!(
+            model_from_tier("mistral", ModelTier::Flagship),
+            "mistral-large-latest"
+        );
+        assert_eq!(
+            model_from_tier("deepseek", ModelTier::Standard),
+            "deepseek-chat"
+        );
+        assert_eq!(
+            model_from_tier("deepseek", ModelTier::Flagship),
+            "deepseek-reasoner"
+        );
+        assert_eq!(model_from_tier("xai", ModelTier::Standard), "grok-3-mini");
+        assert_eq!(model_from_tier("xai", ModelTier::Flagship), "grok-3");
     }
 }
