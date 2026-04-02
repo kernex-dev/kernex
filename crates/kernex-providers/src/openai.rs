@@ -55,6 +55,17 @@ impl OpenAiProvider {
         })
     }
 
+    /// Override the HTTP request timeout. Defaults to 120 s.
+    pub fn with_timeout(mut self, secs: u64) -> Self {
+        if let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(secs))
+            .build()
+        {
+            self.client = client;
+        }
+        self
+    }
+
     /// Override the provider name reported by [`Provider::name`].
     ///
     /// Used by the factory to give OpenAI-compatible variants (groq, mistral,

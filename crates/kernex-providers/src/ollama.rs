@@ -44,6 +44,17 @@ impl OllamaProvider {
         })
     }
 
+    /// Override the HTTP request timeout. Defaults to 120 s.
+    pub fn with_timeout(mut self, secs: u64) -> Self {
+        if let Ok(client) = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(secs))
+            .build()
+        {
+            self.client = client;
+        }
+        self
+    }
+
     /// Set a custom sandbox profile.
     pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
         self.sandbox_profile = profile;
