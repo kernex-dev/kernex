@@ -28,6 +28,7 @@ pub struct OpenAiProvider {
     base_url: String,
     api_key: SecretString,
     model: String,
+    name: String,
     workspace_path: Option<PathBuf>,
     sandbox_profile: kernex_sandbox::SandboxProfile,
 }
@@ -48,9 +49,19 @@ impl OpenAiProvider {
             base_url,
             api_key: SecretString::new(api_key),
             model,
+            name: "openai".to_string(),
             workspace_path,
             sandbox_profile: Default::default(),
         })
+    }
+
+    /// Override the provider name reported by [`Provider::name`].
+    ///
+    /// Used by the factory to give OpenAI-compatible variants (groq, mistral,
+    /// deepseek, etc.) their own identity for logging and metrics.
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = name.into();
+        self
     }
 
     /// Set a custom sandbox profile.
@@ -308,7 +319,7 @@ pub(crate) async fn openai_agentic_complete(
 #[async_trait]
 impl Provider for OpenAiProvider {
     fn name(&self) -> &str {
-        "openai"
+        &self.name
     }
 
     fn requires_api_key(&self) -> bool {
@@ -316,6 +327,7 @@ impl Provider for OpenAiProvider {
     }
 
     async fn complete(&self, context: &Context) -> Result<Response, KernexError> {
+        let name = self.name.as_str();
         let (system, api_messages) = context.to_api_messages();
         let effective_model = context.model.as_deref().unwrap_or(&self.model);
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
@@ -342,7 +354,7 @@ impl Provider for OpenAiProvider {
                     &api_messages,
                     &mut executor,
                     max_turns,
-                    "openai",
+                    name,
                 )
                 .await;
 
@@ -360,16 +372,16 @@ impl Provider for OpenAiProvider {
             tools: None,
         };
 
-        debug!("openai: POST {url} model={effective_model} (no tools)");
+        debug!("{name}: POST {url} model={effective_model} (no tools)");
 
         let body_json = serde_json::to_vec(&body)
-            .map_err(|e| KernexError::Provider(format!("openai: serialize failed: {e}")))?;
+            .map_err(|e| KernexError::Provider(format!("{name}: serialize failed: {e}")))?;
 
         let resp = {
             let client = &self.client;
             let url = &url;
             let auth = &auth;
-            send_with_retry("openai", || {
+            send_with_retry(name, || {
                 let req = client
                     .post(url.as_str())
                     .header("Authorization", auth.as_str())
@@ -384,14 +396,14 @@ impl Provider for OpenAiProvider {
             let status = resp.status();
             let text = resp.text().await.unwrap_or_default();
             return Err(KernexError::Provider(format!(
-                "openai returned {status}: {text}"
+                "{name} returned {status}: {text}"
             )));
         }
 
         let parsed: ChatCompletionResponse = resp
             .json()
             .await
-            .map_err(|e| KernexError::Provider(format!("openai: failed to parse response: {e}")))?;
+            .map_err(|e| KernexError::Provider(format!("{name}: failed to parse response: {e}")))?;
 
         let text = parsed
             .choices
@@ -399,7 +411,7 @@ impl Provider for OpenAiProvider {
             .and_then(|c| c.first())
             .and_then(|c| c.message.as_ref())
             .and_then(|m| m.content.clone())
-            .unwrap_or_else(|| "No response from OpenAI.".to_string());
+            .unwrap_or_else(|| format!("No response from {name}."));
 
         let tokens = parsed
             .usage
@@ -408,18 +420,13 @@ impl Provider for OpenAiProvider {
             .unwrap_or(0);
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
-        Ok(build_response(
-            text,
-            "openai",
-            tokens,
-            elapsed_ms,
-            parsed.model,
-        ))
+        Ok(build_response(text, name, tokens, elapsed_ms, parsed.model))
     }
 
     async fn is_available(&self) -> bool {
+        let name = self.name.as_str();
         if self.api_key.expose_secret().is_empty() {
-            warn!("openai: no API key configured");
+            warn!("{name}: no API key configured");
             return false;
         }
         let url = format!("{}/models", self.base_url.trim_end_matches('/'));
@@ -435,7 +442,7 @@ impl Provider for OpenAiProvider {
         {
             Ok(resp) => resp.status().is_success(),
             Err(e) => {
-                warn!("openai not available: {e}");
+                warn!("{name} not available: {e}");
                 false
             }
         }
@@ -456,6 +463,20 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.name(), "openai");
+        assert!(p.requires_api_key());
+    }
+
+    #[test]
+    fn test_with_name_override() {
+        let p = OpenAiProvider::from_config(
+            "https://api.groq.com/openai/v1".into(),
+            "gsk_test".into(),
+            "llama-3.3-70b-versatile".into(),
+            None,
+        )
+        .unwrap()
+        .with_name("groq");
+        assert_eq!(p.name(), "groq");
         assert!(p.requires_api_key());
     }
 
