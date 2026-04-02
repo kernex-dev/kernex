@@ -6,16 +6,42 @@
 //! and `{data_dir}/config.toml` (Refer-only access blocks both reads and
 //! writes via Landlock's intersection semantics).
 //!
-//! **Linux Edge Cases and Fallback:**
-//! Not all Linux kernels or environments support Landlock (e.g., older kernels,
-//! WSL1, or containerized environments without the kernel security module enabled).
-//! In such cases, `landlock_available()` silently falls back to executing a standard
-//! `tokio::process::Command`. The framework still provides a robust code-level
-//! enforcement layer via `is_read_blocked()` and `is_write_blocked()` which
-//! protects sensitive tool inputs independent of OS-level sandboxing.
+//! ## Kernel Version Requirements
+//!
+//! Landlock support was introduced progressively across kernel releases. Each
+//! ABI version adds new access rights; older kernels silently ignore unknown
+//! flags via the `landlock` crate's version negotiation.
+//!
+//! | ABI | Kernel | Access rights added |
+//! |-----|--------|---------------------|
+//! | V1  | 5.13   | Filesystem reads, writes, execution (initial LSM) |
+//! | V2  | 5.19   | File truncation (`MakeFifo`, `TruncateFile`) |
+//! | V3  | 6.2    | Symlink creation, extended stat operations |
+//! | V4  | 6.7    | `ioctl` on devices and files |
+//! | V5  | 6.12   | Scope restrictions (cross-thread fd access) |
+//!
+//! This module requests [`ABI::V5`] access rights via [`full_access()`].
+//! On kernels below 6.12, the `landlock` crate negotiates down automatically
+//! and applies whatever rights the running kernel supports. The
+//! [`RulesetStatus::FullyEnforced`] check logs a warning when enforcement is
+//! partial so operators can identify under-protected deployments.
+//!
+//! **Minimum for any OS-level enforcement:** Linux 5.13.
+//! Below 5.13 (or WSL1, or containers with the Landlock LSM disabled),
+//! [`landlock_available()`] returns `false` and the sandbox falls back entirely
+//! to code-level protection via `is_read_blocked()` / `is_write_blocked()`.
+//!
+//! ## Edge Cases and Fallback
+//!
+//! - **WSL1**: Does not expose the Landlock ABI; falls back to code-level enforcement.
+//! - **Containers**: Require the host kernel to have `CONFIG_SECURITY_LANDLOCK=y` and
+//!   the LSM enabled (e.g., `lsm=landlock,...`). Without it, the ABI file is absent.
+//! - **Partial enforcement**: Kernels between 5.13 and 6.11 apply the rights they know
+//!   about and log `"best-effort protection active"`. Core protection (no writes to
+//!   `data/` or `config.toml`) is included in V1 rights and enforced on all 5.13+ kernels.
 //!
 //! Code-level enforcement via `is_read_blocked()` and `is_write_blocked()`
-//! provides additional protection on all platforms.
+//! provides additional protection on all platforms regardless of kernel version.
 
 use std::path::PathBuf;
 use tokio::process::Command;
