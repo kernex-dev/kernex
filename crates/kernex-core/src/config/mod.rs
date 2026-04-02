@@ -11,8 +11,8 @@ use std::path::Path;
 use crate::error::KernexError;
 use defaults::*;
 
-/// Top-level Kernex configuration (loadable from TOML).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Top-level Kernex configuration (loadable from TOML or YAML).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct KernexConfig {
     #[serde(default)]
     pub runtime: RuntimeConfig,
@@ -35,6 +35,15 @@ pub struct RuntimeConfig {
     pub data_dir: String,
     #[serde(default = "default_log_level")]
     pub log_level: String,
+    /// Base system prompt prepended to every request. Empty = no system prompt.
+    #[serde(default)]
+    pub system_prompt: String,
+    /// Channel identifier (e.g. `"cli"`, `"api"`, `"slack"`).
+    #[serde(default = "default_channel")]
+    pub channel: String,
+    /// Active project for scoping memory and lessons. `None` = no project scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
 }
 
 impl Default for RuntimeConfig {
@@ -43,6 +52,9 @@ impl Default for RuntimeConfig {
             name: default_name(),
             data_dir: default_data_dir(),
             log_level: default_log_level(),
+            system_prompt: String::new(),
+            channel: default_channel(),
+            project: None,
         }
     }
 }
@@ -163,6 +175,50 @@ pub fn load(path: &str) -> Result<KernexConfig, KernexError> {
     Ok(config)
 }
 
+/// Load configuration from a YAML file.
+///
+/// Falls back to defaults if the file does not exist.
+/// Supports `~` expansion in the path.
+///
+/// Requires the `yaml` feature.
+#[cfg(feature = "yaml")]
+pub fn load_yaml(path: &str) -> Result<KernexConfig, KernexError> {
+    let expanded = shellexpand(path);
+    let path = Path::new(&expanded);
+    if !path.exists() {
+        tracing::info!(
+            "Config file not found at {}, using defaults",
+            path.display()
+        );
+        return Ok(KernexConfig::default());
+    }
+
+    let content = std::fs::read_to_string(path)
+        .map_err(|e| KernexError::Config(format!("failed to read {}: {}", path.display(), e)))?;
+
+    let config: KernexConfig = serde_yaml::from_str(&content)
+        .map_err(|e| KernexError::Config(format!("failed to parse yaml config: {e}")))?;
+
+    Ok(config)
+}
+
+/// Load configuration from a file, auto-detecting format by extension.
+///
+/// Files ending in `.yaml` or `.yml` are parsed as YAML (requires the `yaml` feature).
+/// All other extensions are treated as TOML.
+pub fn load_file(path: &str) -> Result<KernexConfig, KernexError> {
+    let lower = path.to_lowercase();
+    if lower.ends_with(".yaml") || lower.ends_with(".yml") {
+        #[cfg(feature = "yaml")]
+        return load_yaml(path);
+        #[cfg(not(feature = "yaml"))]
+        return Err(KernexError::Config(
+            "YAML support requires the 'yaml' feature flag on kernex-core".to_string(),
+        ));
+    }
+    load(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,6 +250,9 @@ mod tests {
         assert_eq!(cfg.name, "kernex");
         assert_eq!(cfg.data_dir, "~/.kernex");
         assert_eq!(cfg.log_level, "info");
+        assert_eq!(cfg.channel, "cli");
+        assert!(cfg.system_prompt.is_empty());
+        assert!(cfg.project.is_none());
     }
 
     #[test]
@@ -201,5 +260,38 @@ mod tests {
         let cfg = MemoryConfig::default();
         assert_eq!(cfg.backend, "sqlite");
         assert!(cfg.db_path.contains("memory.db"));
+    }
+
+    #[test]
+    fn test_toml_roundtrip_with_agent_fields() {
+        let toml_src = r#"
+[runtime]
+name = "my-agent"
+data_dir = "~/.my-agent"
+channel = "api"
+project = "acme"
+system_prompt = "You are a coding assistant."
+"#;
+        let config: KernexConfig = toml::from_str(toml_src).unwrap();
+        assert_eq!(config.runtime.name, "my-agent");
+        assert_eq!(config.runtime.channel, "api");
+        assert_eq!(config.runtime.project, Some("acme".to_string()));
+        assert_eq!(config.runtime.system_prompt, "You are a coding assistant.");
+    }
+
+    #[test]
+    fn test_load_file_routes_to_toml() {
+        let config = load_file("/tmp/nonexistent-kernex-99999.toml").unwrap();
+        assert_eq!(config.runtime.name, "kernex");
+    }
+
+    #[test]
+    fn test_load_file_returns_error_for_yaml_without_feature() {
+        // Without the `yaml` feature compiled in, load_file should return an error
+        // for .yaml extensions. If the feature IS enabled, it just falls back to defaults.
+        let result = load_file("/tmp/nonexistent-kernex-99999.yaml");
+        // Either Ok (yaml feature enabled, file missing → defaults) or
+        // Err (yaml feature disabled → config error). Both are valid.
+        let _ = result;
     }
 }

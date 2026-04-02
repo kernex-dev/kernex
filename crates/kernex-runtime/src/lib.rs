@@ -564,6 +564,59 @@ impl RuntimeBuilder {
         }
     }
 
+    /// Create a new builder pre-populated from a declarative agent definition file.
+    ///
+    /// The file format is detected by extension: `.yaml` / `.yml` use YAML
+    /// (requires the `yaml` feature on `kernex-core`); all other extensions
+    /// use TOML. Missing files silently fall back to defaults.
+    ///
+    /// Maps `[runtime]` fields (`data_dir`, `system_prompt`, `channel`,
+    /// `project`) and `[memory]` → `db_path` into the builder. Provider
+    /// selection is left to the caller.
+    ///
+    /// # Example (agent.toml)
+    ///
+    /// ```toml
+    /// [runtime]
+    /// name       = "my-agent"
+    /// data_dir   = "~/.my-agent"
+    /// channel    = "api"
+    /// project    = "acme"
+    /// system_prompt = "You are a helpful coding assistant."
+    ///
+    /// [memory]
+    /// db_path = "~/.my-agent/memory.db"
+    /// ```
+    pub fn from_file(path: &str) -> Result<Self, kernex_core::error::KernexError> {
+        let config = kernex_core::config::load_file(path)?;
+        Ok(Self::from_config(&config))
+    }
+
+    /// Populate a builder from a pre-parsed [`KernexConfig`].
+    ///
+    /// Maps `runtime.{data_dir, system_prompt, channel, project}` and
+    /// `memory.db_path` into builder fields. Provider selection is left
+    /// to the caller.
+    ///
+    /// [`KernexConfig`]: kernex_core::config::KernexConfig
+    pub fn from_config(config: &kernex_core::config::KernexConfig) -> Self {
+        let mut builder = Self::new()
+            .data_dir(&config.runtime.data_dir)
+            .system_prompt(&config.runtime.system_prompt)
+            .channel(&config.runtime.channel);
+
+        if let Some(proj) = &config.runtime.project {
+            builder = builder.project(proj);
+        }
+
+        #[cfg(feature = "sqlite-store")]
+        {
+            builder = builder.db_path(&config.memory.db_path);
+        }
+
+        builder
+    }
+
     /// Create a new builder configured from environment variables.
     ///
     /// Recognizes:
@@ -762,6 +815,68 @@ mod tests {
         assert_eq!(runtime.system_prompt, "You are helpful.");
         assert_eq!(runtime.channel, "api");
         assert_eq!(runtime.project, Some("my-project".to_string()));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_runtime_builder_from_config() {
+        use kernex_core::config::{KernexConfig, RuntimeConfig};
+
+        let tmp = std::env::temp_dir().join("__kernex_test_from_config__");
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let mut cfg = KernexConfig::default();
+        cfg.runtime = RuntimeConfig {
+            name: "test-agent".to_string(),
+            data_dir: tmp.to_str().unwrap().to_string(),
+            channel: "slack".to_string(),
+            project: Some("my-proj".to_string()),
+            system_prompt: "Be concise.".to_string(),
+            ..RuntimeConfig::default()
+        };
+
+        let runtime = RuntimeBuilder::from_config(&cfg).build().await.unwrap();
+
+        assert_eq!(runtime.channel, "slack");
+        assert_eq!(runtime.project, Some("my-proj".to_string()));
+        assert_eq!(runtime.system_prompt, "Be concise.");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[tokio::test]
+    async fn test_runtime_builder_from_file_toml() {
+        use std::io::Write;
+
+        let tmp = std::env::temp_dir().join("__kernex_test_from_file__");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let cfg_path = tmp.join("agent.toml");
+        let mut f = std::fs::File::create(&cfg_path).unwrap();
+        writeln!(
+            f,
+            r#"[runtime]
+name = "file-agent"
+data_dir = "{}"
+channel = "api"
+project = "file-proj"
+system_prompt = "From file."
+"#,
+            tmp.to_str().unwrap().replace('\\', "\\\\")
+        )
+        .unwrap();
+
+        let runtime = RuntimeBuilder::from_file(cfg_path.to_str().unwrap())
+            .unwrap()
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(runtime.channel, "api");
+        assert_eq!(runtime.project, Some("file-proj".to_string()));
+        assert_eq!(runtime.system_prompt, "From file.");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

@@ -64,3 +64,6 @@ pub fn default_model() -> String {
 pub fn default_model_complex() -> String {
     "claude-opus-4-6".to_string()
 }
+pub fn default_channel() -> String {
+    "cli".to_string()
+}
