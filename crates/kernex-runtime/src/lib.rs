@@ -41,11 +41,11 @@ use kernex_core::context::ContextNeeds;
 use kernex_core::error::KernexError;
 use kernex_core::hooks::{HookRunner, NoopHookRunner};
 use kernex_core::message::{CompletionMeta, Request, Response};
-use kernex_core::stream::StreamEvent;
-use kernex_core::traits::StreamingProvider;
 use kernex_core::permissions::PermissionRules;
 use kernex_core::run::{RunConfig, RunOutcome};
+use kernex_core::stream::StreamEvent;
 use kernex_core::traits::Provider;
+use kernex_core::traits::StreamingProvider;
 #[cfg(feature = "sqlite-store")]
 use kernex_memory::Store;
 use kernex_skills::{
