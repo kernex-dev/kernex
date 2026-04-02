@@ -15,6 +15,7 @@ async fn test_store() -> Store {
         backend: "sqlite".to_string(),
         db_path: ":memory:".to_string(),
         max_context_messages: 10,
+        ..Default::default()
     };
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")
         .unwrap()

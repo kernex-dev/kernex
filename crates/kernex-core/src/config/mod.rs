@@ -68,6 +68,9 @@ pub struct MemoryConfig {
     pub db_path: String,
     #[serde(default = "default_max_context")]
     pub max_context_messages: usize,
+    /// Maximum number of SQLite connections in the pool (default: 4).
+    #[serde(default = "default_max_connections")]
+    pub max_connections: u32,
 }
 
 impl Default for MemoryConfig {
@@ -76,6 +79,7 @@ impl Default for MemoryConfig {
             backend: default_memory_backend(),
             db_path: default_db_path(),
             max_context_messages: default_max_context(),
+            max_connections: default_max_connections(),
         }
     }
 }
