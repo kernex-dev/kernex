@@ -40,7 +40,9 @@ use kernex_core::config::MemoryConfig;
 use kernex_core::context::ContextNeeds;
 use kernex_core::error::KernexError;
 use kernex_core::hooks::{HookRunner, NoopHookRunner};
-use kernex_core::message::{Request, Response};
+use kernex_core::message::{CompletionMeta, Request, Response};
+use kernex_core::stream::StreamEvent;
+use kernex_core::traits::StreamingProvider;
 use kernex_core::permissions::PermissionRules;
 use kernex_core::run::{RunConfig, RunOutcome};
 use kernex_core::traits::Provider;
@@ -187,6 +189,137 @@ impl Runtime {
         }
 
         Ok(response)
+    }
+
+    /// Stream a request through the runtime pipeline, returning events as they arrive.
+    ///
+    /// Builds context from memory, enriches with skills, opens a streaming connection
+    /// to the provider, and persists the exchange to memory after the stream completes.
+    /// Returns a channel receiver that yields [`StreamEvent`]s until `Done` or `Error`.
+    pub async fn complete_stream(
+        &self,
+        provider: &dyn StreamingProvider,
+        request: &Request,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamEvent>, KernexError> {
+        self.complete_stream_with_needs(provider, request, &ContextNeeds::default())
+            .await
+    }
+
+    /// Like [`complete_stream`](Self::complete_stream), but with explicit control over which
+    /// context blocks are loaded from memory.
+    pub async fn complete_stream_with_needs(
+        &self,
+        provider: &dyn StreamingProvider,
+        request: &Request,
+        #[allow(unused_variables)] needs: &ContextNeeds,
+    ) -> Result<tokio::sync::mpsc::Receiver<StreamEvent>, KernexError> {
+        let project_ref = self.project.as_deref();
+
+        let skill_ctx = build_skill_prompt(&self.skills);
+        let full_system_prompt = if skill_ctx.prompt.is_empty() {
+            self.system_prompt.clone()
+        } else if self.system_prompt.is_empty() {
+            skill_ctx.prompt.clone()
+        } else {
+            format!("{}\n\n{}", self.system_prompt, skill_ctx.prompt)
+        };
+
+        #[cfg(feature = "sqlite-store")]
+        let mut context = self
+            .store
+            .build_context(
+                &self.channel,
+                request,
+                &full_system_prompt,
+                needs,
+                project_ref,
+                None,
+            )
+            .await?;
+
+        #[cfg(not(feature = "sqlite-store"))]
+        let mut context = {
+            let mut ctx = kernex_core::context::Context::new(&request.text);
+            ctx.system_prompt = full_system_prompt;
+            ctx
+        };
+
+        if context.model.is_none() {
+            context.model = skill_ctx.model;
+        }
+
+        let mcp_servers = match_skill_triggers(&self.skills, &request.text);
+        if !mcp_servers.is_empty() {
+            context.mcp_servers = mcp_servers;
+        }
+        let toolboxes = match_skill_toolboxes(&self.skills, &request.text);
+        if !toolboxes.is_empty() {
+            context.toolboxes = toolboxes;
+        }
+
+        context.hook_runner = Some(self.hook_runner.clone());
+        context.permission_rules = self.permission_rules.clone();
+
+        // Open streaming connection to provider.
+        let provider_name = provider.name().to_string();
+        let mut upstream = provider.complete_stream(&context).await?;
+
+        // Forwarding channel returned to the caller.
+        let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
+
+        // Background task: forward events and persist exchange when done.
+        #[cfg(feature = "sqlite-store")]
+        let store = self.store.clone();
+        let channel = self.channel.clone();
+        let request_clone = request.clone();
+        #[allow(unused_variables)]
+        let project_key = project_ref.unwrap_or("default").to_string();
+
+        tokio::spawn(async move {
+            use kernex_core::stream::{StreamAccumulator, StreamEvent as SE};
+            let mut acc = StreamAccumulator::new();
+            let started = std::time::Instant::now();
+
+            while let Some(event) = upstream.recv().await {
+                acc.push(&event);
+                let is_terminal = matches!(event, SE::Done | SE::Error(_));
+                // Best-effort forward; drop silently if receiver was dropped.
+                let _ = tx.send(event).await;
+                if is_terminal {
+                    break;
+                }
+            }
+
+            // Persist accumulated exchange to memory.
+            #[cfg(feature = "sqlite-store")]
+            {
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                let response = Response {
+                    text: acc.into_text(),
+                    metadata: CompletionMeta {
+                        provider_used: provider_name,
+                        tokens_used: None,
+                        processing_time_ms: elapsed_ms,
+                        model: None,
+                        session_id: None,
+                    },
+                };
+                if let Err(e) = store
+                    .store_exchange(&channel, &request_clone, &response, &project_key)
+                    .await
+                {
+                    tracing::warn!("failed to persist streaming exchange: {e}");
+                }
+            }
+            #[cfg(not(feature = "sqlite-store"))]
+            {
+                let _ = acc;
+                let _ = started;
+                let _ = provider_name;
+            }
+        });
+
+        Ok(rx)
     }
 
     /// Run the agent with explicit lifecycle control.
