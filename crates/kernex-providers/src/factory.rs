@@ -50,6 +50,8 @@ fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
         ("fireworks", ModelTier::Flagship) => "accounts/fireworks/models/deepseek-r1",
         ("xai", ModelTier::Standard) => "grok-3-mini",
         ("xai", ModelTier::Flagship) => "grok-3",
+        ("bedrock", ModelTier::Standard) => "anthropic.claude-3-5-sonnet-20241022-v2:0",
+        ("bedrock", ModelTier::Flagship) => "anthropic.claude-3-7-sonnet-20250219-v1:0",
         // claude-code: model is passed as a hint to the CLI; tier does not apply.
         _ => "",
     }
@@ -186,8 +188,8 @@ impl ProviderFactory {
                 Ok(Box::new(p))
             }
             "fireworks" => {
-                let model = resolve_model("fireworks", config.model, config.tier)
-                    .unwrap_or_else(|| {
+                let model =
+                    resolve_model("fireworks", config.model, config.tier).unwrap_or_else(|| {
                         "accounts/fireworks/models/llama-v3p3-70b-instruct".to_string()
                     });
                 let p = crate::openai::OpenAiProvider::from_config(
@@ -217,6 +219,26 @@ impl ProviderFactory {
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
+            #[cfg(feature = "bedrock")]
+            "bedrock" => {
+                let model = resolve_model("bedrock", config.model, config.tier)
+                    .unwrap_or_else(|| "anthropic.claude-3-5-sonnet-20241022-v2:0".to_string());
+                let region = config.base_url.unwrap_or_else(|| "us-east-1".to_string());
+                let access_key_id = config.api_key.unwrap_or_default();
+                let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
+                let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
+                let p = crate::bedrock::BedrockProvider::from_config(
+                    region,
+                    access_key_id,
+                    secret_access_key,
+                    session_token,
+                    model,
+                    config.max_tokens.unwrap_or(8192),
+                    config.workspace_path,
+                )?
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                Ok(Box::new(p))
+            }
             _ => Err(KernexError::Provider(format!(
                 "Unknown provider type: {}",
                 provider
@@ -225,8 +247,11 @@ impl ProviderFactory {
     }
 
     /// Returns a list of all supported provider names.
-    pub fn supported_providers() -> &'static [&'static str] {
-        &[
+    ///
+    /// Includes `"bedrock"` only when compiled with the `bedrock` feature.
+    pub fn supported_providers() -> Vec<&'static str> {
+        #[cfg(not(feature = "bedrock"))]
+        return vec![
             "openai",
             "anthropic",
             "gemini",
@@ -238,6 +263,21 @@ impl ProviderFactory {
             "deepseek",
             "fireworks",
             "xai",
+        ];
+        #[cfg(feature = "bedrock")]
+        vec![
+            "openai",
+            "anthropic",
+            "gemini",
+            "ollama",
+            "openrouter",
+            "claude-code",
+            "groq",
+            "mistral",
+            "deepseek",
+            "fireworks",
+            "xai",
+            "bedrock",
         ]
     }
 }
@@ -294,7 +334,10 @@ mod tests {
         assert!(providers.contains(&"deepseek"));
         assert!(providers.contains(&"fireworks"));
         assert!(providers.contains(&"xai"));
+        #[cfg(not(feature = "bedrock"))]
         assert_eq!(providers.len(), 11);
+        #[cfg(feature = "bedrock")]
+        assert_eq!(providers.len(), 12);
     }
 
     #[test]
@@ -515,6 +558,32 @@ mod tests {
         let result = ProviderFactory::create("xai", config);
         assert!(result.is_ok());
         assert_eq!(result.unwrap().name(), "xai");
+    }
+
+    #[cfg(feature = "bedrock")]
+    #[test]
+    fn factory_creates_bedrock() {
+        let config = ProviderConfig {
+            api_key: Some("AKIATEST".to_string()),
+            workspace_path: Some(PathBuf::from("/tmp")),
+            ..Default::default()
+        };
+        let result = ProviderFactory::create("bedrock", config);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().name(), "bedrock");
+    }
+
+    #[cfg(feature = "bedrock")]
+    #[test]
+    fn model_from_tier_bedrock() {
+        assert_eq!(
+            model_from_tier("bedrock", ModelTier::Standard),
+            "anthropic.claude-3-5-sonnet-20241022-v2:0"
+        );
+        assert_eq!(
+            model_from_tier("bedrock", ModelTier::Flagship),
+            "anthropic.claude-3-7-sonnet-20250219-v1:0"
+        );
     }
 
     #[test]
