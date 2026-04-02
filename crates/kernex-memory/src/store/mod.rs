@@ -57,7 +57,7 @@ impl Store {
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
 
         let pool = SqlitePoolOptions::new()
-            .max_connections(4)
+            .max_connections(config.max_connections)
             .connect_with(opts)
             .await
             .map_err(|e| KernexError::Store(format!("failed to connect to sqlite: {e}")))?;

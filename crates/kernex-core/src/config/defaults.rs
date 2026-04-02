@@ -67,3 +67,6 @@ pub fn default_model_complex() -> String {
 pub fn default_channel() -> String {
     "cli".to_string()
 }
+pub fn default_max_connections() -> u32 {
+    4
+}
