@@ -105,9 +105,9 @@ Add Kernex to your project:
 
 ```toml
 [dependencies]
-kernex-runtime = "0.3"
-kernex-core = "0.3"
-kernex-providers = "0.3"
+kernex-runtime = "0.4"
+kernex-core = "0.4"
+kernex-providers = "0.4"
 tokio = { version = "1", features = ["full"] }
 ```
 
