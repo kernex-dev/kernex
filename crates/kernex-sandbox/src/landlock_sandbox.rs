@@ -116,7 +116,7 @@ fn apply_landlock(
 
     for allowed in &profile.allowed_paths {
         if allowed.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(&[allowed.clone()], full_access()))?;
+            ruleset = ruleset.add_rules(path_beneath_rules(std::slice::from_ref(allowed), full_access()))?;
         }
     }
 
@@ -138,7 +138,7 @@ fn apply_landlock(
 
     for blocked in &profile.blocked_paths {
         if blocked.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(&[blocked.clone()], refer_only()))?;
+            ruleset = ruleset.add_rules(path_beneath_rules(std::slice::from_ref(blocked), refer_only()))?;
         }
     }
 
