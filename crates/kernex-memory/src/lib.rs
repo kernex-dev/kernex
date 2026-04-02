@@ -13,5 +13,6 @@ pub use audit::AuditLogger;
 pub use consolidator::{ConsolidationResult, Consolidator, ConsolidatorConfig};
 pub use store::detect_language;
 pub use store::DueTask;
+pub use store::PhaseCheckpoint;
 pub use store::Store;
 pub use store::UsageSummary;
