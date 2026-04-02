@@ -1,0 +1,8 @@
+[advisories]
+# RUSTSEC-2023-0071: Marvin Attack timing sidechannel in the rsa crate.
+# This advisory has no upstream fix (rsa 0.9.x is unpatched).
+# rsa enters the dependency tree via sqlx-mysql, which is compiled by
+# sqlx-macros-core even when only the sqlite feature is enabled.
+# This project uses SQLite exclusively; MySQL is never activated.
+# Risk is accepted because the vulnerable code path is never executed.
+ignore = ["RUSTSEC-2023-0071"]
