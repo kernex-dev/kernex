@@ -1,6 +1,6 @@
 <h1 align="center">
   <br>
-  <img src="https://avatars.githubusercontent.com/u/214714388?s=200&v=4" alt="Kernex" width="120">
+  <img src="favicon-kernex.png" alt="Kernex" width="120">
   <br>
   Kernex
   <br>
