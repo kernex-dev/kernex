@@ -42,19 +42,26 @@ For running examples:
 
 ## Features
 
-- **Sandbox-first execution** — OS-level protection via Seatbelt (macOS) and Landlock (Linux) combined with highly configurable `SandboxProfile` allow/deny lists
-- **6 AI providers** — Claude Code CLI, Anthropic, OpenAI, Ollama, OpenRouter, Gemini
-- **OpenAI-compatible base URL** — works with LiteLLM, Cerebras, DeepSeek, Hugging Face, and any compatible endpoint
+- **Sandbox-first execution** — OS-level protection via Seatbelt (macOS) and Landlock (Linux, kernel 5.13+) combined with highly configurable `SandboxProfile` allow/deny lists
+- **11 AI providers** — Claude Code CLI, Anthropic, OpenAI, Ollama, OpenRouter, Gemini, Groq, Mistral, DeepSeek, Fireworks, xAI; AWS Bedrock via optional `bedrock` feature
+- **OpenAI-compatible base URL** — works with LiteLLM, Cerebras, Hugging Face, and any OpenAI-compatible endpoint
 - **Dynamic instantiation** — instantiate any provider from a config map at runtime via `ProviderFactory`
+- **Streaming API** — `Runtime::complete_stream()` surfaces provider streaming through the public API via `tokio::sync::mpsc::Receiver<StreamEvent>`
 - **Agentic run loop** — `Runtime::run()` with configurable turn limits; providers handle tool dispatch internally
 - **Hook system** — intercept every tool call with `HookRunner`: allow, block, audit, or rate-limit before execution
+- **Guardrails** — `GuardrailRunner` trait for semantic input/output filtering: Allow, Block, or Sanitize at the pipeline layer
 - **Typed tool schemas** — Auto-generated JSON Schema for tool parameters via `schemars`
 - **MCP client** — stdio-based Model Context Protocol for external tool integration
 - **Persistent memory** — SQLite-backed conversations, facts, reward-based learning, scheduled tasks
+- **Pipeline checkpointing** — crash-safe phase state stored to SQLite; resume pipelines after failure via `PhaseCheckpoint`
+- **Parallel pipeline phases** — declare `parallel_group` on consecutive topology phases to run them concurrently
 - **Skills.sh compatible** — load skills from `SKILL.md` files with TOML/YAML frontmatter; 12 builtin agent personas included
 - **Multi-agent pipelines** — TOML-defined topologies with corrective loops and file-mediated handoffs
+- **Declarative agent definitions** — `RuntimeBuilder::from_file(path)` loads TOML or YAML agent config without Rust code
 - **Trait-based composition** — implement `Provider` or `Store` to plug in your own backends
 - **Secure by default** — API keys protected in memory via `secrecy::SecretString`; prompt caching support for Anthropic
+- **OpenTelemetry** — optional `opentelemetry` feature exports traces to Jaeger, Honeycomb, Grafana, and any OTel backend
+- **Configurable HTTP timeouts** — per-provider `timeout_secs` in `ProviderConfig` (default: 120 s)
 
 ## Architecture
 
@@ -222,7 +229,7 @@ let runtime = RuntimeBuilder::new()
 
 ## Providers
 
-Kernex ships with 6 built-in AI providers:
+Kernex ships with 11 built-in AI providers, plus AWS Bedrock behind an optional feature:
 
 | Provider | Module | API Key Required |
 |----------|--------|-----------------|
@@ -232,6 +239,12 @@ Kernex ships with 6 built-in AI providers:
 | Ollama | `ollama` | No (local) |
 | OpenRouter | `openrouter` | Yes |
 | Gemini | `gemini` | Yes |
+| Groq | `groq` | Yes |
+| Mistral | `mistral` | Yes |
+| DeepSeek | `deepseek` | Yes |
+| Fireworks | `fireworks` | Yes |
+| xAI | `xai` | Yes |
+| AWS Bedrock | `bedrock` | Yes (SigV4 / AWS creds) |
 
 ### Prompt caching (Anthropic)
 
@@ -330,6 +343,7 @@ impl Provider for MyProvider {
 | `memory_agent` | Persistent facts and lessons | None | `cargo run --example memory_agent` |
 | `skill_loader` | Load skills and match triggers | None | `cargo run --example skill_loader` |
 | `pipeline_loader` | Multi-agent topology demo | None | `cargo run --example pipeline_loader` |
+| `full_stack` | Full-stack: memory + skills + 2-phase pipeline + corrective loop | None | `cargo run --example full_stack` |
 
 All examples are in [`crates/kernex-runtime/examples/`](crates/kernex-runtime/examples/).
 
@@ -404,7 +418,7 @@ mkdir -p ~/.kernex && chmod 755 ~/.kernex
 
 ### "provider error: timeout"
 
-The provider took longer than the configured timeout (default 120s). Check your internet connection or increase the timeout in `ProviderConfig`.
+The provider took longer than the configured timeout (default 120 s). Check your internet connection or set `timeout_secs` in `ProviderConfig` to a higher value.
 
 ### "Ollama not available"
 

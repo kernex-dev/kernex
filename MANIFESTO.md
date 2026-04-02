@@ -35,7 +35,7 @@ Code-level restrictions are defense in depth. OS-level restrictions are the wall
 
 Most SDKs are built by model providers. They work best with that provider's models, and porting to another is friction. Kernex treats providers as interchangeable.
 
-Six providers ship today: Claude Code CLI, Anthropic, OpenAI, Ollama, Gemini, OpenRouter. The OpenAI provider accepts a custom `base_url`, making it compatible with LiteLLM, DeepSeek, Cerebras, Hugging Face, and any OpenAI-compatible endpoint. Swap providers by changing one string. Your agent code does not change.
+Eleven providers ship today: Claude Code CLI, Anthropic, OpenAI, Ollama, Gemini, OpenRouter, Groq, Mistral, DeepSeek, Fireworks, and xAI. AWS Bedrock is available behind an optional feature flag. The OpenAI provider accepts a custom `base_url`, making it compatible with LiteLLM, Cerebras, Hugging Face, and any OpenAI-compatible endpoint. Swap providers by changing one string. Your agent code does not change.
 
 ### Composable Crates, Not a Monolith
 
@@ -55,7 +55,7 @@ The REWARD and LESSON system lets agents record what worked, what failed, and wh
 
 Multi-agent workflows defined in code are hard to version, review, and hand off. Kernex pipelines are TOML files: diff-able, readable, editable by anyone who can open a text file.
 
-Phases, agents, corrective loops, pre-validation: all declared in a topology file. No Python class hierarchies, no decorator chains, no proprietary DSL. A `TOPOLOGY.toml` describes the pipeline the same way a `Cargo.toml` describes a project.
+Phases, agents, corrective loops, pre-validation, and parallel execution: all declared in a topology file. Tag consecutive phases with the same `parallel_group` name and they run concurrently. No Python class hierarchies, no decorator chains, no proprietary DSL. A `TOPOLOGY.toml` describes the pipeline the same way a `Cargo.toml` describes a project.
 
 ### Skills.sh Compatibility
 
