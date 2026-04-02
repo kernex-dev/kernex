@@ -115,7 +115,7 @@ Kernex is not a finished product. It is a foundation.
 
 It does not ship a chatbot, a web interface, or a hosted service. It provides the runtime primitives so you can build those things correctly.
 
-It does not force an architecture on you. Use the full `RuntimeBuilder` or compose individual crates. Use six providers or implement your own. Use TOML pipelines or build dynamic ones in code.
+It does not force an architecture on you. Use the full `RuntimeBuilder` or compose individual crates. Use eleven built-in providers or implement your own. Use TOML pipelines or build dynamic ones in code.
 
 The best Kernex application is one where the framework disappears and only your agent remains.
 

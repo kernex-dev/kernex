@@ -100,7 +100,7 @@ graph TD
 |-------|-----------|-------------|
 | [`kernex-core`](crates/kernex-core) | [![](https://img.shields.io/crates/v/kernex-core?style=flat-square)](https://crates.io/crates/kernex-core) | Shared types, traits, config, sanitization |
 | [`kernex-sandbox`](crates/kernex-sandbox) | [![](https://img.shields.io/crates/v/kernex-sandbox?style=flat-square)](https://crates.io/crates/kernex-sandbox) | OS-level sandbox (Seatbelt + Landlock) |
-| [`kernex-providers`](crates/kernex-providers) | [![](https://img.shields.io/crates/v/kernex-providers?style=flat-square)](https://crates.io/crates/kernex-providers) | 6 AI providers, tool executor, MCP client |
+| [`kernex-providers`](crates/kernex-providers) | [![](https://img.shields.io/crates/v/kernex-providers?style=flat-square)](https://crates.io/crates/kernex-providers) | 11 AI providers (+ Bedrock optional), tool executor, MCP client |
 | [`kernex-memory`](crates/kernex-memory) | [![](https://img.shields.io/crates/v/kernex-memory?style=flat-square)](https://crates.io/crates/kernex-memory) | SQLite memory, FTS5 search, reward learning |
 | [`kernex-skills`](crates/kernex-skills) | [![](https://img.shields.io/crates/v/kernex-skills?style=flat-square)](https://crates.io/crates/kernex-skills) | Skill/project loader, trigger matching |
 | [`kernex-pipelines`](crates/kernex-pipelines) | [![](https://img.shields.io/crates/v/kernex-pipelines?style=flat-square)](https://crates.io/crates/kernex-pipelines) | TOML topology, multi-agent orchestration |
