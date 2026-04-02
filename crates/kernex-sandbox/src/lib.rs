@@ -11,10 +11,11 @@
 //!   and writes to `{data_dir}/data/` (memory.db) and `config.toml`; denies
 //!   writes to `/System`, `/bin`, `/sbin`, `/usr/{bin,sbin,lib,libexec}`,
 //!   `/private/etc`, `/Library`.
-//! - **Linux**: Landlock LSM via `pre_exec` hook (kernel 5.13+) — broad
-//!   read-only on `/` with full access to `$HOME`, `/tmp`, `/var/tmp`, `/opt`,
-//!   `/srv`, `/run`, `/media`, `/mnt`; restricted access to `{data_dir}/data/`
-//!   and `config.toml`.
+//! - **Linux**: Landlock LSM via `pre_exec` hook (kernel 5.13+ minimum, 6.12+
+//!   for full ABI::V5 enforcement; older kernels apply best-effort protection
+//!   using only the rights they support) — broad read-only on `/` with full
+//!   access to `$HOME`, `/tmp`, `/var/tmp`, `/opt`, `/srv`, `/run`, `/media`,
+//!   `/mnt`; restricted access to `{data_dir}/data/` and `config.toml`.
 //! - **Other**: Falls back to a plain command with a warning.
 //!
 //! Also provides [`is_write_blocked`] and [`is_read_blocked`] for code-level
