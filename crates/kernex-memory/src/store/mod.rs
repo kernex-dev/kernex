@@ -8,6 +8,7 @@
 //! - `context` — context building and user profile formatting
 //! - `context_helpers` — onboarding stages, system prompt composition, language detection
 
+mod checkpoints;
 mod context;
 mod context_helpers;
 mod conversations;
@@ -18,6 +19,7 @@ mod sessions;
 mod tasks;
 mod usage;
 
+pub use checkpoints::PhaseCheckpoint;
 pub use context::{detect_language, format_user_profile};
 pub use tasks::DueTask;
 pub use usage::UsageSummary;
@@ -186,6 +188,10 @@ impl Store {
             (
                 "014_token_usage",
                 include_str!("../../migrations/014_token_usage.sql"),
+            ),
+            (
+                "015_phase_checkpoints",
+                include_str!("../../migrations/015_phase_checkpoints.sql"),
             ),
         ];
 
