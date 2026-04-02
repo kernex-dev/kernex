@@ -35,6 +35,9 @@
 //! }
 //! ```
 
+#[cfg(feature = "opentelemetry")]
+pub mod telemetry;
+
 #[cfg(feature = "sqlite-store")]
 use kernex_core::config::MemoryConfig;
 use kernex_core::context::ContextNeeds;
@@ -102,6 +105,11 @@ impl Runtime {
 
     /// Like [`complete`](Self::complete), but with explicit control over which
     /// context blocks are loaded from memory.
+    #[tracing::instrument(
+        name = "kernex.complete",
+        skip_all,
+        fields(provider = provider.name(), sender = %request.sender_id)
+    )]
     pub async fn complete_with_needs(
         &self,
         provider: &dyn Provider,
@@ -207,6 +215,11 @@ impl Runtime {
 
     /// Like [`complete_stream`](Self::complete_stream), but with explicit control over which
     /// context blocks are loaded from memory.
+    #[tracing::instrument(
+        name = "kernex.stream",
+        skip_all,
+        fields(provider = provider.name(), sender = %request.sender_id)
+    )]
     pub async fn complete_stream_with_needs(
         &self,
         provider: &dyn StreamingProvider,
@@ -327,6 +340,11 @@ impl Runtime {
     /// Sets `max_turns` in context so the provider's agentic loop respects it,
     /// wires the runtime hook runner, calls the provider, fires the `on_stop`
     /// hook, and wraps the outcome in [`RunOutcome`].
+    #[tracing::instrument(
+        name = "kernex.run",
+        skip_all,
+        fields(provider = provider.name(), sender = %request.sender_id, turns = config.max_turns)
+    )]
     pub async fn run(
         &self,
         provider: &dyn Provider,
