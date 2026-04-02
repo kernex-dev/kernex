@@ -47,6 +47,32 @@ pub struct Phase {
     pub pre_validation: Option<ValidationConfig>,
     #[serde(default)]
     pub post_validation: Option<Vec<String>>,
+    /// Named parallel group. Consecutive phases sharing the same name
+    /// are collected into a single [`PhaseGroup`] for concurrent execution.
+    #[serde(default)]
+    pub parallel_group: Option<String>,
+}
+
+/// A group of phases to be executed together.
+///
+/// Single-phase groups run sequentially. Multi-phase groups (consecutive phases
+/// that share the same [`Phase::parallel_group`] name) should be executed in parallel.
+#[derive(Debug, Clone)]
+pub struct PhaseGroup {
+    pub phases: Vec<Phase>,
+}
+
+impl PhaseGroup {
+    /// Returns `true` when this group contains more than one phase.
+    pub fn is_parallel(&self) -> bool {
+        self.phases.len() > 1
+    }
+
+    fn parallel_group_name(&self) -> Option<&str> {
+        self.phases
+            .first()
+            .and_then(|p| p.parallel_group.as_deref())
+    }
 }
 
 fn default_model_tier() -> ModelTier {
@@ -144,6 +170,35 @@ impl LoadedTopology {
             .iter()
             .map(|(k, v)| (k.as_str(), v.as_str()))
             .collect()
+    }
+
+    /// Group phases for execution.
+    ///
+    /// Phases without a [`Phase::parallel_group`] become single-phase groups (sequential).
+    /// Consecutive phases sharing the same `parallel_group` name are merged into one
+    /// multi-phase [`PhaseGroup`] that the caller should execute in parallel.
+    pub fn phase_groups(&self) -> Vec<PhaseGroup> {
+        let mut groups: Vec<PhaseGroup> = Vec::new();
+
+        for phase in &self.topology.phases {
+            let joins_last = phase.parallel_group.is_some()
+                && groups
+                    .last()
+                    .map(|g| g.parallel_group_name() == phase.parallel_group.as_deref())
+                    .unwrap_or(false);
+
+            if joins_last {
+                if let Some(last) = groups.last_mut() {
+                    last.phases.push(phase.clone());
+                }
+            } else {
+                groups.push(PhaseGroup {
+                    phases: vec![phase.clone()],
+                });
+            }
+        }
+
+        groups
     }
 }
 
@@ -741,6 +796,214 @@ agent = "build-analyst"
     fn test_load_topology_missing_returns_error() {
         let result = load_topology("/tmp/__kernex_test_no_topo__", "nonexistent");
         assert!(result.is_err());
+    }
+
+    // --- Parallel group / PhaseGroup tests ---
+
+    #[test]
+    fn test_phase_groups_all_sequential() {
+        let toml_str = r#"
+[topology]
+name = "test"
+description = "Sequential"
+version = 1
+
+[[phases]]
+name = "a"
+agent = "build-a"
+
+[[phases]]
+name = "b"
+agent = "build-b"
+"#;
+        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let loaded = LoadedTopology {
+            topology: topo,
+            agents: Default::default(),
+        };
+        let groups = loaded.phase_groups();
+        assert_eq!(groups.len(), 2);
+        assert!(!groups[0].is_parallel());
+        assert!(!groups[1].is_parallel());
+        assert_eq!(groups[0].phases[0].name, "a");
+        assert_eq!(groups[1].phases[0].name, "b");
+    }
+
+    #[test]
+    fn test_phase_groups_two_parallel() {
+        let toml_str = r#"
+[topology]
+name = "test"
+description = "Parallel pair"
+version = 1
+
+[[phases]]
+name = "a"
+agent = "build-a"
+parallel_group = "stage-1"
+
+[[phases]]
+name = "b"
+agent = "build-b"
+parallel_group = "stage-1"
+"#;
+        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let loaded = LoadedTopology {
+            topology: topo,
+            agents: Default::default(),
+        };
+        let groups = loaded.phase_groups();
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].is_parallel());
+        assert_eq!(groups[0].phases.len(), 2);
+        assert_eq!(groups[0].phases[0].name, "a");
+        assert_eq!(groups[0].phases[1].name, "b");
+    }
+
+    #[test]
+    fn test_phase_groups_mixed_sequential_and_parallel() {
+        let toml_str = r#"
+[topology]
+name = "test"
+description = "Mixed"
+version = 1
+
+[[phases]]
+name = "setup"
+agent = "build-setup"
+
+[[phases]]
+name = "a"
+agent = "build-a"
+parallel_group = "research"
+
+[[phases]]
+name = "b"
+agent = "build-b"
+parallel_group = "research"
+
+[[phases]]
+name = "deliver"
+agent = "build-deliver"
+"#;
+        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let loaded = LoadedTopology {
+            topology: topo,
+            agents: Default::default(),
+        };
+        let groups = loaded.phase_groups();
+        assert_eq!(groups.len(), 3);
+        assert!(!groups[0].is_parallel()); // setup
+        assert!(groups[1].is_parallel()); // research (a + b)
+        assert!(!groups[2].is_parallel()); // deliver
+        assert_eq!(groups[1].phases.len(), 2);
+    }
+
+    #[test]
+    fn test_phase_groups_non_consecutive_same_name_creates_separate_groups() {
+        let toml_str = r#"
+[topology]
+name = "test"
+description = "Non-consecutive"
+version = 1
+
+[[phases]]
+name = "a"
+agent = "build-a"
+parallel_group = "g1"
+
+[[phases]]
+name = "b"
+agent = "build-b"
+
+[[phases]]
+name = "c"
+agent = "build-c"
+parallel_group = "g1"
+"#;
+        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let loaded = LoadedTopology {
+            topology: topo,
+            agents: Default::default(),
+        };
+        let groups = loaded.phase_groups();
+        // "g1" appears twice but non-consecutively: three separate groups.
+        assert_eq!(groups.len(), 3);
+        assert!(!groups[0].is_parallel()); // a alone
+        assert!(!groups[1].is_parallel()); // b alone
+        assert!(!groups[2].is_parallel()); // c alone
+    }
+
+    #[test]
+    fn test_phase_groups_three_parallel() {
+        let toml_str = r#"
+[topology]
+name = "test"
+description = "Three parallel"
+version = 1
+
+[[phases]]
+name = "x"
+agent = "build-x"
+parallel_group = "batch"
+
+[[phases]]
+name = "y"
+agent = "build-y"
+parallel_group = "batch"
+
+[[phases]]
+name = "z"
+agent = "build-z"
+parallel_group = "batch"
+"#;
+        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let loaded = LoadedTopology {
+            topology: topo,
+            agents: Default::default(),
+        };
+        let groups = loaded.phase_groups();
+        assert_eq!(groups.len(), 1);
+        assert!(groups[0].is_parallel());
+        assert_eq!(groups[0].phases.len(), 3);
+    }
+
+    #[test]
+    fn test_phase_parallel_group_field_deserializes() {
+        let toml_str = r#"
+[topology]
+name = "test"
+description = "Field check"
+version = 1
+
+[[phases]]
+name = "a"
+agent = "build-a"
+parallel_group = "my-group"
+
+[[phases]]
+name = "b"
+agent = "build-b"
+"#;
+        let topo: Topology = toml::from_str(toml_str).unwrap();
+        assert_eq!(topo.phases[0].parallel_group, Some("my-group".to_string()));
+        assert!(topo.phases[1].parallel_group.is_none());
+    }
+
+    #[test]
+    fn test_phase_groups_empty_phases() {
+        let loaded = LoadedTopology {
+            topology: Topology {
+                topology: TopologyMeta {
+                    name: "test".to_string(),
+                    description: "Empty".to_string(),
+                    version: 1,
+                },
+                phases: vec![],
+            },
+            agents: Default::default(),
+        };
+        assert!(loaded.phase_groups().is_empty());
     }
 
     // --- Name validation tests ---
