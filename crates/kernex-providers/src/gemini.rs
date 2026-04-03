@@ -144,13 +144,50 @@ fn to_gemini_tools(defs: &[ToolDef]) -> Vec<GeminiToolDeclaration> {
     vec![GeminiToolDeclaration {
         function_declarations: defs
             .iter()
-            .map(|d| GeminiFunctionDef {
-                name: d.name.clone(),
-                description: d.description.clone(),
-                parameters: d.parameters.clone(),
+            .map(|d| {
+                let mut params = d.parameters.clone();
+                normalize_schema_types(&mut params);
+                GeminiFunctionDef {
+                    name: d.name.clone(),
+                    description: d.description.clone(),
+                    parameters: params,
+                }
             })
             .collect(),
     }]
+}
+
+/// Recursively normalize JSON Schema `type` fields so they are always scalar strings.
+///
+/// `schemars` can emit `"type": ["string"]` or `"type": ["string", "null"]` for optional
+/// fields. The Gemini API rejects any `type` value that is not a plain string, returning
+/// 400 INVALID_ARGUMENT. This function:
+/// - Converts a single-element type array to a scalar: `["object"]` -> `"object"`
+/// - Strips null from a nullable pair and uses the concrete type: `["string", "null"]` -> `"string"`
+/// - Recurses into all nested objects and arrays so every level is normalized.
+fn normalize_schema_types(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            if let Some(type_val) = map.get("type").cloned() {
+                if let Some(arr) = type_val.as_array() {
+                    let concrete: Vec<&serde_json::Value> =
+                        arr.iter().filter(|v| v.as_str() != Some("null")).collect();
+                    if let Some(first) = concrete.first() {
+                        map.insert("type".to_string(), (*first).clone());
+                    }
+                }
+            }
+            for v in map.values_mut() {
+                normalize_schema_types(v);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for v in arr.iter_mut() {
+                normalize_schema_types(v);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Build Gemini contents from API messages.
@@ -571,6 +608,71 @@ mod tests {
         let json = serde_json::to_value(&body).unwrap();
         let decls = &json["tools"][0]["functionDeclarations"];
         assert_eq!(decls.as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn test_normalize_schema_types_single_element_array() {
+        let mut schema = serde_json::json!({"type": ["object"]});
+        normalize_schema_types(&mut schema);
+        assert_eq!(schema["type"], "object");
+    }
+
+    #[test]
+    fn test_normalize_schema_types_nullable_pair() {
+        let mut schema = serde_json::json!({"type": ["string", "null"]});
+        normalize_schema_types(&mut schema);
+        assert_eq!(schema["type"], "string");
+    }
+
+    #[test]
+    fn test_normalize_schema_types_scalar_unchanged() {
+        let mut schema = serde_json::json!({"type": "string"});
+        normalize_schema_types(&mut schema);
+        assert_eq!(schema["type"], "string");
+    }
+
+    #[test]
+    fn test_normalize_schema_types_recursive() {
+        let mut schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {"type": ["string", "null"]},
+                "count": {"type": ["integer"]}
+            }
+        });
+        normalize_schema_types(&mut schema);
+        assert_eq!(schema["properties"]["name"]["type"], "string");
+        assert_eq!(schema["properties"]["count"]["type"], "integer");
+    }
+
+    #[test]
+    fn test_to_gemini_tools_no_array_types() {
+        let defs = crate::tools::builtin_tool_defs();
+        let tools = to_gemini_tools(&defs);
+        let json = serde_json::to_value(&tools).unwrap();
+        // Walk the entire JSON and assert no "type" field is an array
+        fn check_no_array_type(v: &serde_json::Value) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    if let Some(t) = map.get("type") {
+                        assert!(
+                            !t.is_array(),
+                            "found array type in tool schema: {t}"
+                        );
+                    }
+                    for val in map.values() {
+                        check_no_array_type(val);
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for val in arr {
+                        check_no_array_type(val);
+                    }
+                }
+                _ => {}
+            }
+        }
+        check_no_array_type(&json);
     }
 
     #[test]
