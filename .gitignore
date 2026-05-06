@@ -15,12 +15,26 @@ Thumbs.db
 
 # Config (secrets)
 config.toml
+secrets.toml
 .env
+.env.*
+*.env
 *.pem
 *.key
+*.credentials.json
+credentials.json
+*.audit.log
 
-# Internal docs (extraction reference, not public)
+# Internal docs (extraction reference, not public — kept as a guard even if /docs/ is absent)
 /docs/
+NOTES.md
+TODO.md
+ARCHITECTURE.md
+COMPETITIVE_ANALYSIS.md
+UX_IMPROVEMENTS.md
+SKILLS_SECURITY.md
+GETTING_STARTED.md
+kernex-agent.md
 
 # Research reference (never committed)
 claurst-main/
