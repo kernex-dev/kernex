@@ -20,6 +20,7 @@ pub enum CompactionStrategy {
 ///
 /// Used by the runtime to skip expensive DB queries and prompt sections
 /// when the user's message doesn't need them — reducing token overhead.
+#[derive(Debug, Clone)]
 pub struct ContextNeeds {
     /// Load semantic recall (FTS5 related past messages).
     pub recall: bool,

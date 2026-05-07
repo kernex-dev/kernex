@@ -39,7 +39,7 @@ pub mod telemetry;
 
 #[cfg(feature = "sqlite-store")]
 use kernex_core::config::MemoryConfig;
-use kernex_core::context::ContextNeeds;
+use kernex_core::context::{CompactionStrategy, Context, ContextNeeds};
 use kernex_core::error::KernexError;
 use kernex_core::guardrails::{GuardrailAction, GuardrailRunner};
 use kernex_core::hooks::{HookRunner, NoopHookRunner};
@@ -49,6 +49,7 @@ use kernex_core::run::{RunConfig, RunOutcome};
 use kernex_core::stream::StreamEvent;
 use kernex_core::traits::Provider;
 use kernex_core::traits::StreamingProvider;
+use kernex_core::traits::Summarizer;
 #[cfg(feature = "sqlite-store")]
 use kernex_memory::Store;
 use kernex_skills::{
@@ -88,6 +89,42 @@ pub struct Runtime {
     pub permission_rules: Option<Arc<PermissionRules>>,
     /// Optional guardrail applied to input before provider call and output after.
     pub guardrail_runner: Option<Arc<dyn GuardrailRunner>>,
+    /// When true, conversations whose history exceeds `max_context_messages`
+    /// have their overflow summarized via the active provider instead of
+    /// silently dropped. See [`RuntimeBuilder::auto_compact`].
+    pub auto_compact: bool,
+}
+
+/// Adapter that lets `Store::build_context` reuse the active provider as a
+/// summarizer when [`Runtime::auto_compact`] is enabled.
+///
+/// Wraps a `&dyn Provider` and answers [`Summarizer::summarize`] by sending a
+/// fixed instruction prompt through the same provider that is handling the
+/// turn. Costs one extra round-trip per overflow event (not per turn). The
+/// summarizer is constructed per-call inside the runtime; it does not persist
+/// state across requests, so there's no risk of summary drift.
+struct ProviderSummarizer<'a> {
+    provider: &'a dyn Provider,
+}
+
+#[async_trait::async_trait]
+impl Summarizer for ProviderSummarizer<'_> {
+    async fn summarize(&self, text: &str) -> Result<String, KernexError> {
+        // Tight, role-stable prompt. The model never sees the original system
+        // prompt (we deliberately call with an empty one) so its output is
+        // a pure summary, not another agent reply.
+        let instruction = format!(
+            "You are a conversation summarizer. Summarize the following \
+             exchange in 200 words or fewer. Focus on: decisions made, files \
+             touched, errors encountered, and unresolved questions. Skip \
+             greetings and small talk. Output the summary only — no preamble.\n\n\
+             ---\n{text}\n---"
+        );
+        let mut ctx = Context::new(&instruction);
+        ctx.system_prompt.clear();
+        let response = self.provider.complete(&ctx).await?;
+        Ok(response.text)
+    }
 }
 
 impl Runtime {
@@ -151,17 +188,31 @@ impl Runtime {
 
         // Build context from memory (history, recall, facts, lessons, etc).
         #[cfg(feature = "sqlite-store")]
-        let mut context = self
-            .store
-            .build_context(
-                &self.channel,
-                request,
-                &full_system_prompt,
-                needs,
-                project_ref,
-                None,
-            )
-            .await?;
+        let mut context = {
+            let (effective_needs, summarizer): (
+                std::borrow::Cow<'_, ContextNeeds>,
+                Option<ProviderSummarizer<'_>>,
+            ) = if self.auto_compact {
+                let mut owned = needs.clone();
+                owned.compact = CompactionStrategy::Summarize;
+                (
+                    std::borrow::Cow::Owned(owned),
+                    Some(ProviderSummarizer { provider }),
+                )
+            } else {
+                (std::borrow::Cow::Borrowed(needs), None)
+            };
+            self.store
+                .build_context(
+                    &self.channel,
+                    request,
+                    &full_system_prompt,
+                    &effective_needs,
+                    project_ref,
+                    summarizer.as_ref().map(|s| s as &dyn Summarizer),
+                )
+                .await?
+        };
 
         #[cfg(not(feature = "sqlite-store"))]
         let mut context = {
@@ -292,17 +343,31 @@ impl Runtime {
         };
 
         #[cfg(feature = "sqlite-store")]
-        let mut context = self
-            .store
-            .build_context(
-                &self.channel,
-                request,
-                &full_system_prompt,
-                needs,
-                project_ref,
-                None,
-            )
-            .await?;
+        let mut context = {
+            let (effective_needs, summarizer): (
+                std::borrow::Cow<'_, ContextNeeds>,
+                Option<ProviderSummarizer<'_>>,
+            ) = if self.auto_compact {
+                let mut owned = needs.clone();
+                owned.compact = CompactionStrategy::Summarize;
+                (
+                    std::borrow::Cow::Owned(owned),
+                    Some(ProviderSummarizer { provider }),
+                )
+            } else {
+                (std::borrow::Cow::Borrowed(needs), None)
+            };
+            self.store
+                .build_context(
+                    &self.channel,
+                    request,
+                    &full_system_prompt,
+                    &effective_needs,
+                    project_ref,
+                    summarizer.as_ref().map(|s| s as &dyn Summarizer),
+                )
+                .await?
+        };
 
         #[cfg(not(feature = "sqlite-store"))]
         let mut context = {
@@ -451,17 +516,31 @@ impl Runtime {
         };
 
         #[cfg(feature = "sqlite-store")]
-        let mut context = self
-            .store
-            .build_context(
-                &self.channel,
-                request,
-                &full_system_prompt,
-                &needs,
-                project_ref,
-                None,
-            )
-            .await?;
+        let mut context = {
+            let (effective_needs, summarizer): (
+                std::borrow::Cow<'_, ContextNeeds>,
+                Option<ProviderSummarizer<'_>>,
+            ) = if self.auto_compact {
+                let mut owned = needs.clone();
+                owned.compact = CompactionStrategy::Summarize;
+                (
+                    std::borrow::Cow::Owned(owned),
+                    Some(ProviderSummarizer { provider }),
+                )
+            } else {
+                (std::borrow::Cow::Borrowed(&needs), None)
+            };
+            self.store
+                .build_context(
+                    &self.channel,
+                    request,
+                    &full_system_prompt,
+                    &effective_needs,
+                    project_ref,
+                    summarizer.as_ref().map(|s| s as &dyn Summarizer),
+                )
+                .await?
+        };
 
         #[cfg(not(feature = "sqlite-store"))]
         let mut context = {
@@ -545,6 +624,7 @@ pub struct RuntimeBuilder {
     hook_runner: Option<Arc<dyn HookRunner>>,
     permission_rules: Option<Arc<PermissionRules>>,
     guardrail_runner: Option<Arc<dyn GuardrailRunner>>,
+    auto_compact: bool,
 }
 
 impl RuntimeBuilder {
@@ -560,6 +640,9 @@ impl RuntimeBuilder {
             hook_runner: None,
             permission_rules: None,
             guardrail_runner: None,
+            // Default off for backward compatibility with v0.4.0 callers.
+            // kernex-agent flips it on; future major versions may default it on.
+            auto_compact: false,
         }
     }
 
@@ -696,6 +779,26 @@ impl RuntimeBuilder {
         self
     }
 
+    /// Enable automatic context compaction on long conversations.
+    ///
+    /// When enabled, every call into the runtime that builds context (e.g.
+    /// [`Runtime::complete`], [`Runtime::complete_stream`], [`Runtime::run`])
+    /// will, on overflow past `max_context_messages`, summarize the dropped
+    /// rows via the active provider and prepend the summary to the system
+    /// prompt under `[Earlier conversation summary]`. The summarization
+    /// adds one extra provider round-trip per overflow event (not per turn),
+    /// uses a fixed instruction prompt that never reveals the agent's own
+    /// system prompt, and falls back to the default Drop behavior if the
+    /// provider call fails.
+    ///
+    /// Default is **off** to preserve v0.4.0 behavior. Recommended for any
+    /// long-running interactive session; the default exists only so existing
+    /// callers do not silently change billing characteristics.
+    pub fn auto_compact(mut self, enable: bool) -> Self {
+        self.auto_compact = enable;
+        self
+    }
+
     /// Build and initialize the runtime.
     pub async fn build(self) -> Result<Runtime, KernexError> {
         let expanded_dir = kernex_core::shellexpand(&self.data_dir);
@@ -754,6 +857,7 @@ impl RuntimeBuilder {
             hook_runner,
             permission_rules: self.permission_rules,
             guardrail_runner: self.guardrail_runner,
+            auto_compact: self.auto_compact,
         })
     }
 }

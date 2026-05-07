@@ -134,49 +134,82 @@ impl Store {
 
         let history = history_res?;
 
-        // Auto-compact: summarize overflow messages instead of silently dropping.
-        let compact_summary =
-            if let (CompactionStrategy::Summarize, Some(s)) = (&needs.compact, summarizer) {
-                let total: (i64,) =
-                    sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
-                        .bind(&conv_id)
-                        .fetch_one(&self.pool)
-                        .await
-                        .map_err(|e| KernexError::Store(format!("count failed: {e}")))?;
-
-                let overflow_count = (total.0 as usize).saturating_sub(self.max_context_messages);
-
-                if overflow_count > 0 {
-                    let overflow_rows: Vec<(String, String)> = sqlx::query_as(
-                        "SELECT role, content FROM messages \
-                     WHERE conversation_id = ? ORDER BY timestamp ASC LIMIT ?",
-                    )
+        // Detect history overflow once. We only run the COUNT when the
+        // history loader hit its LIMIT, so short conversations pay nothing.
+        // Whichever branch handles overflow (summarize or warn) reuses the
+        // same count.
+        let overflow_count = if history.len() >= self.max_context_messages {
+            let total: (i64,) =
+                sqlx::query_as("SELECT COUNT(*) FROM messages WHERE conversation_id = ?")
                     .bind(&conv_id)
-                    .bind(overflow_count as i64)
-                    .fetch_all(&self.pool)
+                    .fetch_one(&self.pool)
                     .await
-                    .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+                    .map_err(|e| KernexError::Store(format!("count failed: {e}")))?;
+            (total.0 as usize).saturating_sub(self.max_context_messages)
+        } else {
+            0
+        };
 
-                    if !overflow_rows.is_empty() {
-                        let text = overflow_rows
-                            .iter()
-                            .map(|(role, content)| format!("{role}: {content}"))
-                            .collect::<Vec<_>>()
-                            .join("\n");
+        // Auto-compact: summarize overflow messages instead of silently dropping.
+        let compact_summary = if overflow_count > 0 {
+            if let (CompactionStrategy::Summarize, Some(s)) = (&needs.compact, summarizer) {
+                let overflow_rows: Vec<(String, String)> = sqlx::query_as(
+                    "SELECT role, content FROM messages \
+                     WHERE conversation_id = ? ORDER BY timestamp ASC LIMIT ?",
+                )
+                .bind(&conv_id)
+                .bind(overflow_count as i64)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
 
-                        match s.summarize(&text).await {
-                            Ok(summary) if !summary.is_empty() => Some(summary),
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                } else {
+                if overflow_rows.is_empty() {
                     None
+                } else {
+                    let text = overflow_rows
+                        .iter()
+                        .map(|(role, content)| format!("{role}: {content}"))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+
+                    match s.summarize(&text).await {
+                        Ok(summary) if !summary.is_empty() => Some(summary),
+                        Ok(_) => {
+                            tracing::warn!(
+                                conversation_id = %conv_id,
+                                overflow = overflow_count,
+                                "summarizer returned empty output; dropping {overflow_count} oldest messages",
+                            );
+                            None
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                conversation_id = %conv_id,
+                                overflow = overflow_count,
+                                error = %e,
+                                "summarizer failed; falling back to silent drop of {overflow_count} oldest messages",
+                            );
+                            None
+                        }
+                    }
                 }
             } else {
+                // Drop strategy or no summarizer wired in. Surface this as a
+                // warn so operators running with default tracing see that
+                // history is being lost and have a path to the fix
+                // (RuntimeBuilder::auto_compact). One log per overflow event.
+                tracing::warn!(
+                    conversation_id = %conv_id,
+                    overflow = overflow_count,
+                    max = self.max_context_messages,
+                    "history overflow: silently dropping {overflow_count} oldest messages. \
+                     Enable RuntimeBuilder::auto_compact for summarization.",
+                );
                 None
-            };
+            }
+        } else {
+            None
+        };
 
         // Resolve language: stored preference > auto-detect > English.
         let language =
