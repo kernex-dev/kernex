@@ -1,0 +1,24 @@
+[package]
+name = "kernex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Umbrella crate for the Kernex AI agent runtime — re-exports kernex-runtime"
+readme = "README.md"
+documentation = "https://docs.rs/kernex"
+keywords = ["ai", "agent", "sandbox", "runtime", "async"]
+categories = ["api-bindings", "development-tools", "asynchronous"]
+
+[dependencies]
+# The umbrella crate exists so `cargo add kernex` does not 404. All real
+# code lives in kernex-runtime; we just re-export its surface. Cargo's
+# workspace.dependencies cannot forward feature toggles cleanly without
+# also setting default-features on the workspace entry, so we
+# intentionally ship with whatever kernex-runtime defaults to (currently
+# `sqlite-store`). Callers who need a custom feature combo should
+# depend on `kernex-runtime` directly.
+kernex-runtime = { workspace = true }
+
+[lints]
+workspace = true
