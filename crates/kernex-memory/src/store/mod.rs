@@ -54,6 +54,13 @@ impl Store {
             tighten_unix_dir_perms(parent);
         }
 
+        // Pre-create the SQLite file with mode 0o600 *before* sqlx connects.
+        // Otherwise sqlx's create_if_missing path creates the file under the
+        // process umask (typically 0o644) and our chmod runs only after
+        // migrations — leaving a window where another local user can read
+        // messages, facts, and audit log entries on a shared host.
+        precreate_sqlite_file(&db_path)?;
+
         let opts = SqliteConnectOptions::from_str(&format!("sqlite:{db_path}"))
             .map_err(|e| KernexError::Store(format!("invalid db path: {e}")))?
             .create_if_missing(true)
@@ -67,11 +74,8 @@ impl Store {
 
         Self::run_migrations(&pool).await?;
 
-        // The DB file is created by sqlx during the first connection. Lock
-        // it down to 0o600 (owner read/write only) on Unix; conversation
-        // history, facts, and tool outputs live here and on shared hosts
-        // (CI runners, multi-user dev boxes) the default 0o644 would let
-        // any local user read them.
+        // Belt-and-braces: re-tighten in case sqlx (or a future version of
+        // it) ever recreates the file under a relaxed mode.
         tighten_unix_file_perms(&db_path);
 
         info!("Memory store initialized at {db_path}");
@@ -85,6 +89,46 @@ impl Store {
     /// Get a reference to the underlying connection pool.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
+    }
+}
+
+/// Create the SQLite file at `db_path` with mode 0o600 if it doesn't already
+/// exist. `:memory:` and any non-disk URI is left alone. On non-Unix this is
+/// a best-effort `create_new` without explicit mode bits.
+fn precreate_sqlite_file(db_path: &str) -> Result<(), KernexError> {
+    if db_path == ":memory:" || db_path.starts_with("file::memory:") {
+        return Ok(());
+    }
+    let path = std::path::Path::new(db_path);
+    if path.exists() {
+        return Ok(());
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(0o600)
+            .open(path)
+        {
+            Ok(_) => Ok(()),
+            // Race with another process — the file now exists, that's fine
+            // because tighten_unix_file_perms runs after migrations.
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(KernexError::Store(format!(
+                "failed to pre-create db file at 0o600: {e}"
+            ))),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // On Windows ACLs are inherited from the parent dir; we have no
+        // useful mode bits to set here. Touching the file early would just
+        // duplicate what sqlx does.
+        let _ = path;
+        Ok(())
     }
 }
 
