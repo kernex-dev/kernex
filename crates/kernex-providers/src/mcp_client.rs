@@ -31,7 +31,10 @@ pub enum McpError {
     },
     /// stdin/stdout pipe was missing on the spawned child.
     #[error("mcp: '{server}' missing {channel} pipe")]
-    MissingPipe { server: String, channel: &'static str },
+    MissingPipe {
+        server: String,
+        channel: &'static str,
+    },
     /// I/O error reading from or writing to the server.
     #[error("mcp: I/O error on '{server}': {source}")]
     Io {
@@ -233,11 +236,7 @@ impl McpClient {
     ///
     /// Times out after [`MCP_REQUEST_TIMEOUT_SECS`] to prevent infinite hangs
     /// from misbehaving servers.
-    async fn request(
-        &mut self,
-        method: &str,
-        params: Option<Value>,
-    ) -> Result<Value, McpError> {
+    async fn request(&mut self, method: &str, params: Option<Value>) -> Result<Value, McpError> {
         let id = self.next_id;
         self.next_id += 1;
 
