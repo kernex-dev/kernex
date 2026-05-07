@@ -35,8 +35,8 @@ pub struct TopologyMeta {
 pub struct Phase {
     pub name: String,
     pub agent: String,
-    #[serde(default = "default_model_tier")]
-    pub model_tier: ModelTier,
+    #[serde(default = "default_phase_tier")]
+    pub model_tier: PhaseTier,
     #[serde(default)]
     pub max_turns: Option<u32>,
     #[serde(default = "default_phase_type")]
@@ -75,18 +75,23 @@ impl PhaseGroup {
     }
 }
 
-fn default_model_tier() -> ModelTier {
-    ModelTier::Complex
+fn default_phase_tier() -> PhaseTier {
+    PhaseTier::Complex
 }
 
 fn default_phase_type() -> PhaseType {
     PhaseType::Standard
 }
 
-/// Which model tier to use for a phase.
+/// Which model tier a pipeline phase should use.
+///
+/// Distinct from [`kernex_core::ModelTier`], which selects a provider's
+/// default model (Standard vs Flagship). `PhaseTier` lets a topology author
+/// pick between two arbitrary model strings supplied at execution time
+/// (`model_fast` / `model_complex` in [`LoadedTopology::resolve_model`]).
 #[derive(Debug, Clone, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "lowercase")]
-pub enum ModelTier {
+pub enum PhaseTier {
     Fast,
     #[default]
     Complex,
@@ -151,7 +156,7 @@ impl LoadedTopology {
         })
     }
 
-    /// Resolve the model string for a phase based on its `ModelTier`.
+    /// Resolve the model string for a phase based on its `PhaseTier`.
     pub fn resolve_model<'a>(
         &self,
         phase: &Phase,
@@ -159,8 +164,8 @@ impl LoadedTopology {
         model_complex: &'a str,
     ) -> &'a str {
         match phase.model_tier {
-            ModelTier::Fast => model_fast,
-            ModelTier::Complex => model_complex,
+            PhaseTier::Fast => model_fast,
+            PhaseTier::Complex => model_complex,
         }
     }
 
@@ -354,7 +359,7 @@ agent = "build-basic"
 "#;
         let topo: Topology = toml::from_str(toml_str).unwrap();
         let phase = &topo.phases[0];
-        assert_eq!(phase.model_tier, ModelTier::Complex);
+        assert_eq!(phase.model_tier, PhaseTier::Complex);
         assert_eq!(phase.phase_type, PhaseType::Standard);
         assert!(phase.max_turns.is_none());
         assert!(phase.retry.is_none());
@@ -416,8 +421,8 @@ agent = "build-complex"
 model_tier = "complex"
 "#;
         let topo: Topology = toml::from_str(toml_str).unwrap();
-        assert_eq!(topo.phases[0].model_tier, ModelTier::Fast);
-        assert_eq!(topo.phases[1].model_tier, ModelTier::Complex);
+        assert_eq!(topo.phases[0].model_tier, PhaseTier::Fast);
+        assert_eq!(topo.phases[1].model_tier, PhaseTier::Complex);
     }
 
     #[test]
