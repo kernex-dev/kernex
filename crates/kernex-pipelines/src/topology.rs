@@ -251,9 +251,24 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
     // Load all referenced agent .md files.
     let mut agents = HashMap::new();
     let agents_dir = base.join("agents");
+    let canonical_agents_dir = std::fs::canonicalize(&agents_dir).ok();
 
     for agent_name in required_agents {
         let agent_path = agents_dir.join(format!("{agent_name}.md"));
+        // Symlink guard: even though the agent name passed validation, the
+        // file at `{agents_dir}/{name}.md` could be a symlink pointing
+        // outside the topology root. Resolve and confirm containment so a
+        // hostile topology install cannot use a symlink to read arbitrary
+        // host files via the pipeline loader.
+        if let (Some(base_canon), Ok(target_canon)) =
+            (&canonical_agents_dir, std::fs::canonicalize(&agent_path))
+        {
+            if !target_canon.starts_with(base_canon) {
+                return Err(KernexError::Pipeline(format!(
+                    "agent '{agent_name}' resolves outside topology agents/ directory"
+                )));
+            }
+        }
         let content = std::fs::read_to_string(&agent_path).map_err(|e| {
             KernexError::Pipeline(format!(
                 "agent '{agent_name}' referenced in topology but file not found: {e}"
@@ -274,8 +289,18 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
                     if validate_agent_name(&agent_name).is_err() {
                         continue;
                     }
+                    let entry_path = entry.path();
+                    // Same symlink guard as above for files discovered in the
+                    // dir scan but not pre-listed in the TOPOLOGY.toml.
+                    if let (Some(base_canon), Ok(target_canon)) =
+                        (&canonical_agents_dir, std::fs::canonicalize(&entry_path))
+                    {
+                        if !target_canon.starts_with(base_canon) {
+                            continue;
+                        }
+                    }
                     agents.entry(agent_name).or_insert_with_key(|_| {
-                        std::fs::read_to_string(entry.path()).unwrap_or_default()
+                        std::fs::read_to_string(entry_path).unwrap_or_default()
                     });
                 }
             }
