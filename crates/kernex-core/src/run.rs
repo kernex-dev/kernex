@@ -14,9 +14,9 @@ pub enum ModelTier {
     Flagship,
 }
 
-/// Configuration for a [`Runtime::run`] invocation.
-///
-/// [`Runtime::run`]: crate::traits::Provider
+/// Configuration for an agentic-loop invocation (consumed by `Runtime::run`
+/// in `kernex-runtime`; can't be linked directly from this crate to avoid a
+/// circular dependency).
 #[derive(Debug, Clone)]
 pub struct RunConfig {
     /// Maximum number of agentic turns before stopping. Default: 50.
@@ -29,7 +29,7 @@ impl Default for RunConfig {
     }
 }
 
-/// The terminal outcome of a [`Runtime::run`] call.
+/// The terminal outcome of an agentic-loop run.
 #[derive(Debug)]
 pub enum RunOutcome {
     /// Provider signaled end-of-turn. Contains the final response.

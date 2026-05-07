@@ -1,6 +1,7 @@
 //! kernex-core: Foundation types, traits, and error handling for the Kernex runtime.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![deny(rustdoc::broken_intra_doc_links)]
 
 pub mod config;
 pub mod context;

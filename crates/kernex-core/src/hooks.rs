@@ -19,6 +19,7 @@ pub enum HookOutcome {
 /// [`Context::with_hooks`].
 ///
 /// [`Context`]: crate::context::Context
+/// [`Context::with_hooks`]: crate::context::Context::with_hooks
 #[async_trait]
 pub trait HookRunner: Send + Sync + std::fmt::Debug {
     /// Called before a tool executes. Return [`HookOutcome::Blocked`] to cancel it.
