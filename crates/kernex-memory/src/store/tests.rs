@@ -1966,6 +1966,7 @@ async fn test_search_messages_with_fts5_operators() {
             processing_time_ms: 0,
             model: None,
             session_id: None,
+            ..Default::default()
         },
     };
     store

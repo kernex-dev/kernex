@@ -993,6 +993,18 @@ pub fn builtin_tool_defs() -> Vec<ToolDef> {
 
 // --- Shared provider utilities ---
 
+/// Per-response token-usage breakdown. Populated by providers that report
+/// the dimensions individually (Anthropic prompt cache, OpenAI/DeepSeek
+/// `prompt_tokens_details.cached_tokens`, etc.). All fields are optional so
+/// providers without cache support can omit them.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct UsageBreakdown {
+    pub input_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_creation_tokens: Option<u64>,
+}
+
 /// Build the standard Response for agentic loop responses.
 ///
 /// Used by all HTTP provider agentic loops (success path and max-turns path).
@@ -1002,6 +1014,27 @@ pub(crate) fn build_response(
     total_tokens: u64,
     elapsed_ms: u64,
     model: Option<String>,
+) -> Response {
+    build_response_with_usage(
+        text,
+        provider_name,
+        total_tokens,
+        elapsed_ms,
+        model,
+        UsageBreakdown::default(),
+    )
+}
+
+/// Like [`build_response`], but also records a per-dimension token breakdown
+/// (input / output / cache_read / cache_creation). Providers that expose
+/// prompt-cache stats use this variant; the rest stay on the simpler form.
+pub(crate) fn build_response_with_usage(
+    text: String,
+    provider_name: &str,
+    total_tokens: u64,
+    elapsed_ms: u64,
+    model: Option<String>,
+    usage: UsageBreakdown,
 ) -> Response {
     Response {
         text,
@@ -1015,6 +1048,10 @@ pub(crate) fn build_response(
             processing_time_ms: elapsed_ms,
             model,
             session_id: None,
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_read_tokens: usage.cache_read_tokens,
+            cache_creation_tokens: usage.cache_creation_tokens,
         },
     }
 }
