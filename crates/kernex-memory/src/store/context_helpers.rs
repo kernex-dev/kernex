@@ -101,7 +101,7 @@ pub(super) fn build_system_prompt(ctx: &SystemPromptContext<'_>) -> String {
         prompt.push_str("\n\nRelated past context:");
         for (_role, content, timestamp) in ctx.recall {
             let truncated = if content.len() > 200 {
-                let boundary = content.floor_char_boundary(200);
+                let boundary = kernex_core::utf8::floor_char_boundary(content, 200);
                 format!("{}...", &content[..boundary])
             } else {
                 content.clone()

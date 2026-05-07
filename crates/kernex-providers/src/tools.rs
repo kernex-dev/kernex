@@ -918,7 +918,7 @@ pub fn truncate_output(s: &str, max_bytes: usize) -> String {
     if s.len() <= max_bytes {
         s.to_string()
     } else {
-        let boundary = s.floor_char_boundary(max_bytes);
+        let boundary = kernex_core::utf8::floor_char_boundary(s, max_bytes);
         let truncated = &s[..boundary];
         format!(
             "{truncated}\n\n... (output truncated: {} total bytes, showing first {boundary})",
