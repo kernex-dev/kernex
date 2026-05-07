@@ -136,6 +136,47 @@ impl Store {
             total_cache_creation_tokens,
         })
     }
+
+    /// Get aggregated token usage across all sessions in the store.
+    ///
+    /// Useful for project-wide cost reporting (e.g. the kx `/cost`
+    /// command) when callers do not maintain a stable session id.
+    pub async fn get_total_usage(&self) -> Result<UsageSummary, KernexError> {
+        let row: Option<(i64, f64, i64, i64, i64, i64, i64)> = sqlx::query_as(
+            "SELECT
+                 COALESCE(SUM(tokens), 0),
+                 COALESCE(SUM(cost_usd), 0.0),
+                 COUNT(*),
+                 COALESCE(SUM(input_tokens), 0),
+                 COALESCE(SUM(output_tokens), 0),
+                 COALESCE(SUM(cache_read_tokens), 0),
+                 COALESCE(SUM(cache_creation_tokens), 0)
+             FROM token_usage",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| KernexError::Store(format!("failed to query total usage: {e}")))?;
+
+        let (
+            total_tokens,
+            total_cost_usd,
+            request_count,
+            total_input_tokens,
+            total_output_tokens,
+            total_cache_read_tokens,
+            total_cache_creation_tokens,
+        ) = row.unwrap_or((0, 0.0, 0, 0, 0, 0, 0));
+
+        Ok(UsageSummary {
+            total_tokens,
+            total_cost_usd,
+            request_count,
+            total_input_tokens,
+            total_output_tokens,
+            total_cache_read_tokens,
+            total_cache_creation_tokens,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -250,6 +291,42 @@ mod tests {
         assert_eq!(summary.total_output_tokens, 150);
         assert_eq!(summary.total_cache_read_tokens, 1300);
         assert_eq!(summary.total_cache_creation_tokens, 200);
+    }
+
+    #[tokio::test]
+    async fn test_get_total_usage_aggregates_across_sessions() {
+        let store = make_store().await;
+        store
+            .record_usage_full(
+                "user-1",
+                "sess-a",
+                400,
+                "claude-sonnet-4-6",
+                UsageBreakdown {
+                    cache_read_tokens: Some(300),
+                    ..UsageBreakdown::default()
+                },
+            )
+            .await
+            .unwrap();
+        store
+            .record_usage_full(
+                "user-2",
+                "sess-b",
+                600,
+                "gpt-4o",
+                UsageBreakdown {
+                    cache_read_tokens: Some(100),
+                    ..UsageBreakdown::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let summary = store.get_total_usage().await.unwrap();
+        assert_eq!(summary.total_tokens, 1000);
+        assert_eq!(summary.request_count, 2);
+        assert_eq!(summary.total_cache_read_tokens, 400);
     }
 
     #[tokio::test]

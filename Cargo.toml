@@ -8,7 +8,7 @@ default-members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 # Conservative MSRV. If you need a newer language feature, run
 # `cargo install cargo-msrv && cargo msrv verify` before bumping this so the
