@@ -119,6 +119,17 @@ pub fn os_enforcement_available() -> bool {
 
 /// Best-effort path canonicalization. Returns the canonicalized path or the
 /// original if canonicalization fails (file doesn't exist yet, permissions, etc.).
+///
+/// **Assumption (callers must uphold):** the input path is already absolute,
+/// either because the caller passed an `is_absolute()` path through or because
+/// the upstream code used `data_dir.join(...)` on an absolute `data_dir`. The
+/// lexical fallback is safe under that assumption: if canonicalization fails
+/// because the leaf does not yet exist, the parent components are still
+/// resolved and the comparison vs. blocked prefixes (`starts_with`) remains
+/// meaningful. Passing a relative path here would silently pass through and
+/// could match an unintended prefix. The two callers (`is_blocked_write_path`
+/// and `is_allowed_data_dir_write`) both prefix-promote relative inputs via
+/// `cwd.join(...)` before reaching this function.
 fn try_canonicalize(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
