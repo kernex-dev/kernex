@@ -121,18 +121,12 @@ pub(crate) fn protected_command(
     // prepared ruleset, and invokes the `landlock_restrict_self` syscall.
     unsafe {
         cmd.pre_exec(move || {
-            let mut guard = cell.lock().map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "landlock: ruleset mutex poisoned",
-                )
-            })?;
-            let ruleset = guard.take().ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "landlock: pre_exec invoked twice",
-                )
-            })?;
+            let mut guard = cell
+                .lock()
+                .map_err(|_| std::io::Error::other("landlock: ruleset mutex poisoned"))?;
+            let ruleset = guard
+                .take()
+                .ok_or_else(|| std::io::Error::other("landlock: pre_exec invoked twice"))?;
             // Note: we cannot inspect `status.ruleset` here to log
             // partial-enforcement warnings — tracing dispatchers may hold
             // allocated state and we are post-fork. Operators who need
