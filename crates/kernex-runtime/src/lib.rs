@@ -826,14 +826,16 @@ mod tests {
         let tmp = std::env::temp_dir().join("__kernex_test_from_config__");
         let _ = std::fs::remove_dir_all(&tmp);
 
-        let mut cfg = KernexConfig::default();
-        cfg.runtime = RuntimeConfig {
-            name: "test-agent".to_string(),
-            data_dir: tmp.to_str().unwrap().to_string(),
-            channel: "slack".to_string(),
-            project: Some("my-proj".to_string()),
-            system_prompt: "Be concise.".to_string(),
-            ..RuntimeConfig::default()
+        let cfg = KernexConfig {
+            runtime: RuntimeConfig {
+                name: "test-agent".to_string(),
+                data_dir: tmp.to_str().unwrap().to_string(),
+                channel: "slack".to_string(),
+                project: Some("my-proj".to_string()),
+                system_prompt: "Be concise.".to_string(),
+                ..RuntimeConfig::default()
+            },
+            ..KernexConfig::default()
         };
 
         let runtime = RuntimeBuilder::from_config(&cfg).build().await.unwrap();
