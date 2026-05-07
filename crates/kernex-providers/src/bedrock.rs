@@ -29,7 +29,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, warn};
 
-use crate::http_retry::send_with_retry;
+use crate::http_retry::{read_truncated_error_body, send_with_retry};
 use crate::tools::build_response;
 
 type HmacSha256 = Hmac<Sha256>;
@@ -361,7 +361,7 @@ impl Provider for BedrockProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_truncated_error_body(resp).await;
             return Err(KernexError::Provider(format!(
                 "bedrock returned {status}: {text}"
             )));
