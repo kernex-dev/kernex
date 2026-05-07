@@ -7,12 +7,63 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
+use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tracing::{debug, warn};
 
 /// Maximum time to wait for a single MCP request/response round-trip.
 const MCP_REQUEST_TIMEOUT_SECS: u64 = 120;
+
+/// Errors emitted by the MCP client.
+///
+/// Defining a typed error here (instead of leaking `anyhow::Error` in public
+/// signatures) keeps the option open to promote `mcp_client` from
+/// `pub(crate)` to `pub` without churn for downstream consumers.
+#[derive(Debug, Error)]
+pub enum McpError {
+    /// Spawning the MCP server process failed.
+    #[error("mcp: failed to spawn '{command}': {source}")]
+    Spawn {
+        command: String,
+        #[source]
+        source: std::io::Error,
+    },
+    /// stdin/stdout pipe was missing on the spawned child.
+    #[error("mcp: '{server}' missing {channel} pipe")]
+    MissingPipe { server: String, channel: &'static str },
+    /// I/O error reading from or writing to the server.
+    #[error("mcp: I/O error on '{server}': {source}")]
+    Io {
+        server: String,
+        #[source]
+        source: std::io::Error,
+    },
+    /// Failed to (de)serialize a JSON-RPC frame.
+    #[error("mcp: JSON error on '{server}': {source}")]
+    Json {
+        server: String,
+        #[source]
+        source: serde_json::Error,
+    },
+    /// MCP server returned a JSON-RPC error response.
+    #[error("mcp: '{server}' error on {method}: {message}")]
+    Server {
+        server: String,
+        method: String,
+        message: String,
+    },
+    /// MCP server's stdout closed mid-request.
+    #[error("mcp: '{server}' stdout closed")]
+    StdoutClosed { server: String },
+    /// Round-trip exceeded [`MCP_REQUEST_TIMEOUT_SECS`].
+    #[error("mcp: '{server}' timed out waiting for response to {method} (>{seconds}s)")]
+    Timeout {
+        server: String,
+        method: String,
+        seconds: u64,
+    },
+}
 
 /// A tool definition discovered from an MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -89,7 +140,7 @@ impl McpClient {
         command: &str,
         args: &[String],
         env: &std::collections::HashMap<String, String>,
-    ) -> Result<Self, anyhow::Error> {
+    ) -> Result<Self, McpError> {
         debug!(
             "mcp: connecting to server '{name}' via: {command} {}",
             args.join(" ")
@@ -103,22 +154,19 @@ impl McpClient {
         for (k, v) in env {
             cmd.env(k, v);
         }
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("mcp: failed to spawn '{command}': {e}"))?;
+        let mut child = cmd.spawn().map_err(|e| McpError::Spawn {
+            command: command.to_string(),
+            source: e,
+        })?;
 
-        let stdin = BufWriter::new(
-            child
-                .stdin
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("mcp: no stdin for '{name}'"))?,
-        );
-        let stdout = BufReader::new(
-            child
-                .stdout
-                .take()
-                .ok_or_else(|| anyhow::anyhow!("mcp: no stdout for '{name}'"))?,
-        )
+        let stdin = BufWriter::new(child.stdin.take().ok_or_else(|| McpError::MissingPipe {
+            server: name.to_string(),
+            channel: "stdin",
+        })?);
+        let stdout = BufReader::new(child.stdout.take().ok_or_else(|| McpError::MissingPipe {
+            server: name.to_string(),
+            channel: "stdout",
+        })?)
         .lines();
 
         let mut client = Self {
@@ -158,7 +206,7 @@ impl McpClient {
         &mut self,
         tool_name: &str,
         arguments: &Value,
-    ) -> Result<McpToolResult, anyhow::Error> {
+    ) -> Result<McpToolResult, McpError> {
         let params = serde_json::json!({
             "name": tool_name,
             "arguments": arguments
@@ -189,7 +237,7 @@ impl McpClient {
         &mut self,
         method: &str,
         params: Option<Value>,
-    ) -> Result<Value, anyhow::Error> {
+    ) -> Result<Value, McpError> {
         let id = self.next_id;
         self.next_id += 1;
 
@@ -200,10 +248,22 @@ impl McpClient {
             params,
         };
 
-        let mut line = serde_json::to_string(&req)?;
+        let mut line = serde_json::to_string(&req).map_err(|e| McpError::Json {
+            server: self.server_name.clone(),
+            source: e,
+        })?;
         line.push('\n');
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| McpError::Io {
+                server: self.server_name.clone(),
+                source: e,
+            })?;
+        self.stdin.flush().await.map_err(|e| McpError::Io {
+            server: self.server_name.clone(),
+            source: e,
+        })?;
 
         // Read lines until we get a response with our id, with a timeout guard.
         let server_name = self.server_name.clone();
@@ -215,10 +275,11 @@ impl McpClient {
 
         match result {
             Ok(inner) => inner,
-            Err(_) => Err(anyhow::anyhow!(
-                "mcp: '{}' timed out waiting for response to {method} (>{MCP_REQUEST_TIMEOUT_SECS}s)",
-                self.server_name
-            )),
+            Err(_) => Err(McpError::Timeout {
+                server: self.server_name.clone(),
+                method: method.to_string(),
+                seconds: MCP_REQUEST_TIMEOUT_SECS,
+            }),
         }
     }
 
@@ -228,12 +289,18 @@ impl McpClient {
         id: u64,
         server_name: &str,
         method: &str,
-    ) -> Result<Value, anyhow::Error> {
+    ) -> Result<Value, McpError> {
         loop {
             let raw = stdout
                 .next_line()
-                .await?
-                .ok_or_else(|| anyhow::anyhow!("mcp: '{server_name}' stdout closed"))?;
+                .await
+                .map_err(|e| McpError::Io {
+                    server: server_name.to_string(),
+                    source: e,
+                })?
+                .ok_or_else(|| McpError::StdoutClosed {
+                    server: server_name.to_string(),
+                })?;
 
             // Skip empty lines.
             let trimmed = raw.trim();
@@ -253,10 +320,11 @@ impl McpClient {
             }
 
             if let Some(err) = resp.error {
-                return Err(anyhow::anyhow!(
-                    "mcp: '{server_name}' error on {method}: {}",
-                    err.message
-                ));
+                return Err(McpError::Server {
+                    server: server_name.to_string(),
+                    method: method.to_string(),
+                    message: err.message,
+                });
             }
 
             return Ok(resp.result.unwrap_or(Value::Null));
@@ -264,7 +332,7 @@ impl McpClient {
     }
 
     /// Send a JSON-RPC notification (no id, no response expected).
-    async fn notify(&mut self, method: &str, params: Option<Value>) -> Result<(), anyhow::Error> {
+    async fn notify(&mut self, method: &str, params: Option<Value>) -> Result<(), McpError> {
         let req = JsonRpcRequest {
             jsonrpc: "2.0",
             id: None,
@@ -272,10 +340,22 @@ impl McpClient {
             params,
         };
 
-        let mut line = serde_json::to_string(&req)?;
+        let mut line = serde_json::to_string(&req).map_err(|e| McpError::Json {
+            server: self.server_name.clone(),
+            source: e,
+        })?;
         line.push('\n');
-        self.stdin.write_all(line.as_bytes()).await?;
-        self.stdin.flush().await?;
+        self.stdin
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| McpError::Io {
+                server: self.server_name.clone(),
+                source: e,
+            })?;
+        self.stdin.flush().await.map_err(|e| McpError::Io {
+            server: self.server_name.clone(),
+            source: e,
+        })?;
         Ok(())
     }
 }
