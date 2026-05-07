@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-05-07
+
+### Security
+
+- **kernex-providers**: bound streaming response buffers (1 MiB Anthropic SSE; 8 MiB MCP `LinesCodec`) so a hostile or runaway server cannot exhaust memory; stop cloning the API key into a local `String` before each request and pass the `SecretString` reference straight into the `Authorization` / `x-api-key` header.
+- **kernex-providers / kernex-skills**: drop dynamic-linker env vars (`LD_PRELOAD`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH`, `DYLD_FALLBACK_LIBRARY_PATH`) from skill-supplied environment maps before spawning MCP servers and toolboxes; closes the sandbox-escape vector flagged as N13.
+- **kernex-memory**: pre-create the SQLite file at mode `0o600` *before* sqlx connects, closing the TOCTOU window where `sqlx::sqlite::SqliteConnectOptions::create_if_missing(true)` briefly created a world-readable file (N6).
+- **kernex-core**: nested-arg-aware permission checks — `flatten_strings` now recurses into JSON arrays/objects so payloads cannot smuggle dangerous arguments through nesting; `MAX_ARGS_LEN = 64 KiB` cap on the flattened representation.
+- **kernex-providers**: `validate_gemini_model_id` enforces `[A-Za-z0-9._-]{1,128}`; `claude_code/command.rs::looks_like_cli_flag` filters values starting with `-` from `model`, `session_id`, and `agent_name` so context-poisoned strings cannot inject CLI flags into the spawned `claude` invocation. `parse_retry_after` honors the `Retry-After` header (clamped to 30 s, max with exponential backoff).
+- **kernex-providers**: MCP `protocolVersion` pinned to `"2025-03-26"` — a published spec date — so MCP servers cannot probe for unreleased protocol behaviors via wildcard or future-dated handshakes (N25).
+
+### Added
+
+- **kernex-core**: MSRV polyfill `utf8::floor_char_boundary()` so the workspace continues to support Rust 1.74 even though `str::floor_char_boundary` only stabilizes in 1.83. Used at four sanitization sites.
+- **kernex-memory**: prompt-cache token breakdown persisted (migration `016_cache_token_breakdown.sql` adds `cache_read_input_tokens`, `cache_creation_input_tokens`, `prompt_tokens`, and `completion_tokens` to `token_usage`); `Store::record_usage_full(UsageBreakdown)` and `Store::get_total_usage()` round-trip the new columns.
+- **kernex-providers**: `cache_read_input_tokens` and `cache_creation_input_tokens` exposed on `AnthropicUsage` and surfaced in `CompletionMeta` so callers can attribute cache hits.
+
+### Changed
+
+- **kernex-runtime**: `warn_if_data_dir_unusual()` emits a `tracing::warn!` when `KERNEX_DATA_DIR` resolves outside `$HOME` / `/tmp` / `/var`, catching the common typo class where data ends up in `/`.
+- **kernex-memory**: `Store::consolidator::spawn_cancellable` accepts an `Option<watch::Receiver<bool>>` for cooperative shutdown; `SystemTime::duration_since` no longer silently swallows clock-jump errors via `unwrap_or_default()`.
+- **kernex-runtime**: `Runtime::complete*` now constructs a `UsageBreakdown` and routes through `record_usage_full`, replacing the truncating two-column write path.
+
 ## [0.4.1] - 2026-05-07
 
 ### Added
