@@ -109,18 +109,39 @@ struct McpFrontmatter {
     args: Vec<String>,
 }
 
-/// Validate an MCP command name contains only safe characters.
+/// Validate an MCP command name contains only safe characters and is not
+/// an arbitrary absolute path supplied by skill metadata.
 ///
-/// Allows alphanumeric, hyphens, underscores, dots, and forward slashes
-/// (for paths like `/usr/bin/foo`). Rejects shell metacharacters that
-/// could enable injection: `; | & $ \` > < ( ) { } ! ~ #`.
+/// Allows alphanumeric, hyphens, underscores, dots, and `@` for bare names
+/// resolved through `$PATH` (the typical case: `npx`, `uvx`, `node`). For
+/// absolute paths the prefix must match a small allow-list of system
+/// directories (`/usr/`, `/opt/`, `/bin/`, `/sbin/`); anything pointing
+/// into `/tmp`, `/home`, the data dir, etc. is rejected so a skill that
+/// drops a payload file there cannot ship `command = "/tmp/payload"`.
 fn is_safe_mcp_command(command: &str) -> bool {
     if command.is_empty() {
         return false;
     }
-    command
+    // Reject shell metacharacters universally.
+    let charset_ok = command
         .chars()
-        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '@'))
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '@'));
+    if !charset_ok {
+        return false;
+    }
+    // Reject `..` components in any path-shaped command (the charset
+    // permits dots so `../../tmp/payload` would slip through otherwise).
+    if command.split('/').any(|seg| seg == "..") {
+        return false;
+    }
+    if command.starts_with('/') {
+        // Absolute path — gate it through a system-directory allow-list.
+        const SYSTEM_PREFIXES: &[&str] = &["/usr/", "/opt/", "/bin/", "/sbin/", "/Applications/"];
+        return SYSTEM_PREFIXES.iter().any(|p| command.starts_with(p));
+    }
+    // Bare name or relative path — let `$PATH` / cwd resolution decide,
+    // and rely on skill trust + sandbox to contain the rest.
+    true
 }
 
 /// A single entry in `mcp.json` under `mcpServers`.
@@ -710,6 +731,39 @@ pub fn skill_search_toolbox() -> Toolbox {
 mod tests {
     use super::*;
     use crate::parse::which_exists;
+
+    #[test]
+    fn test_is_safe_mcp_command_allows_bare_names() {
+        assert!(is_safe_mcp_command("npx"));
+        assert!(is_safe_mcp_command("uvx"));
+        assert!(is_safe_mcp_command("node"));
+        assert!(is_safe_mcp_command("@scope/tool"));
+    }
+
+    #[test]
+    fn test_is_safe_mcp_command_allows_system_prefixes() {
+        assert!(is_safe_mcp_command("/usr/bin/python3"));
+        assert!(is_safe_mcp_command("/opt/homebrew/bin/uv"));
+        assert!(is_safe_mcp_command("/bin/sh"));
+    }
+
+    #[test]
+    fn test_is_safe_mcp_command_rejects_attacker_paths() {
+        // The audit's specific attack: a "Verified" skill shipping
+        // command="/tmp/payload" can no longer get spawned.
+        assert!(!is_safe_mcp_command("/tmp/payload"));
+        assert!(!is_safe_mcp_command("/home/user/.cache/evil"));
+        assert!(!is_safe_mcp_command("/var/tmp/x"));
+        assert!(!is_safe_mcp_command("/etc/payload"));
+    }
+
+    #[test]
+    fn test_is_safe_mcp_command_rejects_traversal_and_meta() {
+        assert!(!is_safe_mcp_command("../../tmp/payload"));
+        assert!(!is_safe_mcp_command("/usr/bin/../../tmp/x"));
+        assert!(!is_safe_mcp_command("rm; sudo poweroff"));
+        assert!(!is_safe_mcp_command(""));
+    }
 
     #[test]
     fn test_parse_valid_frontmatter() {

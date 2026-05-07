@@ -167,6 +167,67 @@ fn test_build_run_cli_args_no_agent_name() {
 }
 
 #[test]
+fn test_build_run_cli_args_rejects_flag_injection_in_model() {
+    // Context-poisoned model that tries to smuggle a flag must be dropped,
+    // not pushed as a value the CLI's argv parser would re-interpret.
+    let args = ClaudeCodeProvider::build_run_cli_args(
+        "hello",
+        &[],
+        100,
+        &[],
+        "--system-prompt=evil",
+        false,
+        None,
+        None,
+    );
+    assert!(
+        !args.contains(&"--system-prompt=evil".to_string()),
+        "model values starting with `-` must not be injected as argv"
+    );
+    // The --model flag itself should be absent because we filtered out
+    // the bogus value entirely.
+    assert!(!args.contains(&"--model".to_string()));
+}
+
+#[test]
+fn test_build_run_cli_args_rejects_flag_injection_in_session_id() {
+    let args = ClaudeCodeProvider::build_run_cli_args(
+        "hello",
+        &[],
+        100,
+        &[],
+        "claude-sonnet-4-6",
+        false,
+        Some("--dangerously-skip-permissions"),
+        None,
+    );
+    assert!(!args.contains(&"--resume".to_string()));
+    assert!(!args.iter().any(|a| a == "--dangerously-skip-permissions"
+        && args[args
+            .iter()
+            .position(|x| x == a)
+            .unwrap_or(0)
+            .saturating_sub(1)]
+            == "--resume"));
+}
+
+#[test]
+fn test_build_run_cli_args_rejects_flag_injection_in_agent_name() {
+    let args = ClaudeCodeProvider::build_run_cli_args(
+        "hello",
+        &[],
+        100,
+        &[],
+        "claude-sonnet-4-6",
+        false,
+        None,
+        Some("--system-prompt=evil"),
+    );
+    assert!(!args.contains(&"--agent".to_string()));
+    assert!(!args.contains(&"--system-prompt=evil".to_string()));
+}
+
+#[test]
 fn test_build_run_cli_args_with_agent_name() {
     let args = ClaudeCodeProvider::build_run_cli_args(
         "Build me a task tracker.",

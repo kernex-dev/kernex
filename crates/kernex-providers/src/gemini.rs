@@ -19,6 +19,26 @@ const GEMINI_BASE_URL: &str = "https://generativelanguage.googleapis.com/v1beta"
 /// Default max agentic loop iterations.
 const DEFAULT_MAX_TURNS: u32 = 50;
 
+/// Reject any model id whose characters could reshape the request URL when
+/// interpolated into `…/models/{model}:generateContent`. Gemini IDs use only
+/// `[A-Za-z0-9._-]`, so anything else (e.g. `..`, `/`, `?`, `#`) is rejected.
+fn validate_gemini_model_id(model: &str) -> Result<(), KernexError> {
+    if model.is_empty() || model.len() > 128 {
+        return Err(KernexError::Provider(format!(
+            "gemini: invalid model id '{model}' (length)"
+        )));
+    }
+    if !model
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return Err(KernexError::Provider(format!(
+            "gemini: model id '{model}' contains characters outside [A-Za-z0-9._-]"
+        )));
+    }
+    Ok(())
+}
+
 /// Google Gemini API provider.
 pub struct GeminiProvider {
     client: reqwest::Client,
@@ -225,6 +245,11 @@ impl Provider for GeminiProvider {
     async fn complete(&self, context: &Context) -> Result<Response, KernexError> {
         let (system, api_messages) = context.to_api_messages();
         let effective_model = context.model.as_deref().unwrap_or(&self.model);
+        // Gemini model IDs are interpolated unencoded into the request URL
+        // path. Reject anything outside the documented charset so a
+        // skill-supplied `model = "../v1beta/openapi"` (or one with `?`/`#`)
+        // can't reshape the endpoint.
+        validate_gemini_model_id(effective_model)?;
         let max_turns = context.max_turns.unwrap_or(DEFAULT_MAX_TURNS);
 
         let has_tools = tools_enabled(context);
@@ -534,6 +559,23 @@ fn extract_text_from_response(resp: &GeminiResponse) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_gemini_model_id_accepts_real_ids() {
+        assert!(validate_gemini_model_id("gemini-2.0-flash").is_ok());
+        assert!(validate_gemini_model_id("gemini-1.5-pro-002").is_ok());
+        assert!(validate_gemini_model_id("models_legacy.v3").is_ok());
+    }
+
+    #[test]
+    fn validate_gemini_model_id_rejects_url_breakers() {
+        assert!(validate_gemini_model_id("../v1beta/openapi").is_err());
+        assert!(validate_gemini_model_id("gemini?key=x").is_err());
+        assert!(validate_gemini_model_id("gemini#frag").is_err());
+        assert!(validate_gemini_model_id("foo/bar").is_err());
+        assert!(validate_gemini_model_id("foo bar").is_err());
+        assert!(validate_gemini_model_id("").is_err());
+    }
 
     #[test]
     fn test_gemini_provider_name() {

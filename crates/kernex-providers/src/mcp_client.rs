@@ -3,12 +3,12 @@
 //! Implements JSON-RPC 2.0 over newline-delimited JSON on stdin/stdout.
 //! No external MCP crate — just raw protocol using tokio + serde.
 
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
 use thiserror::Error;
-use futures_util::StreamExt;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
@@ -185,7 +185,10 @@ impl McpClient {
             server: name.to_string(),
             channel: "stdout",
         })?;
-        let stdout = FramedRead::new(stdout_pipe, LinesCodec::new_with_max_length(MCP_MAX_LINE_LEN));
+        let stdout = FramedRead::new(
+            stdout_pipe,
+            LinesCodec::new_with_max_length(MCP_MAX_LINE_LEN),
+        );
 
         let mut client = Self {
             child,
