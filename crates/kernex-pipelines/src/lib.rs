@@ -9,6 +9,6 @@
 mod topology;
 
 pub use topology::{
-    load_topology, validate_topology_name, LoadedTopology, ModelTier, Phase, PhaseGroup, PhaseType,
-    RetryConfig, Topology, TopologyMeta, ValidationConfig, ValidationType,
+    load_topology, validate_agent_name, validate_topology_name, LoadedTopology, Phase, PhaseGroup,
+    PhaseTier, PhaseType, RetryConfig, Topology, TopologyMeta, ValidationConfig, ValidationType,
 };
