@@ -17,6 +17,13 @@ use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 /// MCP servers run in user space; a buggy or hostile one returning a single
 /// gigantic line should not be able to OOM the host process.
 const MCP_MAX_LINE_LEN: usize = 8 * 1024 * 1024;
+
+/// MCP `protocolVersion` we negotiate during `initialize`. Tracks the
+/// published spec at <https://modelcontextprotocol.io/specification>; bump
+/// when we adopt a newer spec date and verify our handshake still works
+/// against the reference servers. Avoid future-dated values: spec-compliant
+/// servers may reject a version they do not recognise.
+const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 use tracing::{debug, warn};
 
 /// Maximum time to wait for a single MCP request/response round-trip.
@@ -201,7 +208,7 @@ impl McpClient {
 
         // Step 2: initialize
         let init_params = serde_json::json!({
-            "protocolVersion": "2025-11-25",
+            "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": {},
             "clientInfo": {
                 "name": "kernex",
