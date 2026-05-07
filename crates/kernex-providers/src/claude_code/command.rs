@@ -5,6 +5,14 @@ use kernex_core::error::KernexError;
 use tokio::process::Command;
 use tracing::debug;
 
+/// True if `s` would be parsed by the `claude` CLI's argv parser as an
+/// option rather than the value we intended. Used to reject context- or
+/// skill-supplied strings that start with `-` so they cannot smuggle a
+/// flag like `--system-prompt=evil` into the subprocess.
+fn looks_like_cli_flag(s: &str) -> bool {
+    s.starts_with('-')
+}
+
 impl ClaudeCodeProvider {
     /// Build the CLI argument list for `run_cli()`.
     ///
@@ -26,11 +34,13 @@ impl ClaudeCodeProvider {
 
         // Agent mode: --agent <name> before -p.
         // When agent_name is set, skip --resume (agent mode does not use sessions).
-        // Reject agent names containing path separators or traversal patterns
-        // to prevent path traversal attacks via the --agent flag.
+        // Reject agent names containing path separators, traversal patterns,
+        // or a leading `-` so a poisoned skill can't smuggle a flag (e.g.
+        // `agent_name = "--system-prompt=evil"`) into the CLI's argv.
         let agent = agent_name
             .filter(|n| !n.is_empty())
-            .filter(|n| !n.contains('/') && !n.contains('\\') && !n.contains(".."));
+            .filter(|n| !n.contains('/') && !n.contains('\\') && !n.contains(".."))
+            .filter(|n| !looks_like_cli_flag(n));
 
         if let Some(name) = agent {
             args.push("--agent".to_string());
@@ -48,7 +58,10 @@ impl ClaudeCodeProvider {
         args.push(max_turns.to_string());
 
         // Model override.
-        if !model.is_empty() {
+        // Reject values that look like CLI flags (`--system-prompt=evil`,
+        // `-h`) so context-poisoning via `context.model` cannot inject
+        // arbitrary flags into the claude subprocess.
+        if !model.is_empty() && !looks_like_cli_flag(model) {
             args.push("--model".to_string());
             args.push(model.to_string());
         }
@@ -56,7 +69,7 @@ impl ClaudeCodeProvider {
         // Session continuity: --resume resumes an existing conversation by session ID.
         // Skipped when agent_name is set (agent mode does not use sessions).
         if !use_agent {
-            if let Some(sid) = session_id {
+            if let Some(sid) = session_id.filter(|s| !looks_like_cli_flag(s)) {
                 args.push("--resume".to_string());
                 args.push(sid.to_string());
             }
