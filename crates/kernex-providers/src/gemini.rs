@@ -655,10 +655,7 @@ mod tests {
             match v {
                 serde_json::Value::Object(map) => {
                     if let Some(t) = map.get("type") {
-                        assert!(
-                            !t.is_array(),
-                            "found array type in tool schema: {t}"
-                        );
+                        assert!(!t.is_array(), "found array type in tool schema: {t}");
                     }
                     for val in map.values() {
                         check_no_array_type(val);
