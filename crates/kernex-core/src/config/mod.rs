@@ -200,7 +200,7 @@ pub fn load_yaml(path: &str) -> Result<KernexConfig, KernexError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| KernexError::Config(format!("failed to read {}: {}", path.display(), e)))?;
 
-    let config: KernexConfig = serde_yml::from_str(&content)
+    let config: KernexConfig = serde_yaml_ng::from_str(&content)
         .map_err(|e| KernexError::Config(format!("failed to parse yaml config: {e}")))?;
 
     Ok(config)
