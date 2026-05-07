@@ -45,10 +45,13 @@ impl Store {
     pub async fn new(config: &MemoryConfig) -> Result<Self, KernexError> {
         let db_path = shellexpand(&config.db_path);
 
-        // Ensure parent directory exists.
+        // Ensure parent directory exists. On Unix, also restrict its mode to
+        // 0o700 so other local users can't enumerate or read the SQLite WAL
+        // files that may briefly contain message text en route to disk.
         if let Some(parent) = std::path::Path::new(&db_path).parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| KernexError::Store(format!("failed to create data dir: {e}")))?;
+            tighten_unix_dir_perms(parent);
         }
 
         let opts = SqliteConnectOptions::from_str(&format!("sqlite:{db_path}"))
@@ -64,6 +67,13 @@ impl Store {
 
         Self::run_migrations(&pool).await?;
 
+        // The DB file is created by sqlx during the first connection. Lock
+        // it down to 0o600 (owner read/write only) on Unix; conversation
+        // history, facts, and tool outputs live here and on shared hosts
+        // (CI runners, multi-user dev boxes) the default 0o644 would let
+        // any local user read them.
+        tighten_unix_file_perms(&db_path);
+
         info!("Memory store initialized at {db_path}");
 
         Ok(Self {
@@ -76,7 +86,39 @@ impl Store {
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
+}
 
+#[cfg(unix)]
+fn tighten_unix_file_perms(path: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o600);
+        if let Err(e) = std::fs::set_permissions(path, perms) {
+            tracing::warn!(path = %path, "could not chmod 0600 on memory db: {e}");
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_unix_file_perms(_path: &str) {}
+
+#[cfg(unix)]
+fn tighten_unix_dir_perms(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(meta) = std::fs::metadata(path) {
+        let mut perms = meta.permissions();
+        perms.set_mode(0o700);
+        if let Err(e) = std::fs::set_permissions(path, perms) {
+            tracing::warn!(path = %path.display(), "could not chmod 0700 on memory data dir: {e}");
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn tighten_unix_dir_perms(_path: &std::path::Path) {}
+
+impl Store {
     /// Get the database file size in bytes.
     pub async fn db_size(&self) -> Result<u64, KernexError> {
         let (page_count,): (i64,) = sqlx::query_as("PRAGMA page_count")
