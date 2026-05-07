@@ -453,7 +453,15 @@ impl ToolExecutor {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        for (k, v) in &tb.env {
+        let (safe_env, dropped) = kernex_core::spawn::filter_unsafe_env(&tb.env);
+        for k in &dropped {
+            tracing::warn!(
+                toolbox = %tb.name,
+                env_key = %k,
+                "toolbox: dropping dynamic-linker env var supplied by skill (would bypass sandbox)"
+            );
+        }
+        for (k, v) in &safe_env {
             cmd.env(k, v);
         }
 
