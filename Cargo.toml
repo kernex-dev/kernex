@@ -43,6 +43,9 @@ async-trait = "0.1"
 http = "1"
 schemars = "0.8"
 serde_yaml_ng = "0.10"
+# Test-only. Each test gets a unique random path with RAII cleanup, eliminating
+# the cross-test races the prior `temp_dir().join("__kernex_…__")` pattern hit.
+tempfile = "3"
 
 # Internal crates
 kernex-core = { version = "0.4.1", path = "crates/kernex-core" }

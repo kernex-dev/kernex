@@ -234,22 +234,20 @@ mod tests {
     use super::*;
     use kernex_core::config::MemoryConfig;
 
-    async fn test_store() -> Store {
-        let tmp = std::env::temp_dir().join(format!(
-            "__kernex_checkpoints_test_{}__{}.db",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
+    async fn test_store() -> (Store, tempfile::TempDir) {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let db_path = tmp_dir.path().join("checkpoints.db");
         let config = MemoryConfig {
-            db_path: tmp.to_str().unwrap().to_string(),
+            db_path: db_path.to_str().unwrap().to_string(),
             ..Default::default()
         };
-        Store::new(&config).await.unwrap()
+        let store = Store::new(&config).await.unwrap();
+        (store, tmp_dir)
     }
 
     #[tokio::test]
     async fn test_upsert_and_get_checkpoint() {
-        let store = test_store().await;
+        let (store, _tmp_dir) = test_store().await;
         let run_id = uuid::Uuid::new_v4().to_string();
 
         store
@@ -283,7 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_upsert_updates_existing() {
-        let store = test_store().await;
+        let (store, _tmp_dir) = test_store().await;
         let run_id = uuid::Uuid::new_v4().to_string();
 
         store
@@ -328,7 +326,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_run_checkpoints_ordered() {
-        let store = test_store().await;
+        let (store, _tmp_dir) = test_store().await;
         let run_id = uuid::Uuid::new_v4().to_string();
 
         for phase in &["phase-1", "phase-2", "phase-3"] {
@@ -357,7 +355,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clear_run_checkpoints() {
-        let store = test_store().await;
+        let (store, _tmp_dir) = test_store().await;
         let run_id = uuid::Uuid::new_v4().to_string();
 
         store
@@ -383,7 +381,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_failed_checkpoint_stores_error() {
-        let store = test_store().await;
+        let (store, _tmp_dir) = test_store().await;
         let run_id = uuid::Uuid::new_v4().to_string();
 
         store

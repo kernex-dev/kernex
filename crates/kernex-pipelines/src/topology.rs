@@ -703,8 +703,8 @@ phase_type = "parse-summary"
 
     #[test]
     fn test_load_topology_reads_valid_topology() {
-        let tmp = std::env::temp_dir().join("__kernex_test_topo_valid__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let topo_dir = tmp.join("topologies/test-topo");
         let agents_dir = topo_dir.join("agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
@@ -726,13 +726,12 @@ agent = "build-only"
         assert_eq!(loaded.topology.topology.name, "test-topo");
         assert_eq!(loaded.topology.phases.len(), 1);
         assert!(loaded.agents.contains_key("build-only"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_topology_loads_all_referenced_agents() {
-        let tmp = std::env::temp_dir().join("__kernex_test_topo_multi__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let topo_dir = tmp.join("topologies/multi");
         let agents_dir = topo_dir.join("agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
@@ -764,13 +763,12 @@ fix_agent = "agent-a"
         assert_eq!(loaded.agents.len(), 2);
         assert_eq!(loaded.agent_content("agent-a").unwrap(), "Agent A content");
         assert_eq!(loaded.agent_content("agent-b").unwrap(), "Agent B content");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_topology_loads_fix_agent() {
-        let tmp = std::env::temp_dir().join("__kernex_test_topo_fix__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let topo_dir = tmp.join("topologies/fix-test");
         let agents_dir = topo_dir.join("agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
@@ -796,13 +794,12 @@ fix_agent = "build-developer"
 
         let loaded = load_topology(tmp.to_str().unwrap(), "fix-test").unwrap();
         assert!(loaded.agents.contains_key("build-developer"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_topology_includes_non_phase_agents() {
-        let tmp = std::env::temp_dir().join("__kernex_test_topo_disc__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let topo_dir = tmp.join("topologies/disc-test");
         let agents_dir = topo_dir.join("agents");
         std::fs::create_dir_all(&agents_dir).unwrap();
@@ -824,20 +821,18 @@ agent = "build-analyst"
         let loaded = load_topology(tmp.to_str().unwrap(), "disc-test").unwrap();
         assert!(loaded.agents.contains_key("build-analyst"));
         assert!(loaded.agents.contains_key("build-discovery"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_topology_corrupt_toml_returns_error() {
-        let tmp = std::env::temp_dir().join("__kernex_test_topo_corrupt__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let topo_dir = tmp.join("topologies/corrupt");
         std::fs::create_dir_all(&topo_dir).unwrap();
         std::fs::write(topo_dir.join("TOPOLOGY.toml"), "not valid {{toml}}").unwrap();
 
         let result = load_topology(tmp.to_str().unwrap(), "corrupt");
         assert!(result.is_err());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
