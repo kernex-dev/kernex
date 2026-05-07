@@ -1,6 +1,7 @@
 //! kernex-memory: SQLite-backed implementation of the `Store` trait.
 #![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![deny(rustdoc::broken_intra_doc_links)]
 //!
 //! Provides conversation storage, reward-based learning (outcomes + lessons),
 //! scheduled tasks, FTS5 semantic recall, and audit logging.

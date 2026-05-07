@@ -20,10 +20,10 @@ const BASE_DELAY_MS: u64 = 1000;
 /// and tool inputs may contain user-supplied secrets.
 const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
 
-/// Read up to [`MAX_ERROR_BODY_BYTES`] from a non-2xx response, returning a
-/// UTF-8 lossy String suitable for inclusion in a [`KernexError::Provider`]
-/// message. Stops early once the cap is reached, even if the server is still
-/// streaming. Appends `" [... truncated]"` when the body exceeded the cap.
+/// Read up to 16 KB from a non-2xx response, returning a UTF-8 lossy String
+/// suitable for inclusion in a [`KernexError::Provider`] message. Stops early
+/// once the cap is reached, even if the server is still streaming. Appends
+/// `" [... truncated]"` when the body exceeded the cap.
 pub async fn read_truncated_error_body(resp: Response) -> String {
     let mut stream = resp.bytes_stream();
     let mut buf: Vec<u8> = Vec::with_capacity(MAX_ERROR_BODY_BYTES.min(8 * 1024));
