@@ -1,10 +1,20 @@
 [workspace]
 members = ["crates/*", "bench"]
+# `cargo build` / `cargo test` at the workspace root only touch the publishable
+# crates; the `bench` crate stays out of the default set so contributors don't
+# pay its criterion compile time on every local iteration. CI still builds it
+# explicitly via the `examples` job (see .github/workflows/ci.yml).
+default-members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
 version = "0.4.0"
 edition = "2021"
+# Conservative MSRV. If you need a newer language feature, run
+# `cargo install cargo-msrv && cargo msrv verify` before bumping this so the
+# new floor is supported by an actual toolchain check rather than a guess.
+# Crates.io will surface the version to downstream consumers via
+# `package.rust-version`, so dropping below this is a breaking change.
 rust-version = "1.74"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/kernex-dev/kernex"
