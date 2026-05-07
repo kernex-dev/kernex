@@ -1036,6 +1036,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernex"
+version = "0.4.1"
+dependencies = [
+ "kernex-runtime",
+]
+
+[[package]]
 name = "kernex-bench"
 version = "0.1.0"
 dependencies = [
@@ -1049,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-core"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1065,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-memory"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1080,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-pipelines"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "kernex-core",
  "serde",
@@ -1090,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-providers"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1114,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-runtime"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1133,7 +1140,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-sandbox"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "anyhow",
  "landlock",
@@ -1143,7 +1150,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-skills"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "kernex-core",
  "serde",
