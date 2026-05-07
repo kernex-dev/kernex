@@ -53,8 +53,13 @@ jobs:
     name: Test
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        # ubuntu-latest pins to 24.04 (kernel 6.x). ubuntu-22.04 ships with kernel
+        # 5.15, which exercises the Landlock partial-enforcement path (full ABI
+        # support landed in 5.19). Keeping both surfaces drift in the sandbox
+        # layer that single-runner coverage misses.
+        os: [ubuntu-latest, ubuntu-22.04, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
