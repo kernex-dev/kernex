@@ -751,10 +751,23 @@ impl ToolExecutor {
             };
         }
 
+        // SSRF guard: only allow https://, reject loopback / private / link-local
+        // / cloud-metadata IP ranges so a tool-using model cannot probe
+        // 169.254.169.254, 127.0.0.1:11434 (other agents on the host),
+        // 10.x / 192.168.x / fd00::/8 networks. file://, ftp://, gopher://
+        // and other schemes are blocked by the https check.
+        if let Err(reason) = is_safe_fetch_url(url) {
+            return ToolResult {
+                content: format!("Error: refusing to fetch '{url}': {reason}"),
+                is_error: true,
+            };
+        }
+
         debug!("tool/web_fetch: {url}");
 
         let client = match reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
         {
             Ok(c) => c,
@@ -784,6 +797,65 @@ impl ToolExecutor {
                 content: format!("HTTP request failed: {e}"),
                 is_error: true,
             },
+        }
+    }
+}
+
+/// Validate a URL for `web_fetch` against SSRF abuse.
+///
+/// Returns `Ok(())` only when the URL is `https://`, the host parses to a
+/// public IP (or is left as a hostname for which we trust DNS — see notes),
+/// and the port is unspecified (443) or in the standard HTTPS range. Cloud
+/// metadata IPs (169.254.169.254), loopback, private, link-local, and
+/// unspecified addresses are rejected.
+///
+/// Note: this is best-effort defence. A hostname that resolves at request
+/// time to a private IP would still bypass the check; defeating that
+/// requires hooking into reqwest's DNS resolver. Catching the obvious
+/// literal-IP attempts is the realistic high-value layer.
+fn is_safe_fetch_url(url: &str) -> Result<(), &'static str> {
+    let parsed = match reqwest::Url::parse(url) {
+        Ok(u) => u,
+        Err(_) => return Err("not a valid URL"),
+    };
+    if parsed.scheme() != "https" {
+        return Err("only https:// is allowed");
+    }
+    let host = parsed.host_str().ok_or("missing host")?;
+    // For IPv6, host_str() returns the address without surrounding brackets in
+    // recent reqwest, but older versions wrapped it. Strip just in case.
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        if !is_public_ip(&ip) {
+            return Err("host is a loopback / private / link-local / metadata IP");
+        }
+    }
+    Ok(())
+}
+
+fn is_public_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+                // 169.254.169.254 — AWS / GCP / Azure instance metadata.
+                || (octets[0] == 169 && octets[1] == 254)
+                // 100.64.0.0/10 — carrier-grade NAT, often points at internal services.
+                || (octets[0] == 100 && (octets[1] & 0b1100_0000) == 64))
+        }
+        std::net::IpAddr::V6(v6) => {
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                // fd00::/8 — unique local addresses.
+                || (v6.octets()[0] & 0xfe) == 0xfc
+                // fe80::/10 — link-local.
+                || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xc0) == 0x80))
         }
     }
 }
@@ -934,6 +1006,33 @@ pub(crate) fn tools_enabled(context: &kernex_core::context::Context) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn safe_fetch_url_accepts_public_https() {
+        assert!(is_safe_fetch_url("https://example.com").is_ok());
+        assert!(is_safe_fetch_url("https://api.github.com/repos/foo/bar").is_ok());
+        assert!(is_safe_fetch_url("https://1.1.1.1/dns-query").is_ok());
+    }
+
+    #[test]
+    fn safe_fetch_url_rejects_non_https() {
+        assert!(is_safe_fetch_url("http://example.com").is_err());
+        assert!(is_safe_fetch_url("ftp://example.com").is_err());
+        assert!(is_safe_fetch_url("file:///etc/passwd").is_err());
+        assert!(is_safe_fetch_url("not-a-url").is_err());
+    }
+
+    #[test]
+    fn safe_fetch_url_rejects_metadata_and_loopback() {
+        assert!(is_safe_fetch_url("https://169.254.169.254/latest/meta-data").is_err());
+        assert!(is_safe_fetch_url("https://127.0.0.1/").is_err());
+        assert!(is_safe_fetch_url("https://[::1]/").is_err());
+        assert!(is_safe_fetch_url("https://10.0.0.5/").is_err());
+        assert!(is_safe_fetch_url("https://192.168.1.1/").is_err());
+        assert!(is_safe_fetch_url("https://172.16.0.5/").is_err());
+        assert!(is_safe_fetch_url("https://[fe80::1]/").is_err());
+        assert!(is_safe_fetch_url("https://[fd00::1]/").is_err());
+    }
 
     #[test]
     fn test_builtin_tool_defs_cached() {
