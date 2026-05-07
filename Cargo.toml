@@ -51,6 +51,7 @@ kernex-memory = { version = "0.4.0", path = "crates/kernex-memory" }
 kernex-skills = { version = "0.4.0", path = "crates/kernex-skills" }
 kernex-pipelines = { version = "0.4.0", path = "crates/kernex-pipelines" }
 kernex-runtime = { version = "0.4.0", path = "crates/kernex-runtime" }
+kernex = { version = "0.4.0", path = "crates/kernex" }
 
 # Centralized lint configuration. Each crate inherits these by setting
 # `[lints] workspace = true` in its own Cargo.toml. Test code is exempted
