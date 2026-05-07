@@ -22,7 +22,7 @@ mod usage;
 pub use checkpoints::PhaseCheckpoint;
 pub use context::{detect_language, format_user_profile};
 pub use tasks::DueTask;
-pub use usage::UsageSummary;
+pub use usage::{UsageBreakdown, UsageSummary};
 
 use kernex_core::{config::MemoryConfig, error::KernexError, shellexpand};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -234,6 +234,10 @@ impl Store {
             (
                 "015_phase_checkpoints",
                 include_str!("../../migrations/015_phase_checkpoints.sql"),
+            ),
+            (
+                "016_cache_token_breakdown",
+                include_str!("../../migrations/016_cache_token_breakdown.sql"),
             ),
         ];
 

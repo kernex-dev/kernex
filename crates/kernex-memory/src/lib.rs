@@ -14,4 +14,4 @@ pub use store::detect_language;
 pub use store::DueTask;
 pub use store::PhaseCheckpoint;
 pub use store::Store;
-pub use store::UsageSummary;
+pub use store::{UsageBreakdown, UsageSummary};
