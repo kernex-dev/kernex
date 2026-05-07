@@ -229,6 +229,8 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
         .map_err(|e| KernexError::Pipeline(format!("failed to parse TOPOLOGY.toml: {e}")))?;
 
     // Collect unique agent names from phases (including fix_agent references).
+    // Validate every name before any filesystem join to prevent path traversal
+    // via a malicious TOPOLOGY.toml (e.g. agent = "../../../etc/passwd").
     let mut required_agents: Vec<&str> = topology.phases.iter().map(|p| p.agent.as_str()).collect();
     for phase in &topology.phases {
         if let Some(retry) = &phase.retry {
@@ -237,6 +239,9 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
     }
     required_agents.sort_unstable();
     required_agents.dedup();
+    for agent_name in &required_agents {
+        validate_agent_name(agent_name)?;
+    }
 
     // Load all referenced agent .md files.
     let mut agents = HashMap::new();
@@ -253,12 +258,17 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
     }
 
     // Scan agents/ directory for any additional .md files not referenced by phases.
+    // Skip any file whose stem fails validation — defends against attacker-placed
+    // files inside the agents/ directory.
     if agents_dir.exists() {
         if let Ok(entries) = std::fs::read_dir(&agents_dir) {
             for entry in entries.flatten() {
                 let file_name = entry.file_name().to_string_lossy().to_string();
                 if file_name.ends_with(".md") {
                     let agent_name = file_name.trim_end_matches(".md").to_string();
+                    if validate_agent_name(&agent_name).is_err() {
+                        continue;
+                    }
                     agents.entry(agent_name).or_insert_with_key(|_| {
                         std::fs::read_to_string(entry.path()).unwrap_or_default()
                     });
@@ -273,20 +283,28 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
 /// Validate a topology name: alphanumeric + hyphens + underscores, max 64 chars.
 /// Rejects path traversal, shell metacharacters, empty names.
 pub fn validate_topology_name(name: &str) -> Result<(), KernexError> {
+    validate_path_segment(name, "topology name")
+}
+
+/// Validate an agent name. Same rules as topology names; called before joining
+/// the name into a filesystem path to prevent traversal via malicious TOPOLOGY.toml.
+pub fn validate_agent_name(name: &str) -> Result<(), KernexError> {
+    validate_path_segment(name, "agent name")
+}
+
+fn validate_path_segment(name: &str, kind: &str) -> Result<(), KernexError> {
     if name.is_empty() {
-        return Err(KernexError::Pipeline(
-            "topology name cannot be empty".to_string(),
-        ));
+        return Err(KernexError::Pipeline(format!("{kind} cannot be empty")));
     }
     if name.len() > 64 {
         return Err(KernexError::Pipeline(format!(
-            "topology name too long ({} chars, max 64)",
+            "{kind} too long ({} chars, max 64)",
             name.len()
         )));
     }
     if name.contains("..") || name.contains('/') || name.contains('\\') {
         return Err(KernexError::Pipeline(format!(
-            "topology name '{name}' contains path traversal characters"
+            "{kind} '{name}' contains path traversal characters"
         )));
     }
     if !name
@@ -294,7 +312,7 @@ pub fn validate_topology_name(name: &str) -> Result<(), KernexError> {
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
     {
         return Err(KernexError::Pipeline(format!(
-            "topology name '{name}' contains invalid characters (only alphanumeric, hyphens, underscores allowed)"
+            "{kind} '{name}' contains invalid characters (only alphanumeric, hyphens, underscores allowed)"
         )));
     }
     Ok(())
