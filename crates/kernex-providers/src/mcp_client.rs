@@ -8,8 +8,15 @@ use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
 use thiserror::Error;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
+use futures_util::StreamExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
+
+/// Maximum length of a single JSON-RPC line accepted from an MCP server.
+/// MCP servers run in user space; a buggy or hostile one returning a single
+/// gigantic line should not be able to OOM the host process.
+const MCP_MAX_LINE_LEN: usize = 8 * 1024 * 1024;
 use tracing::{debug, warn};
 
 /// Maximum time to wait for a single MCP request/response round-trip.
@@ -94,7 +101,7 @@ pub struct McpToolResult {
 pub struct McpClient {
     child: Child,
     stdin: BufWriter<ChildStdin>,
-    stdout: tokio::io::Lines<BufReader<ChildStdout>>,
+    stdout: FramedRead<ChildStdout, LinesCodec>,
     next_id: u64,
     server_name: String,
     /// Tools discovered via `tools/list`.
@@ -174,11 +181,11 @@ impl McpClient {
             server: name.to_string(),
             channel: "stdin",
         })?);
-        let stdout = BufReader::new(child.stdout.take().ok_or_else(|| McpError::MissingPipe {
+        let stdout_pipe = child.stdout.take().ok_or_else(|| McpError::MissingPipe {
             server: name.to_string(),
             channel: "stdout",
-        })?)
-        .lines();
+        })?;
+        let stdout = FramedRead::new(stdout_pipe, LinesCodec::new_with_max_length(MCP_MAX_LINE_LEN));
 
         let mut client = Self {
             child,
@@ -292,22 +299,35 @@ impl McpClient {
 
     /// Read stdout lines until a JSON-RPC response matching `id` arrives.
     async fn read_response(
-        stdout: &mut tokio::io::Lines<BufReader<ChildStdout>>,
+        stdout: &mut FramedRead<ChildStdout, LinesCodec>,
         id: u64,
         server_name: &str,
         method: &str,
     ) -> Result<Value, McpError> {
         loop {
-            let raw = stdout
-                .next_line()
-                .await
-                .map_err(|e| McpError::Io {
-                    server: server_name.to_string(),
-                    source: e,
-                })?
-                .ok_or_else(|| McpError::StdoutClosed {
-                    server: server_name.to_string(),
-                })?;
+            let raw = match stdout.next().await {
+                Some(Ok(line)) => line,
+                Some(Err(LinesCodecError::MaxLineLengthExceeded)) => {
+                    return Err(McpError::Server {
+                        server: server_name.to_string(),
+                        method: method.to_string(),
+                        message: format!(
+                            "stdout line exceeded {MCP_MAX_LINE_LEN} bytes — refusing to buffer further"
+                        ),
+                    });
+                }
+                Some(Err(LinesCodecError::Io(e))) => {
+                    return Err(McpError::Io {
+                        server: server_name.to_string(),
+                        source: e,
+                    });
+                }
+                None => {
+                    return Err(McpError::StdoutClosed {
+                        server: server_name.to_string(),
+                    });
+                }
+            };
 
             // Skip empty lines.
             let trimmed = raw.trim();

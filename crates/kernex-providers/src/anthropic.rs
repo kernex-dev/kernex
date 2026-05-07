@@ -709,11 +709,12 @@ impl StreamingProvider for AnthropicProvider {
 
         // Build request. We send directly — send_with_retry reads the body on
         // error which would consume the stream before we can iterate it.
-        let api_key_str = self.api_key.expose_secret().to_string();
+        // Pass the SecretString slice directly into the header builder so the
+        // key never lives as an unzeroized owned String on the heap.
         let mut req = self
             .client
             .post(ANTHROPIC_API_URL)
-            .header("x-api-key", &api_key_str)
+            .header("x-api-key", self.api_key.expose_secret())
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
         let mut betas: Vec<&str> = Vec::new();
@@ -744,6 +745,11 @@ impl StreamingProvider for AnthropicProvider {
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);
 
+        // Cap any single SSE line at 1 MiB. A misbehaving or hostile endpoint
+        // that withholds newlines (or a chunked-encoding stall) would
+        // otherwise grow `buffer` without bound and OOM the worker.
+        const MAX_SSE_LINE: usize = 1024 * 1024;
+
         tokio::spawn(async move {
             use futures_util::StreamExt;
 
@@ -756,9 +762,13 @@ impl StreamingProvider for AnthropicProvider {
                         buffer.push_str(&String::from_utf8_lossy(&bytes));
 
                         // Drain complete lines from the front of the buffer.
+                        // `buffer.drain(..=pos)` does an in-place shift; the
+                        // previous `buffer = buffer[pos+1..].to_string()`
+                        // reallocated on every newline, giving O(n^2) total
+                        // work over a long stream.
                         while let Some(pos) = buffer.find('\n') {
                             let line = buffer[..pos].trim_end_matches('\r').to_string();
-                            buffer = buffer[pos + 1..].to_string();
+                            buffer.drain(..=pos);
 
                             if let Some(data) = line.strip_prefix("data: ") {
                                 if data == "[DONE]" {
@@ -773,6 +783,15 @@ impl StreamingProvider for AnthropicProvider {
                                     }
                                 }
                             }
+                        }
+
+                        if buffer.len() > MAX_SSE_LINE {
+                            let _ = tx
+                                .send(StreamEvent::Error(format!(
+                                    "anthropic: SSE line exceeded {MAX_SSE_LINE} bytes without newline"
+                                )))
+                                .await;
+                            return;
                         }
                     }
                     Err(e) => {
