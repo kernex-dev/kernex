@@ -154,7 +154,15 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        for (k, v) in env {
+        let (safe_env, dropped) = kernex_core::spawn::filter_unsafe_env(env);
+        for k in &dropped {
+            tracing::warn!(
+                server = name,
+                env_key = %k,
+                "mcp: dropping dynamic-linker env var supplied by skill (would bypass sandbox)"
+            );
+        }
+        for (k, v) in &safe_env {
             cmd.env(k, v);
         }
         let mut child = cmd.spawn().map_err(|e| McpError::Spawn {

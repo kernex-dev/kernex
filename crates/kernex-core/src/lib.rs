@@ -11,6 +11,7 @@ pub mod permissions;
 pub mod pricing;
 pub mod run;
 pub mod sanitize;
+pub mod spawn;
 pub mod stream;
 pub mod traits;
 pub mod utf8;
