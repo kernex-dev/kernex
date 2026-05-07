@@ -34,6 +34,27 @@ impl Default for ProviderConfig {
     }
 }
 
+/// Reject any `base_url` that is not `https://...` for providers that send
+/// an API key in the `Authorization` header. A typo or hostile config that
+/// points an OpenAI-compatible provider at `http://attacker/v1` would leak
+/// the key in cleartext on every request. This guard runs in
+/// [`ProviderFactory::create`] for every keyed provider.
+///
+/// `None` is treated as "use the default https URL" and accepted.
+fn require_https_for_keyed_provider(
+    provider: &str,
+    base_url: Option<&str>,
+) -> Result<(), KernexError> {
+    if let Some(url) = base_url {
+        if !url.starts_with("https://") {
+            return Err(KernexError::Provider(format!(
+                "{provider}: base_url must use https:// when an API key is sent in the Authorization header (got '{url}')"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Resolve the model name: explicit `model` wins; else derive from `tier`; else `None`.
 ///
 /// A `None` return means the caller's hardcoded default should apply.
@@ -85,6 +106,7 @@ impl ProviderFactory {
     ) -> Result<Box<dyn Provider>, KernexError> {
         match provider.to_lowercase().as_str() {
             "openai" => {
+                require_https_for_keyed_provider("openai", config.base_url.as_deref())?;
                 let model = resolve_model("openai", config.model, config.tier)
                     .unwrap_or_else(|| "gpt-4o".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
@@ -165,6 +187,7 @@ impl ProviderFactory {
             }
             // OpenAI-compatible third-party providers.
             "groq" => {
+                require_https_for_keyed_provider("groq", config.base_url.as_deref())?;
                 let model = resolve_model("groq", config.model, config.tier)
                     .unwrap_or_else(|| "llama-3.3-70b-versatile".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
@@ -181,6 +204,7 @@ impl ProviderFactory {
                 Ok(Box::new(p))
             }
             "mistral" => {
+                require_https_for_keyed_provider("mistral", config.base_url.as_deref())?;
                 let model = resolve_model("mistral", config.model, config.tier)
                     .unwrap_or_else(|| "mistral-small-latest".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
@@ -197,6 +221,7 @@ impl ProviderFactory {
                 Ok(Box::new(p))
             }
             "deepseek" => {
+                require_https_for_keyed_provider("deepseek", config.base_url.as_deref())?;
                 let model = resolve_model("deepseek", config.model, config.tier)
                     .unwrap_or_else(|| "deepseek-chat".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
@@ -213,6 +238,7 @@ impl ProviderFactory {
                 Ok(Box::new(p))
             }
             "fireworks" => {
+                require_https_for_keyed_provider("fireworks", config.base_url.as_deref())?;
                 let model =
                     resolve_model("fireworks", config.model, config.tier).unwrap_or_else(|| {
                         "accounts/fireworks/models/llama-v3p3-70b-instruct".to_string()
@@ -231,6 +257,7 @@ impl ProviderFactory {
                 Ok(Box::new(p))
             }
             "xai" => {
+                require_https_for_keyed_provider("xai", config.base_url.as_deref())?;
                 let model = resolve_model("xai", config.model, config.tier)
                     .unwrap_or_else(|| "grok-3-mini".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
@@ -312,6 +339,51 @@ impl ProviderFactory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn https_check_accepts_https_and_none() {
+        assert!(require_https_for_keyed_provider("openai", None).is_ok());
+        assert!(
+            require_https_for_keyed_provider("openai", Some("https://api.openai.com/v1")).is_ok()
+        );
+    }
+
+    #[test]
+    fn https_check_rejects_http_for_keyed_provider() {
+        let err = require_https_for_keyed_provider("openai", Some("http://attacker.example/v1"))
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("https://"),
+            "expected https message, got: {msg}"
+        );
+        assert!(msg.contains("openai"));
+    }
+
+    #[test]
+    fn factory_rejects_http_base_url_for_keyed_providers() {
+        for provider in ["openai", "groq", "mistral", "deepseek", "fireworks", "xai"] {
+            let cfg = ProviderConfig {
+                base_url: Some("http://attacker.example/v1".to_string()),
+                api_key: Some("sk-test".to_string()),
+                ..Default::default()
+            };
+            let result = ProviderFactory::create(provider, cfg);
+            assert!(result.is_err(), "{provider} should reject http:// base_url");
+        }
+    }
+
+    #[test]
+    fn factory_allows_http_base_url_for_ollama() {
+        // Ollama is the only built-in provider that legitimately runs over
+        // plain HTTP (default localhost). Verify the keyed-provider guard
+        // does not affect it.
+        let cfg = ProviderConfig {
+            base_url: Some("http://localhost:11434".to_string()),
+            ..Default::default()
+        };
+        assert!(ProviderFactory::create("ollama", cfg).is_ok());
+    }
 
     #[test]
     fn provider_config_default() {
