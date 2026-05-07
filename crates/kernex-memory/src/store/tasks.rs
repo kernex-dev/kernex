@@ -1,7 +1,7 @@
 //! Scheduled task CRUD, deduplication, and retry logic.
 
 use super::Store;
-use kernex_core::error::KernexError;
+use crate::error::MemoryError;
 use uuid::Uuid;
 
 /// A scheduled task that is due for delivery.
@@ -31,7 +31,7 @@ impl Store {
         repeat: Option<&str>,
         task_type: &str,
         project: &str,
-    ) -> Result<String, KernexError> {
+    ) -> Result<String, MemoryError> {
         let normalized_due = normalize_due_at(due_at);
 
         // Level 1: exact dedup on (sender, description, normalized due_at).
@@ -45,7 +45,7 @@ impl Store {
         .bind(&normalized_due)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("dedup check failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("dedup check failed", e))?;
 
         if let Some((id,)) = existing {
             tracing::info!("scheduled task dedup: reusing existing {id}");
@@ -62,7 +62,7 @@ impl Store {
         .bind(&normalized_due)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("fuzzy dedup check failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("fuzzy dedup check failed", e))?;
 
         for (existing_id, existing_desc, _) in &nearby {
             if descriptions_are_similar(description, existing_desc) {
@@ -89,14 +89,14 @@ impl Store {
         .bind(project)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("create task failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("create task failed", e))?;
 
         Ok(id)
     }
 
     /// Get tasks that are due for delivery.
     #[allow(clippy::type_complexity)]
-    pub async fn get_due_tasks(&self) -> Result<Vec<DueTask>, KernexError> {
+    pub async fn get_due_tasks(&self) -> Result<Vec<DueTask>, MemoryError> {
         let rows: Vec<(
             String,
             String,
@@ -113,7 +113,7 @@ impl Store {
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("get due tasks failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("get due tasks failed", e))?;
 
         Ok(rows
             .into_iter()
@@ -144,7 +144,7 @@ impl Store {
     }
 
     /// Complete a task: one-shot tasks become 'delivered', recurring tasks advance due_at.
-    pub async fn complete_task(&self, id: &str, repeat: Option<&str>) -> Result<(), KernexError> {
+    pub async fn complete_task(&self, id: &str, repeat: Option<&str>) -> Result<(), MemoryError> {
         match repeat {
             None | Some("once") => {
                 sqlx::query(
@@ -153,7 +153,7 @@ impl Store {
                 .bind(id)
                 .execute(&self.pool)
                 .await
-                .map_err(|e| KernexError::Store(format!("complete task failed: {e}")))?;
+                .map_err(|e| MemoryError::sqlite("complete task failed", e))?;
             }
             Some(interval) => {
                 let offset = match interval {
@@ -168,7 +168,7 @@ impl Store {
                     .bind(id)
                     .execute(&self.pool)
                     .await
-                    .map_err(|e| KernexError::Store(format!("advance task failed: {e}")))?;
+                    .map_err(|e| MemoryError::sqlite("advance task failed", e))?;
 
                 if interval == "weekdays" {
                     sqlx::query(
@@ -178,7 +178,7 @@ impl Store {
                     .bind(id)
                     .execute(&self.pool)
                     .await
-                    .map_err(|e| KernexError::Store(format!("weekday skip sat failed: {e}")))?;
+                    .map_err(|e| MemoryError::sqlite("weekday skip sat failed", e))?;
 
                     sqlx::query(
                         "UPDATE scheduled_tasks SET due_at = datetime(due_at, '+1 day') \
@@ -187,7 +187,7 @@ impl Store {
                     .bind(id)
                     .execute(&self.pool)
                     .await
-                    .map_err(|e| KernexError::Store(format!("weekday skip sun failed: {e}")))?;
+                    .map_err(|e| MemoryError::sqlite("weekday skip sun failed", e))?;
                 }
             }
         }
@@ -202,13 +202,13 @@ impl Store {
         id: &str,
         error: &str,
         max_retries: u32,
-    ) -> Result<bool, KernexError> {
+    ) -> Result<bool, MemoryError> {
         let row: Option<(i64,)> =
             sqlx::query_as("SELECT retry_count FROM scheduled_tasks WHERE id = ?")
                 .bind(id)
                 .fetch_optional(&self.pool)
                 .await
-                .map_err(|e| KernexError::Store(format!("fail_task fetch failed: {e}")))?;
+                .map_err(|e| MemoryError::sqlite("fail_task fetch failed", e))?;
 
         let current_count = row.map(|r| r.0).unwrap_or(0) as u32;
         let new_count = current_count + 1;
@@ -225,7 +225,7 @@ impl Store {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("fail_task retry update failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("fail_task retry update failed", e))?;
             Ok(true)
         } else {
             sqlx::query(
@@ -238,7 +238,7 @@ impl Store {
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("fail_task final update failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("fail_task final update failed", e))?;
             Ok(false)
         }
     }
@@ -247,7 +247,7 @@ impl Store {
     pub async fn get_tasks_for_sender(
         &self,
         sender_id: &str,
-    ) -> Result<Vec<(String, String, String, Option<String>, String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String, String, Option<String>, String, String)>, MemoryError> {
         let rows: Vec<(String, String, String, Option<String>, String, String)> = sqlx::query_as(
             "SELECT id, description, due_at, repeat, task_type, project \
              FROM scheduled_tasks \
@@ -257,13 +257,13 @@ impl Store {
         .bind(sender_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("get tasks failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("get tasks failed", e))?;
 
         Ok(rows)
     }
 
     /// Cancel a task by ID prefix (must match sender).
-    pub async fn cancel_task(&self, id_prefix: &str, sender_id: &str) -> Result<bool, KernexError> {
+    pub async fn cancel_task(&self, id_prefix: &str, sender_id: &str) -> Result<bool, MemoryError> {
         let prefix = format!("{id_prefix}%");
 
         let result = sqlx::query(
@@ -274,7 +274,7 @@ impl Store {
         .bind(sender_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("cancel task failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("cancel task failed", e))?;
 
         if result.rows_affected() > 0 {
             return Ok(true);
@@ -288,7 +288,7 @@ impl Store {
         .bind(sender_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("cancel task check failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("cancel task check failed", e))?;
 
         Ok(already.0 > 0)
     }
@@ -301,7 +301,7 @@ impl Store {
         description: Option<&str>,
         due_at: Option<&str>,
         repeat: Option<&str>,
-    ) -> Result<bool, KernexError> {
+    ) -> Result<bool, MemoryError> {
         let mut sets = Vec::new();
         let mut values: Vec<String> = Vec::new();
 
@@ -337,19 +337,19 @@ impl Store {
         let result = query
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("update task failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("update task failed", e))?;
 
         Ok(result.rows_affected() > 0)
     }
 
     /// Defer a pending task to a new due_at time (by exact ID).
-    pub async fn defer_task(&self, id: &str, new_due_at: &str) -> Result<(), KernexError> {
+    pub async fn defer_task(&self, id: &str, new_due_at: &str) -> Result<(), MemoryError> {
         sqlx::query("UPDATE scheduled_tasks SET due_at = ? WHERE id = ? AND status = 'pending'")
             .bind(new_due_at)
             .bind(id)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("defer task failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("defer task failed", e))?;
         Ok(())
     }
 }

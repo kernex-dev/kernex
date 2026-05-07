@@ -1,3 +1,4 @@
+use crate::error::ProviderError;
 use kernex_core::error::KernexError;
 use kernex_core::run::ModelTier;
 use kernex_core::traits::Provider;
@@ -47,9 +48,7 @@ fn require_https_for_keyed_provider(
 ) -> Result<(), KernexError> {
     if let Some(url) = base_url {
         if !url.starts_with("https://") {
-            return Err(KernexError::Provider(format!(
-                "{provider}: base_url must use https:// when an API key is sent in the Authorization header (got '{url}')"
-            )));
+            return Err(ProviderError::Logic(format!("{provider}: base_url must use https:// when an API key is sent in the Authorization header (got '{url}')")).into());
         }
     }
     Ok(())
@@ -293,10 +292,7 @@ impl ProviderFactory {
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
             }
-            _ => Err(KernexError::Provider(format!(
-                "Unknown provider type: {}",
-                provider
-            ))),
+            _ => Err(ProviderError::Logic(format!("Unknown provider type: {provider}")).into()),
         }
     }
 

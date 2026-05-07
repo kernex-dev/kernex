@@ -4,10 +4,10 @@
 //! detection, and relative time formatting live in `context_helpers`.
 
 use super::Store;
+use crate::error::MemoryError;
 use kernex_core::{
     config::SYSTEM_FACT_KEYS,
     context::{CompactionStrategy, Context, ContextEntry, ContextNeeds},
-    error::KernexError,
     message::Request,
     traits::Summarizer,
 };
@@ -44,7 +44,7 @@ impl Store {
         needs: &ContextNeeds,
         active_project: Option<&str>,
         summarizer: Option<&dyn Summarizer>,
-    ) -> Result<Context, KernexError> {
+    ) -> Result<Context, MemoryError> {
         let project_key = active_project.unwrap_or("");
         let conv_id = self
             .get_or_create_conversation(channel, &incoming.sender_id, project_key)
@@ -61,9 +61,9 @@ impl Store {
             .bind(self.max_context_messages as i64)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
-            Ok::<Vec<ContextEntry>, KernexError>(
+            Ok::<Vec<ContextEntry>, MemoryError>(
                 rows.into_iter()
                     .map(|(role, content)| ContextEntry { role, content })
                     .collect(),
@@ -144,7 +144,7 @@ impl Store {
                     .bind(&conv_id)
                     .fetch_one(&self.pool)
                     .await
-                    .map_err(|e| KernexError::Store(format!("count failed: {e}")))?;
+                    .map_err(|e| MemoryError::sqlite("count failed", e))?;
             (total.0 as usize).saturating_sub(self.max_context_messages)
         } else {
             0
@@ -161,7 +161,7 @@ impl Store {
                 .bind(overflow_count as i64)
                 .fetch_all(&self.pool)
                 .await
-                .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+                .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
                 if overflow_rows.is_empty() {
                     None

@@ -1,6 +1,6 @@
 //! Audit log — records every interaction through Kernex.
 
-use kernex_core::error::KernexError;
+use crate::error::MemoryError;
 use sqlx::SqlitePool;
 use tracing::debug;
 use uuid::Uuid;
@@ -49,7 +49,7 @@ impl AuditLogger {
     }
 
     /// Write an entry to the audit log.
-    pub async fn log(&self, entry: &AuditEntry) -> Result<(), KernexError> {
+    pub async fn log(&self, entry: &AuditEntry) -> Result<(), MemoryError> {
         let id = Uuid::new_v4().to_string();
 
         sqlx::query(
@@ -71,7 +71,7 @@ impl AuditLogger {
         .bind(&entry.denial_reason)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("audit log write failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("audit log write failed", e))?;
 
         debug!(
             "audit: {} {} [{}] {}",

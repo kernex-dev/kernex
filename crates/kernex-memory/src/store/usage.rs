@@ -1,7 +1,7 @@
 //! Token usage recording and cost tracking.
 
 use super::Store;
-use kernex_core::error::KernexError;
+use crate::error::MemoryError;
 use kernex_core::pricing::pricing_for;
 
 /// Per-dimension token breakdown reported by providers that distinguish
@@ -47,7 +47,7 @@ impl Store {
         session_id: &str,
         tokens: u64,
         model: &str,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         self.record_usage_full(
             sender_id,
             session_id,
@@ -70,7 +70,7 @@ impl Store {
         tokens: u64,
         model: &str,
         breakdown: UsageBreakdown,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         let cost = pricing_for(model)
             .map(|p| p.estimate_cost(tokens))
             .unwrap_or(0.0);
@@ -93,13 +93,13 @@ impl Store {
         .bind(breakdown.cache_creation_tokens.map(|v| v as i64))
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("failed to record token usage: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("failed to record token usage", e))?;
 
         Ok(())
     }
 
     /// Get aggregated token usage for a session.
-    pub async fn get_session_usage(&self, session_id: &str) -> Result<UsageSummary, KernexError> {
+    pub async fn get_session_usage(&self, session_id: &str) -> Result<UsageSummary, MemoryError> {
         let row: Option<(i64, f64, i64, i64, i64, i64, i64)> = sqlx::query_as(
             "SELECT
                  COALESCE(SUM(tokens), 0),
@@ -114,7 +114,7 @@ impl Store {
         .bind(session_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("failed to query session usage: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("failed to query session usage", e))?;
 
         let (
             total_tokens,
@@ -141,7 +141,7 @@ impl Store {
     ///
     /// Useful for project-wide cost reporting (e.g. the kx `/cost`
     /// command) when callers do not maintain a stable session id.
-    pub async fn get_total_usage(&self) -> Result<UsageSummary, KernexError> {
+    pub async fn get_total_usage(&self) -> Result<UsageSummary, MemoryError> {
         let row: Option<(i64, f64, i64, i64, i64, i64, i64)> = sqlx::query_as(
             "SELECT
                  COALESCE(SUM(tokens), 0),
@@ -155,7 +155,7 @@ impl Store {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("failed to query total usage: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("failed to query total usage", e))?;
 
         let (
             total_tokens,

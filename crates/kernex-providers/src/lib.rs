@@ -9,6 +9,7 @@ pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 pub mod claude_code;
+pub mod error;
 pub mod factory;
 pub mod gemini;
 pub mod http_retry;
@@ -18,3 +19,5 @@ pub mod openai;
 pub mod openrouter;
 pub mod tool_params;
 pub(crate) mod tools;
+
+pub use error::ProviderError;

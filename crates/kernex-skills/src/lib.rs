@@ -5,11 +5,13 @@
 //! for definitions and exposes them to the system prompt so the AI knows
 //! what tools and contexts are available.
 
+pub mod error;
 mod parse;
 mod permissions;
 mod projects;
 mod skills;
 
+pub use error::SkillError;
 pub use permissions::{
     determine_trust_level, Permissions, RiskCategory, RiskDetector, RiskWarning, TrustLevel,
     DEFAULT_TRUSTED_ORGS,

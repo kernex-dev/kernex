@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-05-07
+
+### BREAKING
+
+This release closes audit item **M5** (per-crate `thiserror` enums replacing the stringified `KernexError::Variant(String)` shape) and re-architects error types so callers can pattern-match on the typed cause via `Error::source()` chain inspection or `Box::downcast_ref::<T>()`.
+
+#### KernexError variant shape changed (kernex-core 0.5.0)
+
+The cross-crate variants `Provider`, `Store`, `Sandbox`, `Pipeline`, and `Skill` now wrap a `Box<dyn std::error::Error + Send + Sync + 'static>` instead of a `String`. Callers that pattern-matched on the inner string must update:
+
+```rust
+// before
+match err {
+    KernexError::Provider(s) if s.contains("timeout") => /* retry */,
+    _ => /* other */,
+}
+
+// after
+match err {
+    KernexError::Provider(boxed) => {
+        if let Some(p) = boxed.downcast_ref::<kernex_providers::ProviderError>() {
+            match p {
+                ProviderError::Http { source, .. } if source.is_timeout() => /* retry */,
+                ProviderError::Serde { .. } => /* parse error */,
+                _ => /* other */,
+            }
+        }
+    }
+    _ => /* other */,
+}
+```
+
+`Config` and `Guardrail` variants are unchanged (still `String`); they carry no foreign source to preserve.
+
+The new `KernexError` exposes typed constructors (`KernexError::provider(e)`, `::store(e)`, `::sandbox(e)`, `::pipeline(e)`, `::skill(e)`) that accept any `E: Error + Send + Sync + 'static` and box internally.
+
+#### New per-crate error types
+
+- **`kernex-memory`** — `MemoryError` with `Sqlite { context, source }`, `Io { context, source }`, `Serde { context, source }`, `Logic(String)` variants. `From<MemoryError>` for `KernexError` boxes into `KernexError::Store`.
+- **`kernex-providers`** — `ProviderError` with `Http { context, source }`, `Serde { context, source }`, `Io { context, source }`, `Config(String)`, `Logic(String)` variants. `Config` hoists to `KernexError::Config`; everything else boxes into `KernexError::Provider`.
+- **`kernex-pipelines`** — `PipelineError` with `Toml { context, source }`, `Io { context, source }`, `Logic(String)` variants. Boxes into `KernexError::Pipeline`.
+- **`kernex-skills`** — `SkillError` with `Io { context, source }`, `Logic(String)` variants. Boxes into `KernexError::Skill`.
+
+Each per-crate enum implements `std::error::Error` via `thiserror`; `Send + Sync + 'static` bounds are satisfied automatically. The `#[source]` attribute on struct variants preserves the cause chain so `error.source()` walks to the underlying `sqlx::Error`/`reqwest::Error`/etc.
+
+#### Why this design (citations)
+
+- **Rust API Guidelines C-GOOD-ERR** (https://rust-lang.github.io/api-guidelines/interoperability.html): "Error types should always implement the std::error::Error trait... error types should implement the Send and Sync traits."
+- **BurntSushi, *Rust Error Handling*** (https://burntsushi.net/rust-error-handling/): libraries should "define your own error type and implement the std::error::Error trait" with structured enum variants, not opaque strings.
+- **`tower::Service` precedent** (https://docs.rs/tower/latest/tower/trait.Service.html): for traits used via `dyn Trait` where multiple impls have different error types, the canonical pattern is per-impl typed errors with `Box<dyn Error + Send + Sync>` boxing at the dispatch boundary.
+
+The aggregator stays in `kernex-core` (rather than moving to `kernex-runtime`) because the boxed-trait-object pattern resolves the dependency-cycle concern without restructuring: each per-crate crate provides its own `From<TheirError> for KernexError` impl, so `kernex-core` never has to depend on `kernex-providers`, `kernex-memory`, etc.
+
+### Migration notes for downstream crates
+
+- `kernex-agent` consumes `kernex-runtime` via `anyhow::Result` end-to-end; **no source changes required** (the agent does not pattern-match on `KernexError` variants).
+- Direct downstream users that match on `KernexError::Provider(String)` etc. must switch to the downcast pattern shown above.
+- The stringified message is still recoverable via `format!("{err}")` for logging — the `#[error(transparent)]` Display delegates through the boxed source, so log output is unchanged.
+
 ## [0.4.2] - 2026-05-07
 
 ### Security

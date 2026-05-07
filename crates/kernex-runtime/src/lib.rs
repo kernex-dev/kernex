@@ -843,12 +843,20 @@ impl RuntimeBuilder {
         let skills =
             tokio::task::spawn_blocking(move || kernex_skills::load_skills(&skills_data_dir))
                 .await
-                .map_err(|e| KernexError::Skill(format!("load_skills task failed: {e}")))?;
+                .map_err(|e| {
+                    KernexError::skill(kernex_skills::SkillError::Logic(format!(
+                        "load_skills task failed: {e}"
+                    )))
+                })?;
         let projects_data_dir = self.data_dir.clone();
         let projects =
             tokio::task::spawn_blocking(move || kernex_skills::load_projects(&projects_data_dir))
                 .await
-                .map_err(|e| KernexError::Skill(format!("load_projects task failed: {e}")))?;
+                .map_err(|e| {
+                    KernexError::skill(kernex_skills::SkillError::Logic(format!(
+                        "load_projects task failed: {e}"
+                    )))
+                })?;
 
         tracing::info!(
             "runtime initialized: {} skills, {} projects",

@@ -3,6 +3,7 @@
 //! Calls the Anthropic Messages API directly (not via Claude Code CLI).
 //! Uses content blocks (text/tool_use/tool_result) for tool calling.
 
+use crate::error::ProviderError;
 use async_trait::async_trait;
 use kernex_core::{
     context::Context,
@@ -120,7 +121,7 @@ impl AnthropicProvider {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
-                .map_err(|e| KernexError::Provider(format!("failed to build HTTP client: {e}")))?,
+                .map_err(|e| ProviderError::Logic(format!("failed to build HTTP client: {e}")))?,
             api_key: SecretString::new(api_key),
             model,
             max_tokens,
@@ -321,7 +322,7 @@ impl Provider for AnthropicProvider {
         debug!("anthropic: POST {ANTHROPIC_API_URL} model={effective_model} (no tools)");
 
         let body_json = serde_json::to_vec(&body)
-            .map_err(|e| KernexError::Provider(format!("anthropic: serialize failed: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("anthropic: serialize failed: {e}")))?;
 
         let resp = {
             let client = &self.client;
@@ -351,13 +352,13 @@ impl Provider for AnthropicProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = read_truncated_error_body(resp).await;
-            return Err(KernexError::Provider(format!(
-                "anthropic returned {status}: {text}"
-            )));
+            return Err(
+                ProviderError::Logic(format!("anthropic returned {status}: {text}")).into(),
+            );
         }
 
         let parsed: AnthropicResponse = resp.json().await.map_err(|e| {
-            KernexError::Provider(format!("anthropic: failed to parse response: {e}"))
+            ProviderError::Logic(format!("anthropic: failed to parse response: {e}"))
         })?;
 
         let text = extract_text_from_response(&parsed);
@@ -456,7 +457,7 @@ impl AnthropicProvider {
             debug!("anthropic: POST {ANTHROPIC_API_URL} model={model} turn={turn}");
 
             let body_json = serde_json::to_vec(&body)
-                .map_err(|e| KernexError::Provider(format!("anthropic: serialize failed: {e}")))?;
+                .map_err(|e| ProviderError::Logic(format!("anthropic: serialize failed: {e}")))?;
 
             let resp = {
                 let client = &self.client;
@@ -488,13 +489,13 @@ impl AnthropicProvider {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = read_truncated_error_body(resp).await;
-                return Err(KernexError::Provider(format!(
-                    "anthropic returned {status}: {text}"
-                )));
+                return Err(
+                    ProviderError::Logic(format!("anthropic returned {status}: {text}")).into(),
+                );
             }
 
             let parsed: AnthropicResponse = resp.json().await.map_err(|e| {
-                KernexError::Provider(format!("anthropic: failed to parse response: {e}"))
+                ProviderError::Logic(format!("anthropic: failed to parse response: {e}"))
             })?;
 
             if let Some(ref m) = parsed.model {
@@ -705,7 +706,7 @@ impl StreamingProvider for AnthropicProvider {
         };
 
         let body_json = serde_json::to_vec(&body)
-            .map_err(|e| KernexError::Provider(format!("anthropic: serialize failed: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("anthropic: serialize failed: {e}")))?;
 
         // Build request. We send directly — send_with_retry reads the body on
         // error which would consume the stream before we can iterate it.
@@ -732,15 +733,15 @@ impl StreamingProvider for AnthropicProvider {
 
         let resp =
             req.body(body_json).send().await.map_err(|e| {
-                KernexError::Provider(format!("anthropic: stream request failed: {e}"))
+                ProviderError::Logic(format!("anthropic: stream request failed: {e}"))
             })?;
 
         if !resp.status().is_success() {
             let status = resp.status();
             let text = read_truncated_error_body(resp).await;
-            return Err(KernexError::Provider(format!(
-                "anthropic returned {status}: {text}"
-            )));
+            return Err(
+                ProviderError::Logic(format!("anthropic returned {status}: {text}")).into(),
+            );
         }
 
         let (tx, rx) = tokio::sync::mpsc::channel(64);

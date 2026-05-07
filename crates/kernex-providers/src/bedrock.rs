@@ -19,6 +19,7 @@
 //! - `anthropic.claude-3-7-sonnet-20250219-v1:0`
 //! - `us.anthropic.claude-sonnet-4-20250514-v1:0` (cross-region inference)
 
+use crate::error::ProviderError;
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use kernex_core::{context::Context, error::KernexError, message::Response, traits::Provider};
@@ -69,7 +70,7 @@ impl BedrockProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .map_err(|e| {
-                    KernexError::Provider(format!("bedrock: failed to build HTTP client: {e}"))
+                    ProviderError::Logic(format!("bedrock: failed to build HTTP client: {e}"))
                 })?,
             region,
             access_key_id: SecretString::new(access_key_id),
@@ -91,14 +92,17 @@ impl BedrockProvider {
         workspace_path: Option<PathBuf>,
     ) -> Result<Self, KernexError> {
         let access_key = std::env::var("AWS_ACCESS_KEY_ID")
-            .map_err(|_| KernexError::Config("bedrock: AWS_ACCESS_KEY_ID not set".into()))?;
-        let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY")
-            .map_err(|_| KernexError::Config("bedrock: AWS_SECRET_ACCESS_KEY not set".into()))?;
+            .map_err(|_| ProviderError::Config("bedrock: AWS_ACCESS_KEY_ID not set".to_string()))?;
+        let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY").map_err(|_| {
+            ProviderError::Config("bedrock: AWS_SECRET_ACCESS_KEY not set".to_string())
+        })?;
         let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
         let region = std::env::var("AWS_REGION")
             .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
             .map_err(|_| {
-                KernexError::Config("bedrock: AWS_REGION or AWS_DEFAULT_REGION not set".into())
+                ProviderError::Config(
+                    "bedrock: AWS_REGION or AWS_DEFAULT_REGION not set".to_string(),
+                )
             })?;
 
         Self::from_config(
@@ -154,7 +158,7 @@ fn sha256_hex(data: &[u8]) -> String {
 /// HMAC-SHA256 of `data` with `key`.
 fn hmac_sha256(key: &[u8], data: &[u8]) -> Result<Vec<u8>, KernexError> {
     let mut mac = HmacSha256::new_from_slice(key)
-        .map_err(|e| KernexError::Provider(format!("bedrock: HMAC init failed: {e}")))?;
+        .map_err(|e| ProviderError::Logic(format!("bedrock: HMAC init failed: {e}")))?;
     mac.update(data);
     Ok(mac.finalize().into_bytes().to_vec())
 }
@@ -316,7 +320,7 @@ impl Provider for BedrockProvider {
         };
 
         let body_json = serde_json::to_vec(&body)
-            .map_err(|e| KernexError::Provider(format!("bedrock: serialize failed: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("bedrock: serialize failed: {e}")))?;
 
         let host = format!("bedrock-runtime.{}.amazonaws.com", self.region);
         // Percent-encode the model ID (colon in version suffix must be encoded).
@@ -362,14 +366,13 @@ impl Provider for BedrockProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = read_truncated_error_body(resp).await;
-            return Err(KernexError::Provider(format!(
-                "bedrock returned {status}: {text}"
-            )));
+            return Err(ProviderError::Logic(format!("bedrock returned {status}: {text}")).into());
         }
 
-        let parsed: BedrockClaudeResponse = resp.json().await.map_err(|e| {
-            KernexError::Provider(format!("bedrock: failed to parse response: {e}"))
-        })?;
+        let parsed: BedrockClaudeResponse = resp
+            .json()
+            .await
+            .map_err(|e| ProviderError::Logic(format!("bedrock: failed to parse response: {e}")))?;
 
         let text = parsed
             .content

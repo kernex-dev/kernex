@@ -3,6 +3,7 @@
 //! Handles writing and cleaning up `.claude/settings.local.json` files
 //! that configure MCP servers for the CLI subprocess.
 
+use crate::error::ProviderError;
 use kernex_core::{context::McpServer, error::KernexError};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
@@ -17,7 +18,7 @@ pub(super) async fn write_mcp_settings(
     let claude_dir = workspace.join(".claude");
     tokio::fs::create_dir_all(&claude_dir)
         .await
-        .map_err(|e| KernexError::Provider(format!("failed to create .claude dir: {e}")))?;
+        .map_err(|e| ProviderError::Logic(format!("failed to create .claude dir: {e}")))?;
 
     let path = claude_dir.join("settings.local.json");
 
@@ -55,11 +56,11 @@ pub(super) async fn write_mcp_settings(
     );
 
     let json = serde_json::to_string_pretty(&root)
-        .map_err(|e| KernexError::Provider(format!("failed to serialize MCP settings: {e}")))?;
+        .map_err(|e| ProviderError::Logic(format!("failed to serialize MCP settings: {e}")))?;
 
     tokio::fs::write(&path, json)
         .await
-        .map_err(|e| KernexError::Provider(format!("failed to write MCP settings: {e}")))?;
+        .map_err(|e| ProviderError::Logic(format!("failed to write MCP settings: {e}")))?;
 
     info!("mcp: wrote settings to {}", path.display());
     Ok(path)

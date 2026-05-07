@@ -3,6 +3,7 @@
 //! Reuses OpenAI's request/response types and agentic loop.
 //! Only the base URL and provider name differ.
 
+use crate::error::ProviderError;
 use async_trait::async_trait;
 use kernex_core::{context::Context, error::KernexError, message::Response, traits::Provider};
 use secrecy::{ExposeSecret, SecretString};
@@ -41,7 +42,7 @@ impl OpenRouterProvider {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
-                .map_err(|e| KernexError::Provider(format!("failed to build HTTP client: {e}")))?,
+                .map_err(|e| ProviderError::Logic(format!("failed to build HTTP client: {e}")))?,
             api_key: SecretString::new(api_key),
             model,
             workspace_path,
@@ -125,7 +126,7 @@ impl Provider for OpenRouterProvider {
         debug!("openrouter: POST {url} model={effective_model} (no tools)");
 
         let body_json = serde_json::to_vec(&body)
-            .map_err(|e| KernexError::Provider(format!("openrouter: serialize failed: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("openrouter: serialize failed: {e}")))?;
 
         let resp = {
             let client = &self.client;
@@ -145,13 +146,13 @@ impl Provider for OpenRouterProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = read_truncated_error_body(resp).await;
-            return Err(KernexError::Provider(format!(
-                "openrouter returned {status}: {text}"
-            )));
+            return Err(
+                ProviderError::Logic(format!("openrouter returned {status}: {text}")).into(),
+            );
         }
 
         let parsed: ChatCompletionResponse = resp.json().await.map_err(|e| {
-            KernexError::Provider(format!("openrouter: failed to parse response: {e}"))
+            ProviderError::Logic(format!("openrouter: failed to parse response: {e}"))
         })?;
 
         let text = parsed
