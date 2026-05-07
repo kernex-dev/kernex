@@ -44,12 +44,13 @@
 //! provides additional protection on all platforms regardless of kernel version.
 
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tokio::process::Command;
 use tracing::warn;
 
 use landlock::{
-    path_beneath_rules, Access, AccessFs, BitFlags, Ruleset, RulesetAttr, RulesetCreatedAttr,
-    RulesetStatus, ABI,
+    path_beneath_rules, Access, AccessFs, BitFlags, Ruleset, RulesetAttr, RulesetCreated,
+    RulesetCreatedAttr, ABI,
 };
 
 /// All read-related filesystem access flags.
@@ -75,6 +76,16 @@ fn full_access() -> BitFlags<AccessFs> {
 ///
 /// If the kernel does not support Landlock, logs a warning and falls back
 /// to a plain command.
+///
+/// ## Allocator soundness
+///
+/// The Landlock ruleset is built **in the parent** before the child is forked.
+/// The forked child then only invokes [`RulesetCreated::restrict_self`] in
+/// `pre_exec`, which is a thin wrapper around the `landlock_restrict_self`
+/// syscall and does not require the global allocator. This avoids the classic
+/// post-fork hazard of touching `malloc` while another parent thread holds
+/// the allocator lock — under a multithreaded tokio runtime that race could
+/// deadlock the child indefinitely.
 pub(crate) fn protected_command(
     program: &str,
     data_dir: &std::path::Path,
@@ -85,44 +96,68 @@ pub(crate) fn protected_command(
         return Command::new(program);
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let data_dir_owned = data_dir.to_path_buf();
-    let profile_clone = profile.clone();
-
     let mut cmd = Command::new(program);
 
-    // SAFETY: pre_exec runs in the forked child before exec. We only call
-    // the landlock crate (which uses syscalls), no async or allocator abuse.
+    // Build the ruleset in the parent. Filesystem probes, allocations, and any
+    // landlock-internal bookkeeping happen here, where no fork-after-allocator
+    // hazard exists.
+    let prepared = match build_ruleset(data_dir, profile) {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(error = %e, "landlock: ruleset construction failed; falling back to code-level protection");
+            return cmd;
+        }
+    };
+
+    // Move the prepared ruleset into the pre_exec closure. `restrict_self`
+    // consumes self, and pre_exec is FnMut, so we wrap in `Option<Mutex<_>>`
+    // and `take()` on first invocation. Mutex is required because the
+    // pre_exec closure must be `Send`.
+    let cell: Mutex<Option<RulesetCreated>> = Mutex::new(Some(prepared));
+
+    // SAFETY: pre_exec runs in the forked child between fork and exec. The
+    // closure only locks a Mutex (no allocation; the Mutex is uncontended in
+    // the child since other threads do not exist post-fork), takes the
+    // prepared ruleset, and invokes the `landlock_restrict_self` syscall.
     unsafe {
         cmd.pre_exec(move || {
-            apply_landlock(&home, &data_dir_owned, &profile_clone).map_err(|e| {
+            let mut guard = cell.lock().map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "landlock: ruleset mutex poisoned",
+                )
+            })?;
+            let ruleset = guard.take().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "landlock: pre_exec invoked twice",
+                )
+            })?;
+            // Note: we cannot inspect `status.ruleset` here to log
+            // partial-enforcement warnings — tracing dispatchers may hold
+            // allocated state and we are post-fork. Operators who need
+            // FullyEnforced guarantees should set
+            // `SandboxProfile::require_os_enforcement = true` and use
+            // `try_protected_command`.
+            let _status = ruleset.restrict_self().map_err(|e| {
                 std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string())
-            })
+            })?;
+            Ok(())
         });
     }
 
     cmd
 }
 
-/// Check if the kernel supports Landlock by probing the ABI version file.
-fn landlock_available() -> bool {
-    std::path::Path::new("/sys/kernel/security/landlock/abi_version").exists()
-}
-
-/// Minimal access — blocks both reads and writes via Landlock intersection.
-///
-/// When combined with `full_access` on a parent path, effective access =
-/// `full_access ∩ Refer = Refer` — no ReadFile, no WriteFile.
-fn refer_only() -> BitFlags<AccessFs> {
-    AccessFs::Refer.into()
-}
-
-/// Apply Landlock restrictions to the current process.
-fn apply_landlock(
-    home: &str,
+/// Build the Landlock ruleset entirely in the parent process. The returned
+/// [`RulesetCreated`] holds the kernel FD and the rule set; calling
+/// [`restrict_self`](RulesetCreated::restrict_self) on it later (post-fork)
+/// applies the policy via a single syscall with no further allocation.
+fn build_ruleset(
     data_dir: &std::path::Path,
     profile: &crate::SandboxProfile,
-) -> Result<(), anyhow::Error> {
+) -> Result<RulesetCreated, anyhow::Error> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let home_dir = PathBuf::from(home);
 
     let mut ruleset = Ruleset::default()
@@ -174,16 +209,20 @@ fn apply_landlock(
         }
     }
 
-    let status = ruleset.restrict_self()?;
+    Ok(ruleset)
+}
 
-    if status.ruleset != RulesetStatus::FullyEnforced {
-        warn!(
-            "landlock: not all restrictions enforced (kernel may lack full support); \
-             best-effort protection active"
-        );
-    }
+/// Check if the kernel supports Landlock by probing the ABI version file.
+fn landlock_available() -> bool {
+    std::path::Path::new("/sys/kernel/security/landlock/abi_version").exists()
+}
 
-    Ok(())
+/// Minimal access — blocks both reads and writes via Landlock intersection.
+///
+/// When combined with `full_access` on a parent path, effective access =
+/// `full_access ∩ Refer = Refer` — no ReadFile, no WriteFile.
+fn refer_only() -> BitFlags<AccessFs> {
+    AccessFs::Refer.into()
 }
 
 #[cfg(test)]
