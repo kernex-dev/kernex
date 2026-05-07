@@ -2,6 +2,7 @@
 name = "kernex-bench"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0 OR MIT"
 publish = false
 
 [[bench]]
@@ -17,7 +18,7 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["async_tokio", "html_reports"] }
-kernex-runtime = { path = "../crates/kernex-runtime" }
+kernex-runtime = { workspace = true }
 tempfile = "3"
 futures = "0.3"
 

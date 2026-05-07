@@ -35,7 +35,7 @@ jobs:
       - name: Run cargo-audit
         run: cargo audit
       - name: Run cargo-deny
-        run: cargo deny check advisories
+        run: cargo deny check
 
 
   clippy:
