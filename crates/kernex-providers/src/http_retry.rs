@@ -3,6 +3,7 @@
 //! Retries on network errors, 429 (rate limit), and 5xx (server errors).
 //! Non-retryable errors (4xx except 429) are returned immediately.
 
+use crate::error::ProviderError;
 use futures_util::StreamExt;
 use kernex_core::error::KernexError;
 use reqwest::Response;
@@ -120,9 +121,10 @@ where
         }
     }
 
-    Err(KernexError::Provider(last_err.unwrap_or_else(|| {
-        format!("{provider_name}: request failed after retries")
-    })))
+    Err(ProviderError::Logic(
+        last_err.unwrap_or_else(|| format!("{provider_name}: request failed after retries")),
+    )
+    .into())
 }
 
 #[cfg(test)]

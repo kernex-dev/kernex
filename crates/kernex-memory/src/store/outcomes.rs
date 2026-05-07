@@ -4,7 +4,7 @@
 //! Empty string `""` = general (no project).
 
 use super::Store;
-use kernex_core::error::KernexError;
+use crate::error::MemoryError;
 
 impl Store {
     /// Store a raw outcome from a REWARD marker.
@@ -16,7 +16,7 @@ impl Store {
         lesson: &str,
         source: &str,
         project: &str,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO outcomes (id, sender_id, domain, score, lesson, source, project) \
@@ -31,7 +31,7 @@ impl Store {
         .bind(project)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("store outcome: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("store outcome", e))?;
         Ok(())
     }
 
@@ -44,7 +44,7 @@ impl Store {
         sender_id: &str,
         limit: i64,
         project: Option<&str>,
-    ) -> Result<Vec<(i32, String, String, String)>, KernexError> {
+    ) -> Result<Vec<(i32, String, String, String)>, MemoryError> {
         let rows: Vec<(i32, String, String, String)> = match project {
             Some(p) => {
                 sqlx::query_as(
@@ -68,7 +68,7 @@ impl Store {
                 .await
             }
         }
-        .map_err(|e| KernexError::Store(format!("get recent outcomes: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("get recent outcomes", e))?;
         Ok(rows)
     }
 
@@ -78,7 +78,7 @@ impl Store {
         hours: i64,
         limit: i64,
         project: Option<&str>,
-    ) -> Result<Vec<(i32, String, String, String)>, KernexError> {
+    ) -> Result<Vec<(i32, String, String, String)>, MemoryError> {
         let rows: Vec<(i32, String, String, String)> = match project {
             Some(p) => {
                 sqlx::query_as(
@@ -105,7 +105,7 @@ impl Store {
                 .await
             }
         }
-        .map_err(|e| KernexError::Store(format!("get all recent outcomes: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("get all recent outcomes", e))?;
         Ok(rows)
     }
 
@@ -121,7 +121,7 @@ impl Store {
         domain: &str,
         rule: &str,
         project: &str,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         let existing: Option<(String,)> = sqlx::query_as(
             "SELECT id FROM lessons \
              WHERE sender_id = ? AND domain = ? AND project = ? AND rule = ?",
@@ -132,7 +132,7 @@ impl Store {
         .bind(rule)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("store lesson check: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("store lesson check", e))?;
 
         if let Some((id,)) = existing {
             sqlx::query(
@@ -142,7 +142,7 @@ impl Store {
             .bind(&id)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("store lesson reinforce: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("store lesson reinforce", e))?;
         } else {
             let id = uuid::Uuid::new_v4().to_string();
             sqlx::query(
@@ -156,7 +156,7 @@ impl Store {
             .bind(project)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("store lesson insert: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("store lesson insert", e))?;
 
             // Cap enforcement: keep at most 10 per (sender, domain, project).
             sqlx::query(
@@ -171,7 +171,7 @@ impl Store {
             .bind(project)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("store lesson cap: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("store lesson cap", e))?;
         }
 
         Ok(())
@@ -185,7 +185,7 @@ impl Store {
         &self,
         sender_id: &str,
         project: Option<&str>,
-    ) -> Result<Vec<(String, String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String, String)>, MemoryError> {
         let rows: Vec<(String, String, String)> = match project {
             Some(p) => {
                 sqlx::query_as(
@@ -211,7 +211,7 @@ impl Store {
                 .await
             }
         }
-        .map_err(|e| KernexError::Store(format!("get lessons: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("get lessons", e))?;
         Ok(rows)
     }
 
@@ -219,7 +219,7 @@ impl Store {
     pub async fn get_all_lessons(
         &self,
         project: Option<&str>,
-    ) -> Result<Vec<(String, String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String, String)>, MemoryError> {
         let rows: Vec<(String, String, String)> =
             match project {
                 Some(p) => {
@@ -240,7 +240,7 @@ impl Store {
                 .fetch_all(&self.pool)
                 .await,
             }
-            .map_err(|e| KernexError::Store(format!("get all lessons: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("get all lessons", e))?;
         Ok(rows)
     }
 }

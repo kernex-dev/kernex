@@ -3,6 +3,7 @@
 //! Works with OpenAI's API and any compatible endpoint.
 //! Exports `pub(crate)` types and the agentic loop reused by the OpenRouter provider.
 
+use crate::error::ProviderError;
 use async_trait::async_trait;
 use kernex_core::{
     context::{ApiMessage, Context},
@@ -45,7 +46,7 @@ impl OpenAiProvider {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
-                .map_err(|e| KernexError::Provider(format!("failed to build HTTP client: {e}")))?,
+                .map_err(|e| ProviderError::Logic(format!("failed to build HTTP client: {e}")))?,
             base_url,
             api_key: SecretString::new(api_key),
             model,
@@ -226,9 +227,8 @@ pub(crate) async fn openai_agentic_complete(
 
         debug!("{provider_name}: POST {url} model={model} turn={turn}");
 
-        let body_json = serde_json::to_vec(&body).map_err(|e| {
-            KernexError::Provider(format!("{provider_name}: serialize failed: {e}"))
-        })?;
+        let body_json = serde_json::to_vec(&body)
+            .map_err(|e| ProviderError::Logic(format!("{provider_name}: serialize failed: {e}")))?;
 
         let resp = send_with_retry(provider_name, || {
             let req = client
@@ -243,13 +243,13 @@ pub(crate) async fn openai_agentic_complete(
         if !resp.status().is_success() {
             let status = resp.status();
             let text = read_truncated_error_body(resp).await;
-            return Err(KernexError::Provider(format!(
-                "{provider_name} returned {status}: {text}"
-            )));
+            return Err(
+                ProviderError::Logic(format!("{provider_name} returned {status}: {text}")).into(),
+            );
         }
 
         let parsed: ChatCompletionResponse = resp.json().await.map_err(|e| {
-            KernexError::Provider(format!("{provider_name}: failed to parse response: {e}"))
+            ProviderError::Logic(format!("{provider_name}: failed to parse response: {e}"))
         })?;
 
         if let Some(ref m) = parsed.model {
@@ -386,7 +386,7 @@ impl Provider for OpenAiProvider {
         debug!("{name}: POST {url} model={effective_model} (no tools)");
 
         let body_json = serde_json::to_vec(&body)
-            .map_err(|e| KernexError::Provider(format!("{name}: serialize failed: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("{name}: serialize failed: {e}")))?;
 
         let resp = {
             let client = &self.client;
@@ -406,15 +406,13 @@ impl Provider for OpenAiProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = read_truncated_error_body(resp).await;
-            return Err(KernexError::Provider(format!(
-                "{name} returned {status}: {text}"
-            )));
+            return Err(ProviderError::Logic(format!("{name} returned {status}: {text}")).into());
         }
 
         let parsed: ChatCompletionResponse = resp
             .json()
             .await
-            .map_err(|e| KernexError::Provider(format!("{name}: failed to parse response: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("{name}: failed to parse response: {e}")))?;
 
         let text = parsed
             .choices

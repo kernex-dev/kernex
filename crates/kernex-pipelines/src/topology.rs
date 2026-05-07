@@ -4,6 +4,7 @@
 //! Topologies are loaded from `{data_dir}/topologies/{name}/TOPOLOGY.toml`
 //! with agent definitions in `{name}/agents/*.md`.
 
+use crate::error::PipelineError;
 use kernex_core::error::KernexError;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -150,9 +151,10 @@ impl LoadedTopology {
     /// Get agent content by name.
     pub fn agent_content(&self, name: &str) -> Result<&str, KernexError> {
         self.agents.get(name).map(|s| s.as_str()).ok_or_else(|| {
-            KernexError::Pipeline(format!(
+            PipelineError::Logic(format!(
                 "agent '{name}' referenced in topology but .md file not found"
             ))
+            .into()
         })
     }
 
@@ -220,18 +222,21 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
         .join(name);
 
     if !base.exists() {
-        return Err(KernexError::Pipeline(format!(
+        return Err(PipelineError::Logic(format!(
             "topology '{name}' not found at {}",
             base.display()
-        )));
+        ))
+        .into());
     }
 
     // Parse TOPOLOGY.toml.
     let toml_path = base.join("TOPOLOGY.toml");
-    let toml_content = std::fs::read_to_string(&toml_path)
-        .map_err(|e| KernexError::Pipeline(format!("failed to read TOPOLOGY.toml: {e}")))?;
-    let topology: Topology = toml::from_str(&toml_content)
-        .map_err(|e| KernexError::Pipeline(format!("failed to parse TOPOLOGY.toml: {e}")))?;
+    let toml_content = std::fs::read_to_string(&toml_path).map_err(|e| -> KernexError {
+        PipelineError::Logic(format!("failed to read TOPOLOGY.toml: {e}")).into()
+    })?;
+    let topology: Topology = toml::from_str(&toml_content).map_err(|e| -> KernexError {
+        PipelineError::Logic(format!("failed to parse TOPOLOGY.toml: {e}")).into()
+    })?;
 
     // Collect unique agent names from phases (including fix_agent references).
     // Validate every name before any filesystem join to prevent path traversal
@@ -264,15 +269,17 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
             (&canonical_agents_dir, std::fs::canonicalize(&agent_path))
         {
             if !target_canon.starts_with(base_canon) {
-                return Err(KernexError::Pipeline(format!(
+                return Err(PipelineError::Logic(format!(
                     "agent '{agent_name}' resolves outside topology agents/ directory"
-                )));
+                ))
+                .into());
             }
         }
-        let content = std::fs::read_to_string(&agent_path).map_err(|e| {
-            KernexError::Pipeline(format!(
+        let content = std::fs::read_to_string(&agent_path).map_err(|e| -> KernexError {
+            PipelineError::Logic(format!(
                 "agent '{agent_name}' referenced in topology but file not found: {e}"
             ))
+            .into()
         })?;
         agents.insert(agent_name.to_string(), content);
     }
@@ -324,26 +331,26 @@ pub fn validate_agent_name(name: &str) -> Result<(), KernexError> {
 
 fn validate_path_segment(name: &str, kind: &str) -> Result<(), KernexError> {
     if name.is_empty() {
-        return Err(KernexError::Pipeline(format!("{kind} cannot be empty")));
+        return Err(PipelineError::Logic("{kind} cannot be empty".to_string()).into());
     }
     if name.len() > 64 {
-        return Err(KernexError::Pipeline(format!(
+        return Err(PipelineError::Logic(format!(
             "{kind} too long ({} chars, max 64)",
             name.len()
-        )));
+        ))
+        .into());
     }
     if name.contains("..") || name.contains('/') || name.contains('\\') {
-        return Err(KernexError::Pipeline(format!(
+        return Err(PipelineError::Logic(format!(
             "{kind} '{name}' contains path traversal characters"
-        )));
+        ))
+        .into());
     }
     if !name
         .chars()
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(KernexError::Pipeline(format!(
-            "{kind} '{name}' contains invalid characters (only alphanumeric, hyphens, underscores allowed)"
-        )));
+        return Err(PipelineError::Logic(format!("{kind} '{name}' contains invalid characters (only alphanumeric, hyphens, underscores allowed)")).into());
     }
     Ok(())
 }

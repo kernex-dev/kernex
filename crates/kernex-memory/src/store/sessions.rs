@@ -3,7 +3,7 @@
 //! SQLite-backed sessions scoped per (channel, sender_id, project).
 
 use super::Store;
-use kernex_core::error::KernexError;
+use crate::error::MemoryError;
 use uuid::Uuid;
 
 impl Store {
@@ -14,7 +14,7 @@ impl Store {
         sender_id: &str,
         project: &str,
         session_id: &str,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         let id = Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO project_sessions (id, channel, sender_id, project, session_id) \
@@ -29,7 +29,7 @@ impl Store {
         .bind(session_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("store_session failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("store_session failed", e))?;
 
         Ok(())
     }
@@ -40,7 +40,7 @@ impl Store {
         channel: &str,
         sender_id: &str,
         project: &str,
-    ) -> Result<Option<String>, KernexError> {
+    ) -> Result<Option<String>, MemoryError> {
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT session_id FROM project_sessions \
              WHERE channel = ? AND sender_id = ? AND project = ?",
@@ -50,7 +50,7 @@ impl Store {
         .bind(project)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("get_session failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("get_session failed", e))?;
 
         Ok(row.map(|(sid,)| sid))
     }
@@ -61,7 +61,7 @@ impl Store {
         channel: &str,
         sender_id: &str,
         project: &str,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         sqlx::query(
             "DELETE FROM project_sessions \
              WHERE channel = ? AND sender_id = ? AND project = ?",
@@ -71,18 +71,18 @@ impl Store {
         .bind(project)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("clear_session failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("clear_session failed", e))?;
 
         Ok(())
     }
 
     /// Delete all CLI sessions for a sender.
-    pub async fn clear_all_sessions_for_sender(&self, sender_id: &str) -> Result<(), KernexError> {
+    pub async fn clear_all_sessions_for_sender(&self, sender_id: &str) -> Result<(), MemoryError> {
         sqlx::query("DELETE FROM project_sessions WHERE sender_id = ?")
             .bind(sender_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("clear_all_sessions failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("clear_all_sessions failed", e))?;
 
         Ok(())
     }

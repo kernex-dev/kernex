@@ -1,7 +1,7 @@
 //! Conversation lifecycle — create, find, close, summaries, history, stats.
 
 use super::{Store, CONVERSATION_TIMEOUT_MINUTES};
-use kernex_core::error::KernexError;
+use crate::error::MemoryError;
 use uuid::Uuid;
 
 impl Store {
@@ -14,7 +14,7 @@ impl Store {
         channel: &str,
         sender_id: &str,
         project: &str,
-    ) -> Result<String, KernexError> {
+    ) -> Result<String, MemoryError> {
         let row: Option<(String,)> = sqlx::query_as(
             "SELECT id FROM conversations \
              WHERE channel = ? AND sender_id = ? AND project = ? AND status = 'active' \
@@ -27,7 +27,7 @@ impl Store {
         .bind(-CONVERSATION_TIMEOUT_MINUTES)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         if let Some((id,)) = row {
             sqlx::query(
@@ -36,7 +36,7 @@ impl Store {
             .bind(&id)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("update failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("update failed", e))?;
             return Ok(id);
         }
 
@@ -51,7 +51,7 @@ impl Store {
         .bind(project)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("insert failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("insert failed", e))?;
 
         Ok(id)
     }
@@ -59,7 +59,7 @@ impl Store {
     /// Find active conversations that have been idle beyond the timeout.
     pub async fn find_idle_conversations(
         &self,
-    ) -> Result<Vec<(String, String, String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String, String, String)>, MemoryError> {
         let rows: Vec<(String, String, String, String)> = sqlx::query_as(
             "SELECT id, channel, sender_id, project FROM conversations \
              WHERE status = 'active' \
@@ -68,7 +68,7 @@ impl Store {
         .bind(-CONVERSATION_TIMEOUT_MINUTES)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         Ok(rows)
     }
@@ -76,13 +76,13 @@ impl Store {
     /// Find all active conversations (for shutdown).
     pub async fn find_all_active_conversations(
         &self,
-    ) -> Result<Vec<(String, String, String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String, String, String)>, MemoryError> {
         let rows: Vec<(String, String, String, String)> = sqlx::query_as(
             "SELECT id, channel, sender_id, project FROM conversations WHERE status = 'active'",
         )
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         Ok(rows)
     }
@@ -91,7 +91,7 @@ impl Store {
     pub async fn get_conversation_messages(
         &self,
         conversation_id: &str,
-    ) -> Result<Vec<(String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String)>, MemoryError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT role, content FROM messages \
              WHERE conversation_id = ? ORDER BY timestamp ASC",
@@ -99,7 +99,7 @@ impl Store {
         .bind(conversation_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         Ok(rows)
     }
@@ -109,7 +109,7 @@ impl Store {
         &self,
         conversation_id: &str,
         summary: &str,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         sqlx::query(
             "UPDATE conversations SET status = 'closed', summary = ?, updated_at = datetime('now') WHERE id = ?",
         )
@@ -117,7 +117,7 @@ impl Store {
         .bind(conversation_id)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("update failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("update failed", e))?;
 
         Ok(())
     }
@@ -128,7 +128,7 @@ impl Store {
         channel: &str,
         sender_id: &str,
         project: &str,
-    ) -> Result<bool, KernexError> {
+    ) -> Result<bool, MemoryError> {
         let result = sqlx::query(
             "UPDATE conversations SET status = 'closed', updated_at = datetime('now') \
              WHERE channel = ? AND sender_id = ? AND project = ? AND status = 'active'",
@@ -138,7 +138,7 @@ impl Store {
         .bind(project)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("update failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("update failed", e))?;
 
         Ok(result.rows_affected() > 0)
     }
@@ -149,7 +149,7 @@ impl Store {
         channel: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String)>, MemoryError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT summary, updated_at FROM conversations \
              WHERE channel = ? AND sender_id = ? AND status = 'closed' AND summary IS NOT NULL \
@@ -160,7 +160,7 @@ impl Store {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         Ok(rows)
     }
@@ -169,7 +169,7 @@ impl Store {
     pub async fn get_all_recent_summaries(
         &self,
         limit: i64,
-    ) -> Result<Vec<(String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String)>, MemoryError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT summary, updated_at FROM conversations \
              WHERE status = 'closed' AND summary IS NOT NULL \
@@ -178,7 +178,7 @@ impl Store {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         Ok(rows)
     }
@@ -189,7 +189,7 @@ impl Store {
         channel: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String)>, MemoryError> {
         let rows: Vec<(String, String)> = sqlx::query_as(
             "SELECT COALESCE(summary, '(no summary)'), updated_at FROM conversations \
              WHERE channel = ? AND sender_id = ? AND status = 'closed' \
@@ -200,19 +200,19 @@ impl Store {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         Ok(rows)
     }
 
     /// Get memory statistics for a sender.
-    pub async fn get_memory_stats(&self, sender_id: &str) -> Result<(i64, i64, i64), KernexError> {
+    pub async fn get_memory_stats(&self, sender_id: &str) -> Result<(i64, i64, i64), MemoryError> {
         let (conv_count,): (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM conversations WHERE sender_id = ?")
                 .bind(sender_id)
                 .fetch_one(&self.pool)
                 .await
-                .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+                .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         let (msg_count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM messages m \
@@ -222,14 +222,14 @@ impl Store {
         .bind(sender_id)
         .fetch_one(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         let (fact_count,): (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM facts WHERE sender_id = ?")
                 .bind(sender_id)
                 .fetch_one(&self.pool)
                 .await
-                .map_err(|e| KernexError::Store(format!("query failed: {e}")))?;
+                .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         Ok((conv_count, msg_count, fact_count))
     }

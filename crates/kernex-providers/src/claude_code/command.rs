@@ -1,6 +1,7 @@
 //! CLI command building and subprocess execution.
 
 use super::ClaudeCodeProvider;
+use crate::error::ProviderError;
 use kernex_core::error::KernexError;
 use tokio::process::Command;
 use tracing::debug;
@@ -225,19 +226,20 @@ impl ClaudeCodeProvider {
         let output = tokio::time::timeout(self.timeout, cmd.output())
             .await
             .map_err(|_| {
-                KernexError::Provider(format!(
+                ProviderError::Logic(format!(
                     "{label} timed out after {}s",
                     self.timeout.as_secs()
                 ))
             })?
-            .map_err(|e| KernexError::Provider(format!("failed to run {label}: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("failed to run {label}: {e}")))?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(KernexError::Provider(format!(
+            return Err(ProviderError::Logic(format!(
                 "{label} exited with {}: {stderr}",
                 output.status
-            )));
+            ))
+            .into());
         }
 
         Ok(output)

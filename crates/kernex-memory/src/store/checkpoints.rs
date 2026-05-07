@@ -19,7 +19,7 @@
 //! `status` is `"completed"`.
 
 use super::Store;
-use kernex_core::error::KernexError;
+use crate::error::MemoryError;
 
 type CheckpointRow = (
     String,
@@ -82,7 +82,7 @@ impl Store {
         output: Option<&str>,
         error_message: Option<&str>,
         attempt: i64,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         let id = uuid::Uuid::new_v4().to_string();
         sqlx::query(
             "INSERT INTO phase_checkpoints \
@@ -111,7 +111,7 @@ impl Store {
         .bind(attempt)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("upsert phase checkpoint: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("upsert phase checkpoint", e))?;
         Ok(())
     }
 
@@ -120,7 +120,7 @@ impl Store {
         &self,
         run_id: &str,
         phase_name: &str,
-    ) -> Result<Option<PhaseCheckpoint>, KernexError> {
+    ) -> Result<Option<PhaseCheckpoint>, MemoryError> {
         let row: Option<CheckpointRow> = sqlx::query_as(
             "SELECT id, run_id, topology_name, phase_name, sender_id, project, \
                     status, output, error_message, attempt, created_at, updated_at \
@@ -130,7 +130,7 @@ impl Store {
         .bind(phase_name)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("get phase checkpoint: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("get phase checkpoint", e))?;
 
         Ok(row.map(
             |(
@@ -170,7 +170,7 @@ impl Store {
     pub async fn get_run_checkpoints(
         &self,
         run_id: &str,
-    ) -> Result<Vec<PhaseCheckpoint>, KernexError> {
+    ) -> Result<Vec<PhaseCheckpoint>, MemoryError> {
         let rows: Vec<CheckpointRow> = sqlx::query_as(
             "SELECT id, run_id, topology_name, phase_name, sender_id, project, \
                     status, output, error_message, attempt, created_at, updated_at \
@@ -179,7 +179,7 @@ impl Store {
         .bind(run_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("get run checkpoints: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("get run checkpoints", e))?;
 
         Ok(rows
             .into_iter()
@@ -219,12 +219,12 @@ impl Store {
     ///
     /// Call this after a pipeline run completes successfully to reclaim space,
     /// or before re-running a pipeline from scratch.
-    pub async fn clear_run_checkpoints(&self, run_id: &str) -> Result<(), KernexError> {
+    pub async fn clear_run_checkpoints(&self, run_id: &str) -> Result<(), MemoryError> {
         sqlx::query("DELETE FROM phase_checkpoints WHERE run_id = ?")
             .bind(run_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("clear run checkpoints: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("clear run checkpoints", e))?;
         Ok(())
     }
 }

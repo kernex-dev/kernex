@@ -6,10 +6,12 @@
 
 pub mod audit;
 pub mod consolidator;
+pub mod error;
 pub mod store;
 
 pub use audit::AuditLogger;
 pub use consolidator::{ConsolidationResult, Consolidator, ConsolidatorConfig};
+pub use error::MemoryError;
 pub use store::detect_language;
 pub use store::DueTask;
 pub use store::PhaseCheckpoint;

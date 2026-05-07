@@ -1,10 +1,8 @@
 //! Message storage and full-text search.
 
 use super::Store;
-use kernex_core::{
-    error::KernexError,
-    message::{Request, Response},
-};
+use crate::error::MemoryError;
+use kernex_core::message::{Request, Response};
 use uuid::Uuid;
 
 impl Store {
@@ -18,7 +16,7 @@ impl Store {
         incoming: &Request,
         response: &Response,
         project: &str,
-    ) -> Result<(), KernexError> {
+    ) -> Result<(), MemoryError> {
         let conv_id = self
             .get_or_create_conversation(channel, &incoming.sender_id, project)
             .await?;
@@ -33,12 +31,12 @@ impl Store {
         .bind(&incoming.text)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("insert failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("insert failed", e))?;
 
         // Store assistant response.
         let asst_id = Uuid::new_v4().to_string();
         let metadata_json = serde_json::to_string(&response.metadata)
-            .map_err(|e| KernexError::Store(format!("serialize failed: {e}")))?;
+            .map_err(|e| MemoryError::serde("serialize failed", e))?;
 
         sqlx::query(
             "INSERT INTO messages (id, conversation_id, role, content, metadata_json) VALUES (?, ?, 'assistant', ?, ?)",
@@ -49,7 +47,7 @@ impl Store {
         .bind(&metadata_json)
         .execute(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("insert failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("insert failed", e))?;
 
         Ok(())
     }
@@ -61,7 +59,7 @@ impl Store {
         exclude_conversation_id: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String, String)>, KernexError> {
+    ) -> Result<Vec<(String, String, String)>, MemoryError> {
         if query.len() < 3 {
             return Ok(Vec::new());
         }
@@ -87,7 +85,7 @@ impl Store {
         .bind(limit)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| KernexError::Store(format!("fts search failed: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("fts search failed", e))?;
 
         Ok(rows)
     }

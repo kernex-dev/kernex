@@ -24,7 +24,8 @@ pub use context::{detect_language, format_user_profile};
 pub use tasks::DueTask;
 pub use usage::{UsageBreakdown, UsageSummary};
 
-use kernex_core::{config::MemoryConfig, error::KernexError, shellexpand};
+use crate::error::MemoryError;
+use kernex_core::{config::MemoryConfig, shellexpand};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
@@ -42,7 +43,7 @@ pub struct Store {
 
 impl Store {
     /// Create a new store, running migrations on first use.
-    pub async fn new(config: &MemoryConfig) -> Result<Self, KernexError> {
+    pub async fn new(config: &MemoryConfig) -> Result<Self, MemoryError> {
         let db_path = shellexpand(&config.db_path);
 
         // Ensure parent directory exists. On Unix, also restrict its mode to
@@ -50,7 +51,7 @@ impl Store {
         // files that may briefly contain message text en route to disk.
         if let Some(parent) = std::path::Path::new(&db_path).parent() {
             std::fs::create_dir_all(parent)
-                .map_err(|e| KernexError::Store(format!("failed to create data dir: {e}")))?;
+                .map_err(|e| MemoryError::io("failed to create data dir", e))?;
             tighten_unix_dir_perms(parent);
         }
 
@@ -62,7 +63,7 @@ impl Store {
         precreate_sqlite_file(&db_path)?;
 
         let opts = SqliteConnectOptions::from_str(&format!("sqlite:{db_path}"))
-            .map_err(|e| KernexError::Store(format!("invalid db path: {e}")))?
+            .map_err(|e| MemoryError::sqlite("invalid db path", e))?
             .create_if_missing(true)
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
 
@@ -70,7 +71,7 @@ impl Store {
             .max_connections(config.max_connections)
             .connect_with(opts)
             .await
-            .map_err(|e| KernexError::Store(format!("failed to connect to sqlite: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("failed to connect to sqlite", e))?;
 
         Self::run_migrations(&pool).await?;
 
@@ -95,7 +96,7 @@ impl Store {
 /// Create the SQLite file at `db_path` with mode 0o600 if it doesn't already
 /// exist. `:memory:` and any non-disk URI is left alone. On non-Unix this is
 /// a best-effort `create_new` without explicit mode bits.
-fn precreate_sqlite_file(db_path: &str) -> Result<(), KernexError> {
+fn precreate_sqlite_file(db_path: &str) -> Result<(), MemoryError> {
     if db_path == ":memory:" || db_path.starts_with("file::memory:") {
         return Ok(());
     }
@@ -117,9 +118,7 @@ fn precreate_sqlite_file(db_path: &str) -> Result<(), KernexError> {
             // Race with another process — the file now exists, that's fine
             // because tighten_unix_file_perms runs after migrations.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-            Err(e) => Err(KernexError::Store(format!(
-                "failed to pre-create db file at 0o600: {e}"
-            ))),
+            Err(e) => Err(MemoryError::io("pre-create db file at 0o600", e)),
         }
     }
     #[cfg(not(unix))]
@@ -164,22 +163,22 @@ fn tighten_unix_dir_perms(_path: &std::path::Path) {}
 
 impl Store {
     /// Get the database file size in bytes.
-    pub async fn db_size(&self) -> Result<u64, KernexError> {
+    pub async fn db_size(&self) -> Result<u64, MemoryError> {
         let (page_count,): (i64,) = sqlx::query_as("PRAGMA page_count")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("pragma failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("pragma failed", e))?;
 
         let (page_size,): (i64,) = sqlx::query_as("PRAGMA page_size")
             .fetch_one(&self.pool)
             .await
-            .map_err(|e| KernexError::Store(format!("pragma failed: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("pragma failed", e))?;
 
         Ok((page_count * page_size) as u64)
     }
 
     /// Run SQL migrations, tracking which have already been applied.
-    pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), KernexError> {
+    pub(crate) async fn run_migrations(pool: &SqlitePool) -> Result<(), MemoryError> {
         sqlx::raw_sql(
             "CREATE TABLE IF NOT EXISTS _migrations (
                 name TEXT PRIMARY KEY,
@@ -188,14 +187,14 @@ impl Store {
         )
         .execute(pool)
         .await
-        .map_err(|e| KernexError::Store(format!("failed to create migrations table: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("failed to create migrations table", e))?;
 
         // Bootstrap: if _migrations is empty but tables already exist from
         // a pre-tracking era, mark all existing migrations as applied.
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _migrations")
             .fetch_one(pool)
             .await
-            .map_err(|e| KernexError::Store(format!("failed to count migrations: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("failed to count migrations", e))?;
 
         if count.0 == 0 {
             let has_summary: bool = sqlx::query_scalar::<_, String>(
@@ -215,7 +214,7 @@ impl Store {
                         .execute(pool)
                         .await
                         .map_err(|e| {
-                            KernexError::Store(format!("failed to bootstrap migration {name}: {e}"))
+                            MemoryError::sqlite(format!("failed to bootstrap migration {name}"), e)
                         })?;
                 }
             }
@@ -292,7 +291,7 @@ impl Store {
                     .fetch_optional(pool)
                     .await
                     .map_err(|e| {
-                        KernexError::Store(format!("failed to check migration {name}: {e}"))
+                        MemoryError::sqlite(format!("failed to check migration {name}"), e)
                     })?;
 
             if applied.is_some() {
@@ -302,14 +301,14 @@ impl Store {
             sqlx::raw_sql(sql)
                 .execute(pool)
                 .await
-                .map_err(|e| KernexError::Store(format!("migration {name} failed: {e}")))?;
+                .map_err(|e| MemoryError::sqlite(format!("migration {name} failed"), e))?;
 
             sqlx::query("INSERT INTO _migrations (name) VALUES (?)")
                 .bind(name)
                 .execute(pool)
                 .await
                 .map_err(|e| {
-                    KernexError::Store(format!("failed to record migration {name}: {e}"))
+                    MemoryError::sqlite(format!("failed to record migration {name}"), e)
                 })?;
         }
         Ok(())

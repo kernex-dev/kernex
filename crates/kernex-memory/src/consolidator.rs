@@ -15,8 +15,8 @@
 //! consolidator.spawn(600); // check every 10 minutes
 //! ```
 
+use crate::error::MemoryError;
 use crate::Store;
-use kernex_core::error::KernexError;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
@@ -82,7 +82,7 @@ impl Consolidator {
     /// Run consolidation only if all three gates pass.
     ///
     /// Returns `Ok(None)` if any gate rejects the run.
-    pub async fn maybe_run(&self) -> Result<Option<ConsolidationResult>, KernexError> {
+    pub async fn maybe_run(&self) -> Result<Option<ConsolidationResult>, MemoryError> {
         // Lock gate: skip if another run is already in progress.
         let _guard = match self.lock.try_lock() {
             Ok(g) => g,
@@ -138,7 +138,7 @@ impl Consolidator {
     /// Run pruning unconditionally, bypassing all gates.
     ///
     /// Useful for forcing a consolidation on startup or for testing.
-    pub async fn prune(&self) -> Result<ConsolidationResult, KernexError> {
+    pub async fn prune(&self) -> Result<ConsolidationResult, MemoryError> {
         let messages_pruned = self.prune_old_messages().await?;
         let outcomes_pruned = self.prune_excess_outcomes().await?;
 
@@ -216,7 +216,7 @@ impl Consolidator {
 
     // --- Private helpers ---
 
-    async fn last_consolidated_at(&self) -> Result<Option<u64>, KernexError> {
+    async fn last_consolidated_at(&self) -> Result<Option<u64>, MemoryError> {
         Ok(self
             .store
             .get_fact(SYSTEM_SENDER, LAST_CONSOLIDATED_KEY)
@@ -249,7 +249,7 @@ impl Consolidator {
         true
     }
 
-    async fn count_new_sessions(&self, since_ts: Option<u64>) -> Result<usize, KernexError> {
+    async fn count_new_sessions(&self, since_ts: Option<u64>) -> Result<usize, MemoryError> {
         let (count,): (i64,) = match since_ts {
             None => {
                 sqlx::query_as("SELECT COUNT(*) FROM conversations")
@@ -266,12 +266,12 @@ impl Consolidator {
                 .await
             }
         }
-        .map_err(|e| KernexError::Store(format!("count sessions: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("count sessions", e))?;
 
         Ok(count as usize)
     }
 
-    async fn prune_old_messages(&self) -> Result<u64, KernexError> {
+    async fn prune_old_messages(&self) -> Result<u64, MemoryError> {
         let age_days = -(self.config.max_message_age_days as i64);
         let r = sqlx::query(
             "DELETE FROM messages WHERE conversation_id IN ( \
@@ -283,16 +283,16 @@ impl Consolidator {
         .bind(age_days)
         .execute(self.store.pool())
         .await
-        .map_err(|e| KernexError::Store(format!("prune messages: {e}")))?;
+        .map_err(|e| MemoryError::sqlite("prune messages", e))?;
         Ok(r.rows_affected())
     }
 
-    async fn prune_excess_outcomes(&self) -> Result<u64, KernexError> {
+    async fn prune_excess_outcomes(&self) -> Result<u64, MemoryError> {
         let max = self.config.max_outcomes_per_sender as i64;
         let senders: Vec<(String,)> = sqlx::query_as("SELECT DISTINCT sender_id FROM outcomes")
             .fetch_all(self.store.pool())
             .await
-            .map_err(|e| KernexError::Store(format!("get outcome senders: {e}")))?;
+            .map_err(|e| MemoryError::sqlite("get outcome senders", e))?;
 
         let mut deleted = 0u64;
         for (sender_id,) in senders {
@@ -306,7 +306,7 @@ impl Consolidator {
             .bind(max)
             .execute(self.store.pool())
             .await
-            .map_err(|e| KernexError::Store(format!("prune outcomes for {sender_id}: {e}")))?;
+            .map_err(|e| MemoryError::sqlite(format!("prune outcomes for {sender_id}"), e))?;
             deleted += r.rows_affected();
         }
         Ok(deleted)

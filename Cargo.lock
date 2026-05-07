@@ -1037,7 +1037,7 @@ dependencies = [
 
 [[package]]
 name = "kernex"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "kernex-runtime",
 ]
@@ -1056,7 +1056,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-core"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1072,7 +1072,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-memory"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1081,6 +1081,7 @@ dependencies = [
  "serde_json",
  "sqlx",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
@@ -1088,18 +1089,19 @@ dependencies = [
 
 [[package]]
 name = "kernex-pipelines"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "kernex-core",
  "serde",
  "tempfile",
+ "thiserror 2.0.18",
  "toml",
  "tracing",
 ]
 
 [[package]]
 name = "kernex-providers"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1125,7 +1127,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-runtime"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1145,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-sandbox"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "landlock",
@@ -1155,12 +1157,13 @@ dependencies = [
 
 [[package]]
 name = "kernex-skills"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "kernex-core",
  "serde",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "toml",
  "tracing",
 ]

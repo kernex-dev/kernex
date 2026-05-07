@@ -3,6 +3,7 @@
 //! Connects to a locally running Ollama server. No API key required.
 //! Tool calling format is similar to OpenAI but has no `tool_call_id`.
 
+use crate::error::ProviderError;
 use async_trait::async_trait;
 use kernex_core::{context::Context, error::KernexError, message::Response, traits::Provider};
 use serde::{Deserialize, Serialize};
@@ -36,7 +37,7 @@ impl OllamaProvider {
             client: reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
-                .map_err(|e| KernexError::Provider(format!("failed to build HTTP client: {e}")))?,
+                .map_err(|e| ProviderError::Logic(format!("failed to build HTTP client: {e}")))?,
             base_url,
             model,
             workspace_path,
@@ -220,7 +221,7 @@ impl Provider for OllamaProvider {
         debug!("ollama: POST {url} model={effective_model} (no tools)");
 
         let body_json = serde_json::to_vec(&body)
-            .map_err(|e| KernexError::Provider(format!("ollama: serialize failed: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("ollama: serialize failed: {e}")))?;
 
         let resp = {
             let client = &self.client;
@@ -238,15 +239,13 @@ impl Provider for OllamaProvider {
         if !resp.status().is_success() {
             let status = resp.status();
             let text = read_truncated_error_body(resp).await;
-            return Err(KernexError::Provider(format!(
-                "ollama returned {status}: {text}"
-            )));
+            return Err(ProviderError::Logic(format!("ollama returned {status}: {text}")).into());
         }
 
         let parsed: OllamaChatResponse = resp
             .json()
             .await
-            .map_err(|e| KernexError::Provider(format!("ollama: failed to parse response: {e}")))?;
+            .map_err(|e| ProviderError::Logic(format!("ollama: failed to parse response: {e}")))?;
 
         let text = parsed
             .message
@@ -317,7 +316,7 @@ impl OllamaProvider {
             debug!("ollama: POST {url} model={model} turn={turn}");
 
             let body_json = serde_json::to_vec(&body)
-                .map_err(|e| KernexError::Provider(format!("ollama: serialize failed: {e}")))?;
+                .map_err(|e| ProviderError::Logic(format!("ollama: serialize failed: {e}")))?;
 
             let resp = {
                 let client = &self.client;
@@ -334,13 +333,13 @@ impl OllamaProvider {
             if !resp.status().is_success() {
                 let status = resp.status();
                 let text = read_truncated_error_body(resp).await;
-                return Err(KernexError::Provider(format!(
-                    "ollama returned {status}: {text}"
-                )));
+                return Err(
+                    ProviderError::Logic(format!("ollama returned {status}: {text}")).into(),
+                );
             }
 
             let parsed: OllamaChatResponse = resp.json().await.map_err(|e| {
-                KernexError::Provider(format!("ollama: failed to parse response: {e}"))
+                ProviderError::Logic(format!("ollama: failed to parse response: {e}"))
             })?;
 
             if let Some(ref m) = parsed.model {

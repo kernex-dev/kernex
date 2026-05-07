@@ -3,7 +3,6 @@ use super::tasks::{descriptions_are_similar, normalize_due_at};
 use super::Store;
 use kernex_core::config::MemoryConfig;
 use kernex_core::context::{CompactionStrategy, ContextNeeds};
-use kernex_core::error::Result as KernexResult;
 use kernex_core::message::Request;
 use kernex_core::traits::Summarizer;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
@@ -809,7 +808,7 @@ struct MockSummarizer;
 
 #[async_trait::async_trait]
 impl Summarizer for MockSummarizer {
-    async fn summarize(&self, text: &str) -> KernexResult<String> {
+    async fn summarize(&self, text: &str) -> kernex_core::error::Result<String> {
         Ok(format!("SUMMARY({}chars)", text.len()))
     }
 }
