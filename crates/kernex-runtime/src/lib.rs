@@ -977,11 +977,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_builder_from_config() {
-        use kernex_core::config::{KernexConfig, RuntimeConfig};
+        use kernex_core::config::{KernexConfig, MemoryConfig, RuntimeConfig};
 
         let tmp_dir = tempfile::TempDir::new().unwrap();
         let tmp = tmp_dir.path();
 
+        // Override `memory.db_path` so the test does not share
+        // `~/.kernex/data/memory.db` with sibling tests; that shared file
+        // races on migration replay across parallel runs (#duplicate-column
+        // / #UNIQUE-constraint regressions seen in CI).
         let cfg = KernexConfig {
             runtime: RuntimeConfig {
                 name: "test-agent".to_string(),
@@ -990,6 +994,10 @@ mod tests {
                 project: Some("my-proj".to_string()),
                 system_prompt: "Be concise.".to_string(),
                 ..RuntimeConfig::default()
+            },
+            memory: MemoryConfig {
+                db_path: tmp.join("memory.db").to_str().unwrap().to_string(),
+                ..MemoryConfig::default()
             },
             ..KernexConfig::default()
         };
@@ -1007,19 +1015,25 @@ mod tests {
 
         let tmp_dir = tempfile::TempDir::new().unwrap();
         let tmp = tmp_dir.path();
+        let escaped = tmp.to_str().unwrap().replace('\\', "\\\\");
 
+        // Pin both `data_dir` and `[memory] db_path` inside the TempDir so
+        // this test does not race against the shared `~/.kernex/data/memory.db`
+        // default that other parallel tests hit.
         let cfg_path = tmp.join("agent.toml");
         let mut f = std::fs::File::create(&cfg_path).unwrap();
         writeln!(
             f,
             r#"[runtime]
 name = "file-agent"
-data_dir = "{}"
+data_dir = "{escaped}"
 channel = "api"
 project = "file-proj"
 system_prompt = "From file."
-"#,
-            tmp.to_str().unwrap().replace('\\', "\\\\")
+
+[memory]
+db_path = "{escaped}/memory.db"
+"#
         )
         .unwrap();
 
