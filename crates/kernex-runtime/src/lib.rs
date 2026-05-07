@@ -719,9 +719,20 @@ impl RuntimeBuilder {
             Store::new(&mem_config).await?
         };
 
-        // Load skills and projects.
-        let skills = kernex_skills::load_skills(&self.data_dir);
-        let projects = kernex_skills::load_projects(&self.data_dir);
+        // Load skills and projects. These functions use synchronous std::fs
+        // internally; offload to a blocking thread so we do not stall the
+        // tokio executor on cold start (especially relevant for projects with
+        // large skills/ trees).
+        let skills_data_dir = self.data_dir.clone();
+        let skills =
+            tokio::task::spawn_blocking(move || kernex_skills::load_skills(&skills_data_dir))
+                .await
+                .map_err(|e| KernexError::Skill(format!("load_skills task failed: {e}")))?;
+        let projects_data_dir = self.data_dir.clone();
+        let projects =
+            tokio::task::spawn_blocking(move || kernex_skills::load_projects(&projects_data_dir))
+                .await
+                .map_err(|e| KernexError::Skill(format!("load_projects task failed: {e}")))?;
 
         tracing::info!(
             "runtime initialized: {} skills, {} projects",
