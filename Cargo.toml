@@ -8,7 +8,7 @@ default-members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 # Conservative MSRV. If you need a newer language feature, run
 # `cargo install cargo-msrv && cargo msrv verify` before bumping this so the
@@ -44,14 +44,14 @@ schemars = "0.8"
 serde_yaml_ng = "0.10"
 
 # Internal crates
-kernex-core = { version = "0.4.0", path = "crates/kernex-core" }
-kernex-sandbox = { version = "0.4.0", path = "crates/kernex-sandbox" }
-kernex-providers = { version = "0.4.0", path = "crates/kernex-providers" }
-kernex-memory = { version = "0.4.0", path = "crates/kernex-memory" }
-kernex-skills = { version = "0.4.0", path = "crates/kernex-skills" }
-kernex-pipelines = { version = "0.4.0", path = "crates/kernex-pipelines" }
-kernex-runtime = { version = "0.4.0", path = "crates/kernex-runtime" }
-kernex = { version = "0.4.0", path = "crates/kernex" }
+kernex-core = { version = "0.4.1", path = "crates/kernex-core" }
+kernex-sandbox = { version = "0.4.1", path = "crates/kernex-sandbox" }
+kernex-providers = { version = "0.4.1", path = "crates/kernex-providers" }
+kernex-memory = { version = "0.4.1", path = "crates/kernex-memory" }
+kernex-skills = { version = "0.4.1", path = "crates/kernex-skills" }
+kernex-pipelines = { version = "0.4.1", path = "crates/kernex-pipelines" }
+kernex-runtime = { version = "0.4.1", path = "crates/kernex-runtime" }
+kernex = { version = "0.4.1", path = "crates/kernex" }
 
 # Centralized lint configuration. Each crate inherits these by setting
 # `[lints] workspace = true` in its own Cargo.toml. Test code is exempted

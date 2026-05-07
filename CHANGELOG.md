@@ -7,7 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-05-07
+
 ### Added
+
+- **kernex-runtime**: `RuntimeBuilder::auto_compact(bool)` opt-in. When enabled, the runtime reuses the active provider as a `Summarizer` (one extra round-trip per overflow event, not per turn) and prepends `[Earlier conversation summary]` to the system prompt instead of silently dropping the oldest messages. Default off for v0.4.x backward compatibility.
+- **kernex-core**: `ContextNeeds` now derives `Debug, Clone` so callers can override individual fields without rebuilding the struct.
+- **kernex (umbrella crate)**: re-exports `kernex_runtime::*` so `cargo add kernex` works.
+
+### Changed
+
+- **kernex-memory**: `Store::build_context` now emits `tracing::warn!` when history overflows `max_context_messages` and the Drop strategy is in effect (no summarizer wired in). One log per overflow event with conversation id and overflow count, pointing operators at `RuntimeBuilder::auto_compact`.
+
+### Security
+
+- **kernex-providers**: bumped `rustls-webpki` to 0.103.13 via lock file (RUSTSEC-2026-0098 / 0099 name-constraint bypasses, RUSTSEC-2026-0104 reachable panic in CRL parsing). Bumped `rand` to 0.8.6 / 0.9.4 (RUSTSEC-2026-0097 unsoundness warning).
+- **workspace**: `serde_yml` (RUSTSEC-2025-0068, archived crate, unsound) replaced by `serde_yaml_ng`.
+- **kernex-memory**: `memory.db` and parent dir now chmod 0600 / 0700 on Unix.
+- **kernex-providers**: web fetch tool rejects loopback / RFC1918 / link-local / CGNAT / multicast / metadata IPs (IPv4 and IPv6); `redirect::Policy::none()` so attacker-controlled redirects can't bypass the check. Grep tool caps regex pattern length and passes `--regex-size-limit 16M` to ripgrep.
+- **kernex-pipelines**: agent and topology names validated as path segments (no `..`, no separators, no high-bit characters); canonical-prefix symlink guard.
+- **kernex-sandbox**: Seatbelt SBPL injection blocked at every interpolation site; new `SandboxProfile::require_os_enforcement` flag returns `ErrorKind::Unsupported` on hosts lacking Seatbelt/Landlock; Landlock `pre_exec` is now allocator-safe (build_ruleset in parent, child only locks Mutex and calls restrict_self).
+- **kernex-providers**: error bodies truncated at 16 KB; HTTPS required for keyed providers.
+- **kernex-skills**: `Permissions::allows_command` enforced for MCP servers and toolboxes.
+- **CI**: `cargo deny check` runs the full advisories + bans + licenses + sources suite. New `deny.toml` rejects openssl / native-tls (rustls-only policy) and pins the license allow-list.
+
+### Added (continued)
 
 - **kernex-providers**: Groq, Mistral, DeepSeek, Fireworks, and xAI as named provider strings in `ProviderFactory::create()` — each resolves to the OpenAI provider with the correct `base_url` and default model. Provider count: 11 built-in (+ Bedrock feature-gated).
 - **kernex-providers**: AWS Bedrock provider with SigV4 request signing — supports Anthropic Claude models on Bedrock; opt-in via the `bedrock` Cargo feature.
