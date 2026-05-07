@@ -1,6 +1,6 @@
 <h1 align="center">
   <br>
-  <img src="favicon-kernex.png" alt="Kernex" width="120">
+  <img src="favicon.svg" alt="Kernex" width="120">
   <br>
   Kernex
   <br>
