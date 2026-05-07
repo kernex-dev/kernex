@@ -62,19 +62,56 @@ impl PermissionRules {
     }
 }
 
-/// Concatenate all top-level string values in a JSON object into one string.
+/// Concatenate every string leaf in a JSON value into one space-separated
+/// string. Walks recursively so nested arguments (e.g.
+/// `{"options": {"command": "rm -rf /"}}` from MCP tools) are not invisible
+/// to deny patterns.
 ///
-/// This gives the glob pattern something meaningful to match against without
-/// requiring tool-specific argument extraction logic.
+/// The result is capped at [`MAX_ARGS_LEN`] bytes; longer inputs are
+/// truncated. The cap doubles as a defence against the O(P × A) glob matcher
+/// being passed a megabyte of operator-controlled text.
 fn extract_args_string(args: &serde_json::Value) -> String {
-    match args {
-        serde_json::Value::Object(map) => map
-            .values()
-            .filter_map(|v| v.as_str())
-            .collect::<Vec<_>>()
-            .join(" "),
-        serde_json::Value::String(s) => s.clone(),
-        _ => String::new(),
+    let mut out = String::new();
+    flatten_strings(args, &mut out);
+    if out.len() > MAX_ARGS_LEN {
+        out.truncate(crate::utf8::floor_char_boundary(&out, MAX_ARGS_LEN));
+    }
+    out
+}
+
+/// Upper bound on the byte length of the concatenated args string used for
+/// glob matching. 64 KiB is far above any legitimate tool call, and keeps
+/// the DP matrix in [`glob_match`] from becoming a DoS vector.
+const MAX_ARGS_LEN: usize = 64 * 1024;
+
+fn flatten_strings(v: &serde_json::Value, out: &mut String) {
+    if out.len() >= MAX_ARGS_LEN {
+        return;
+    }
+    match v {
+        serde_json::Value::String(s) => {
+            if !out.is_empty() {
+                out.push(' ');
+            }
+            out.push_str(s);
+        }
+        serde_json::Value::Array(arr) => {
+            for item in arr {
+                if out.len() >= MAX_ARGS_LEN {
+                    break;
+                }
+                flatten_strings(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for value in map.values() {
+                if out.len() >= MAX_ARGS_LEN {
+                    break;
+                }
+                flatten_strings(value, out);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -278,6 +315,45 @@ mod tests {
             rules.check("bash", &json!({"command": "echo hello"})),
             PermissionOutcome::Allow
         ));
+    }
+
+    #[test]
+    fn test_deny_matches_nested_object_arg() {
+        // MCP tools routinely wrap params under a key. The deny rule should
+        // still see the inner string. Pre-fix, this test would have passed
+        // because the matcher never looked inside `options`.
+        let rules = PermissionRules {
+            allow: vec![],
+            deny: vec!["Bash(*rm -rf*)".to_string()],
+        };
+        let nested = json!({
+            "options": { "command": "rm -rf /" }
+        });
+        assert!(matches!(
+            rules.check("bash", &nested),
+            PermissionOutcome::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn test_deny_matches_array_arg() {
+        let rules = PermissionRules {
+            allow: vec![],
+            deny: vec!["Bash(*sudo*)".to_string()],
+        };
+        let arr = json!({ "argv": ["bash", "-c", "sudo poweroff"] });
+        assert!(matches!(
+            rules.check("bash", &arr),
+            PermissionOutcome::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn test_extract_args_string_caps_at_max() {
+        let huge = "x".repeat(80 * 1024);
+        let v = json!({ "command": huge });
+        let s = extract_args_string(&v);
+        assert!(s.len() <= MAX_ARGS_LEN);
     }
 
     #[test]

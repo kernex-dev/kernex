@@ -13,6 +13,7 @@ pub mod run;
 pub mod sanitize;
 pub mod stream;
 pub mod traits;
+pub mod utf8;
 
 pub use config::shellexpand;
 pub use error::KernexError;

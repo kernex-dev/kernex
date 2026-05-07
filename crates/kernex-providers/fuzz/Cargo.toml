@@ -13,6 +13,9 @@ libfuzzer-sys = "0.4"
 [dependencies.kernex-providers]
 path = ".."
 
+[dependencies.kernex-core]
+path = "../../kernex-core"
+
 [[bin]]
 name = "truncate_target"
 path = "fuzz_targets/truncate_target.rs"

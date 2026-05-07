@@ -89,7 +89,7 @@ fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
         s
     } else {
-        &s[..s.floor_char_boundary(max)]
+        &s[..kernex_core::utf8::floor_char_boundary(s, max)]
     }
 }
 

@@ -19,7 +19,7 @@ fuzz_target!(|data: &[u8]| {
         if s.len() <= max_bytes {
             assert_eq!(truncated, s);
         } else {
-            let limit = s.floor_char_boundary(max_bytes);
+            let limit = kernex_core::utf8::floor_char_boundary(s, max_bytes);
             assert!(truncated.starts_with(&s[..limit]));
             assert!(truncated.contains("... (output truncated:"));
         }
