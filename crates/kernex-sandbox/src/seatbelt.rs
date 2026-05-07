@@ -19,14 +19,24 @@ const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// `)`, `\\`, or newline inside a path string injects raw policy code. Only
 /// absolute paths are accepted because relative paths in a profile are
 /// nonsensical and indicate caller confusion.
+///
+/// `;` and `*` are also rejected as a defence-in-depth measure: today the
+/// path is always interpolated inside a string literal where these are
+/// inert, but `;` is the SBPL line-comment leader and `*` carries glob
+/// semantics in some forms — if a future edit ever interpolates a path
+/// outside string quotes, these characters would let an attacker comment
+/// out the rest of the policy.
 fn sanitize_sbpl_path(path: &Path) -> Option<String> {
     if !path.is_absolute() {
         return None;
     }
     let s = path.to_str()?;
-    if s.bytes()
-        .any(|b| matches!(b, b'"' | b'\\' | b'(' | b')' | b'\n' | b'\r' | 0))
-    {
+    if s.bytes().any(|b| {
+        matches!(
+            b,
+            b'"' | b'\\' | b'(' | b')' | b'\n' | b'\r' | 0 | b';' | b'*'
+        )
+    }) {
         return None;
     }
     Some(s.to_string())

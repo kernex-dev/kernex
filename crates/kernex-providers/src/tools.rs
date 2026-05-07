@@ -477,8 +477,21 @@ impl ToolExecutor {
 
         // Write arguments as JSON to stdin.
         if let Some(mut stdin) = child.stdin.take() {
-            let json = serde_json::to_string(args).unwrap_or_default();
-            let _ = tokio::io::AsyncWriteExt::write_all(&mut stdin, json.as_bytes()).await;
+            // Don't silently substitute "" if serialization fails — that
+            // would feed the script empty input and produce a confusing
+            // downstream error. Surface the failure as a tool error.
+            match serde_json::to_string(args) {
+                Ok(json) => {
+                    let _ = tokio::io::AsyncWriteExt::write_all(&mut stdin, json.as_bytes()).await;
+                }
+                Err(e) => {
+                    let _ = child.kill().await;
+                    return ToolResult {
+                        content: format!("Failed to serialize args for toolbox '{}': {e}", tb.name),
+                        is_error: true,
+                    };
+                }
+            }
             // Drop stdin to signal EOF.
         }
 

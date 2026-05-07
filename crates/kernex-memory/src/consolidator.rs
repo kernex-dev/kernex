@@ -113,13 +113,24 @@ impl Consolidator {
 
         let result = self.prune().await?;
 
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        self.store
-            .store_fact(SYSTEM_SENDER, LAST_CONSOLIDATED_KEY, &now_secs.to_string())
-            .await?;
+        // If the system clock is set before 1970 (clock skew during boot,
+        // misconfigured VM, etc.), don't paper over it by writing 0. That
+        // would leave the time gate permanently "passed" and rerun the
+        // consolidator on every tick. Skip the timestamp update and log;
+        // the next tick will retry once the clock is sane.
+        match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => {
+                let now_secs = d.as_secs();
+                self.store
+                    .store_fact(SYSTEM_SENDER, LAST_CONSOLIDATED_KEY, &now_secs.to_string())
+                    .await?;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "consolidator: system clock before UNIX_EPOCH ({e}); skipping last-run write"
+                );
+            }
+        }
 
         Ok(Some(result))
     }
@@ -143,18 +154,61 @@ impl Consolidator {
     ///
     /// The returned `JoinHandle` can be dropped — the task continues until
     /// the process exits. Call `handle.abort()` to cancel.
+    ///
+    /// Prefer [`Consolidator::spawn_cancellable`] in long-lived processes so
+    /// `Runtime::Handle::shutdown_timeout` can drain the consolidator
+    /// cleanly on shutdown.
     pub fn spawn(self, interval_secs: u64) -> tokio::task::JoinHandle<()> {
+        self.spawn_cancellable(interval_secs, None)
+    }
+
+    /// Like [`spawn`](Self::spawn) but also observes a cancellation receiver.
+    ///
+    /// Pass `Some(rx)` from a `tokio::sync::watch::channel(false)` (or any
+    /// equivalent signal); the loop returns cleanly the first time the
+    /// signal flips to `true`. Pass `None` for the legacy "runs until
+    /// JoinHandle::abort" behaviour.
+    pub fn spawn_cancellable(
+        self,
+        interval_secs: u64,
+        mut cancel: Option<tokio::sync::watch::Receiver<bool>>,
+    ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(std::time::Duration::from_secs(interval_secs));
             loop {
-                ticker.tick().await;
-                match self.maybe_run().await {
-                    Ok(Some(r)) => info!(
-                        "consolidator: pruned {} messages, {} outcomes",
-                        r.messages_pruned, r.outcomes_pruned
-                    ),
-                    Ok(None) => {}
-                    Err(e) => warn!("consolidator background run error: {e}"),
+                let cancel_signalled = async {
+                    if let Some(rx) = cancel.as_mut() {
+                        // Wait until the watch flips to `true` once; if the
+                        // sender is dropped, treat that as "shutdown" so
+                        // we don't outlive the parent.
+                        loop {
+                            if *rx.borrow() {
+                                return;
+                            }
+                            if rx.changed().await.is_err() {
+                                return;
+                            }
+                        }
+                    } else {
+                        std::future::pending::<()>().await;
+                    }
+                };
+
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        match self.maybe_run().await {
+                            Ok(Some(r)) => info!(
+                                "consolidator: pruned {} messages, {} outcomes",
+                                r.messages_pruned, r.outcomes_pruned
+                            ),
+                            Ok(None) => {}
+                            Err(e) => warn!("consolidator background run error: {e}"),
+                        }
+                    }
+                    _ = cancel_signalled => {
+                        info!("consolidator: shutdown signal received, exiting loop");
+                        return;
+                    }
                 }
             }
         })
@@ -172,10 +226,18 @@ impl Consolidator {
 
     fn time_gate_passes(&self, last_ts: Option<u64>) -> bool {
         let Some(ts) = last_ts else { return true };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(e) => {
+                // Pre-1970 clock — refuse to make a decision. Returning
+                // false means "don't consolidate this tick"; the next tick
+                // retries once the clock is sane.
+                tracing::warn!(
+                    "consolidator: system clock before UNIX_EPOCH ({e}); skipping time gate"
+                );
+                return false;
+            }
+        };
         let elapsed_hours = now.saturating_sub(ts) as f64 / 3600.0;
         if elapsed_hours < self.config.min_hours {
             tracing::debug!(
