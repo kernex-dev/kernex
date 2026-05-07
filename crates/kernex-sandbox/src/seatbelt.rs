@@ -225,7 +225,9 @@ mod tests {
         // inject arbitrary policy code if interpolated. It must be dropped.
         let data_dir = PathBuf::from("/home/user/.kernex");
         let profile_obj = crate::SandboxProfile {
-            blocked_paths: vec![PathBuf::from("/tmp/evil\") (allow file-write* (subpath \"/")],
+            blocked_paths: vec![PathBuf::from(
+                "/tmp/evil\") (allow file-write* (subpath \"/",
+            )],
             ..Default::default()
         };
         let profile = build_profile(&data_dir, &profile_obj);
