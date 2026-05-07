@@ -17,7 +17,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::http_retry::send_with_retry;
+use crate::http_retry::{read_truncated_error_body, send_with_retry};
 use crate::tools::{build_response, tools_enabled, ToolDef, ToolExecutor};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -339,7 +339,7 @@ impl Provider for AnthropicProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_truncated_error_body(resp).await;
             return Err(KernexError::Provider(format!(
                 "anthropic returned {status}: {text}"
             )));
@@ -451,7 +451,7 @@ impl AnthropicProvider {
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
+                let text = read_truncated_error_body(resp).await;
                 return Err(KernexError::Provider(format!(
                     "anthropic returned {status}: {text}"
                 )));
@@ -664,7 +664,7 @@ impl StreamingProvider for AnthropicProvider {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = read_truncated_error_body(resp).await;
             return Err(KernexError::Provider(format!(
                 "anthropic returned {status}: {text}"
             )));

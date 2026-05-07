@@ -3,6 +3,7 @@
 //! Retries on network errors, 429 (rate limit), and 5xx (server errors).
 //! Non-retryable errors (4xx except 429) are returned immediately.
 
+use futures_util::StreamExt;
 use kernex_core::error::KernexError;
 use reqwest::Response;
 use std::future::Future;
@@ -11,6 +12,45 @@ use tracing::warn;
 
 const MAX_RETRIES: u32 = 3;
 const BASE_DELAY_MS: u64 = 1000;
+
+/// Maximum number of bytes read from a non-2xx response body when building an
+/// error message. Keeps memory bounded under malicious or accidental floods
+/// (e.g. a 5xx page that ships gigabytes of HTML) and truncates request-echo
+/// content that some providers include in 4xx bodies, since system prompts
+/// and tool inputs may contain user-supplied secrets.
+const MAX_ERROR_BODY_BYTES: usize = 16 * 1024;
+
+/// Read up to [`MAX_ERROR_BODY_BYTES`] from a non-2xx response, returning a
+/// UTF-8 lossy String suitable for inclusion in a [`KernexError::Provider`]
+/// message. Stops early once the cap is reached, even if the server is still
+/// streaming. Appends `" [... truncated]"` when the body exceeded the cap.
+pub async fn read_truncated_error_body(resp: Response) -> String {
+    let mut stream = resp.bytes_stream();
+    let mut buf: Vec<u8> = Vec::with_capacity(MAX_ERROR_BODY_BYTES.min(8 * 1024));
+    let mut truncated = false;
+    while let Some(chunk) = stream.next().await {
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(_) => break,
+        };
+        let remaining = MAX_ERROR_BODY_BYTES.saturating_sub(buf.len());
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        if chunk.len() > remaining {
+            buf.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    let mut s = String::from_utf8_lossy(&buf).into_owned();
+    if truncated {
+        s.push_str(" [... truncated]");
+    }
+    s
+}
 
 /// Execute an HTTP request with exponential backoff retry.
 ///
@@ -45,7 +85,7 @@ where
             Ok(resp) => {
                 let status = resp.status();
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                    let body = resp.text().await.unwrap_or_default();
+                    let body = read_truncated_error_body(resp).await;
                     last_err = Some(format!("{provider_name} returned {status}: {body}"));
                     continue;
                 }
@@ -68,6 +108,35 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn read_truncated_error_body_caps_long_payload() {
+        let big = "X".repeat(MAX_ERROR_BODY_BYTES * 2);
+        let resp = reqwest::Response::from(
+            http::Response::builder()
+                .status(500)
+                .body(big.clone())
+                .unwrap(),
+        );
+        let body = read_truncated_error_body(resp).await;
+        // Truncation marker present and prefix is exactly the cap.
+        assert!(body.ends_with(" [... truncated]"), "missing marker: {body}");
+        let prefix_len = body.len() - " [... truncated]".len();
+        assert_eq!(prefix_len, MAX_ERROR_BODY_BYTES);
+        assert!(body.starts_with("XXXX"));
+    }
+
+    #[tokio::test]
+    async fn read_truncated_error_body_passes_short_payload() {
+        let resp = reqwest::Response::from(
+            http::Response::builder()
+                .status(400)
+                .body("bad request: missing model")
+                .unwrap(),
+        );
+        let body = read_truncated_error_body(resp).await;
+        assert_eq!(body, "bad request: missing model");
+    }
 
     #[tokio::test]
     async fn retry_returns_success_on_first_try() {
