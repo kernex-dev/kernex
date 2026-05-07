@@ -109,6 +109,36 @@ struct McpFrontmatter {
     args: Vec<String>,
 }
 
+/// Cap on individual skill metadata files (SKILL.md, mcp.json, toolbox.json)
+/// loaded into memory at startup. 256 KiB is far above any realistic skill
+/// — frontmatter is at most a few KB — and bounds the worst-case startup
+/// memory load when walking the entire `{data_dir}/skills/` tree.
+const MAX_SKILL_FILE_BYTES: u64 = 256 * 1024;
+
+/// Read at most `max_bytes` from `path` and return as a UTF-8 String.
+/// Files larger than the cap are rejected outright (the cap is far above
+/// any legitimate skill file, so silent truncation would only hide bugs).
+fn read_capped(path: &Path, max_bytes: u64) -> std::io::Result<String> {
+    use std::io::Read;
+    let metadata = std::fs::metadata(path)?;
+    if metadata.len() > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} exceeds {max_bytes} byte cap (got {})",
+                path.display(),
+                metadata.len()
+            ),
+        ));
+    }
+    let mut f = std::fs::File::open(path)?;
+    let mut buf = String::with_capacity(metadata.len() as usize);
+    // take() is belt-and-braces in case the file grows between metadata
+    // and the read.
+    f.by_ref().take(max_bytes).read_to_string(&mut buf)?;
+    Ok(buf)
+}
+
 /// Validate an MCP command name contains only safe characters and is not
 /// an arbitrary absolute path supplied by skill metadata.
 ///
@@ -201,7 +231,7 @@ struct ToolboxJsonFile {
 /// Load toolboxes from an optional `toolbox.json` file in a skill directory.
 fn load_toolbox_json(skill_dir: &Path) -> Vec<Toolbox> {
     let path = skill_dir.join("toolbox.json");
-    let content = match std::fs::read_to_string(&path) {
+    let content = match read_capped(&path, MAX_SKILL_FILE_BYTES) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
@@ -248,7 +278,7 @@ fn load_toolbox_json(skill_dir: &Path) -> Vec<Toolbox> {
 /// name collision.
 fn load_mcp_json(skill_dir: &Path) -> Vec<McpServer> {
     let mcp_path = skill_dir.join("mcp.json");
-    let content = match std::fs::read_to_string(&mcp_path) {
+    let content = match read_capped(&mcp_path, MAX_SKILL_FILE_BYTES) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
@@ -328,9 +358,15 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             continue;
         }
         let skill_file = path.join("SKILL.md");
-        let content = match std::fs::read_to_string(&skill_file) {
+        let content = match read_capped(&skill_file, MAX_SKILL_FILE_BYTES) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                warn!(
+                    "skills: skipping {} (read failed: {e})",
+                    skill_file.display()
+                );
+                continue;
+            }
         };
         let Some(fm) = parse_skill_file(&content) else {
             warn!("skills: no valid frontmatter in {}", skill_file.display());

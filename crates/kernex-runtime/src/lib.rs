@@ -724,6 +724,7 @@ impl RuntimeBuilder {
         let mut builder = Self::new();
 
         if let Ok(dir) = std::env::var("KERNEX_DATA_DIR") {
+            warn_if_data_dir_unusual(&dir);
             builder = builder.data_dir(&dir);
         }
         #[cfg(feature = "sqlite-store")]
@@ -878,6 +879,40 @@ impl RuntimeBuilder {
 impl Default for RuntimeBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Emit a warning when `KERNEX_DATA_DIR` resolves to a path outside the
+/// usual locations. Misconfigured env on a shared host (e.g.
+/// `KERNEX_DATA_DIR=/etc`) means writes happen in places the operator
+/// likely didn't intend; the sandbox's blocklist policy still allows
+/// writes outside the configured data dir, so the agent could end up
+/// writing `/etc/cron.d/` before anyone notices.
+fn warn_if_data_dir_unusual(dir: &str) {
+    // Only act on absolute paths; relative paths are project-scoped and
+    // resolve under cwd, which is always operator-chosen.
+    let path = std::path::Path::new(dir);
+    if !path.is_absolute() {
+        return;
+    }
+    let s = dir;
+    let in_home = std::env::var("HOME")
+        .ok()
+        .map(|h| !h.is_empty() && s.starts_with(&h))
+        .unwrap_or(false);
+    let usual = in_home
+        || s.starts_with("/tmp/")
+        || s.starts_with("/var/")
+        || s.starts_with("/Users/")
+        || s.starts_with("/home/")
+        || s == "/tmp"
+        || s == "/var";
+    if !usual {
+        tracing::warn!(
+            data_dir = %dir,
+            "KERNEX_DATA_DIR resolves outside $HOME / /tmp / /var — \
+             writes may land in unexpected locations"
+        );
     }
 }
 

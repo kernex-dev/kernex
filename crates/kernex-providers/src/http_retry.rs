@@ -12,6 +12,21 @@ use tracing::warn;
 
 const MAX_RETRIES: u32 = 3;
 const BASE_DELAY_MS: u64 = 1000;
+/// Upper bound on a server-supplied `Retry-After` value. Without a cap a
+/// hostile or buggy provider could pin retries open for days; 30 s is long
+/// enough to weather a real rate-limit window.
+const MAX_RETRY_AFTER_SECS: u64 = 30;
+
+/// Parse a `Retry-After` header value. RFC 7231 allows either a decimal
+/// number of seconds or an HTTP-date; we honour the seconds form (the
+/// common case in JSON APIs) and ignore the date form rather than pulling
+/// in a date parser. Returns `None` for missing/invalid/overlong values.
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let value = headers.get(reqwest::header::RETRY_AFTER)?.to_str().ok()?;
+    let secs: u64 = value.trim().parse().ok()?;
+    let clamped = secs.min(MAX_RETRY_AFTER_SECS);
+    Some(Duration::from_secs(clamped))
+}
 
 /// Maximum number of bytes read from a non-2xx response body when building an
 /// error message. Keeps memory bounded under malicious or accidental floods
@@ -70,10 +85,16 @@ where
     Fut: Future<Output = Result<Response, reqwest::Error>>,
 {
     let mut last_err = None;
+    let mut next_delay: Option<Duration> = None;
 
     for attempt in 0..=MAX_RETRIES {
         if attempt > 0 {
-            let delay = Duration::from_millis(BASE_DELAY_MS * 2u64.pow(attempt - 1));
+            // Honour Retry-After when the previous response provided it; fall
+            // back to exponential backoff. We pick the larger of the two so a
+            // server saying "wait 10s" is always respected, but a server
+            // omitting Retry-After still gets a sensible delay.
+            let backoff = Duration::from_millis(BASE_DELAY_MS * 2u64.pow(attempt - 1));
+            let delay = next_delay.take().map(|d| d.max(backoff)).unwrap_or(backoff);
             warn!(
                 "{provider_name}: retry {attempt}/{MAX_RETRIES} after {}ms",
                 delay.as_millis()
@@ -85,6 +106,7 @@ where
             Ok(resp) => {
                 let status = resp.status();
                 if status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+                    next_delay = parse_retry_after(resp.headers());
                     let body = read_truncated_error_body(resp).await;
                     last_err = Some(format!("{provider_name} returned {status}: {body}"));
                     continue;
@@ -108,6 +130,41 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn parse_retry_after_seconds_form() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(reqwest::header::RETRY_AFTER, "5".parse().unwrap());
+        assert_eq!(parse_retry_after(&h), Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn parse_retry_after_clamps_overlong_values() {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(reqwest::header::RETRY_AFTER, "86400".parse().unwrap());
+        assert_eq!(
+            parse_retry_after(&h),
+            Some(Duration::from_secs(MAX_RETRY_AFTER_SECS))
+        );
+    }
+
+    #[test]
+    fn parse_retry_after_ignores_http_date_form() {
+        // We don't pull in a date parser; HTTP-date Retry-After becomes None
+        // and we fall back to exponential backoff.
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(
+            reqwest::header::RETRY_AFTER,
+            "Wed, 21 Oct 2026 07:28:00 GMT".parse().unwrap(),
+        );
+        assert_eq!(parse_retry_after(&h), None);
+    }
+
+    #[test]
+    fn parse_retry_after_missing_returns_none() {
+        let h = reqwest::header::HeaderMap::new();
+        assert_eq!(parse_retry_after(&h), None);
+    }
 
     #[tokio::test]
     async fn read_truncated_error_body_caps_long_payload() {
