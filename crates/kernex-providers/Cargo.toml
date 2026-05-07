@@ -31,3 +31,6 @@ bedrock = ["dep:sha2", "dep:hmac"]
 
 [dev-dependencies]
 http = { workspace = true }
+
+[lints]
+workspace = true

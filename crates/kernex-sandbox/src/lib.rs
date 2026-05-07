@@ -1,7 +1,5 @@
 //! # kernex-sandbox
-#![deny(clippy::unwrap_used, clippy::expect_used)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-#![deny(rustdoc::broken_intra_doc_links)]
 //!
 //! OS-level system protection for AI agent subprocesses.
 //!

@@ -41,3 +41,14 @@ kernex-memory = { version = "0.4.0", path = "crates/kernex-memory" }
 kernex-skills = { version = "0.4.0", path = "crates/kernex-skills" }
 kernex-pipelines = { version = "0.4.0", path = "crates/kernex-pipelines" }
 kernex-runtime = { version = "0.4.0", path = "crates/kernex-runtime" }
+
+# Centralized lint configuration. Each crate inherits these by setting
+# `[lints] workspace = true` in its own Cargo.toml. Test code is exempted
+# from unwrap/expect denials via `#![cfg_attr(test, allow(...))]` in each
+# crate's lib.rs because Cargo's lint table cannot express cfg_attr.
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[workspace.lints.rustdoc]
+broken_intra_doc_links = "deny"
