@@ -18,6 +18,14 @@
 //!   `/mnt`; restricted access to `{data_dir}/data/` and `config.toml`.
 //! - **Other**: Falls back to a plain command with a warning.
 //!
+//! [`protected_command`] is best-effort and never fails: when the host
+//! cannot apply OS-level enforcement it returns an unsandboxed command
+//! and logs a warning. For deployments where running unsandboxed is
+//! unacceptable, set `SandboxProfile::require_os_enforcement = true` and
+//! call [`try_protected_command`] instead, which surfaces an
+//! [`std::io::Error`] when enforcement is unavailable. [`os_enforcement_available`]
+//! reports the host's capability without building a command.
+//!
 //! Also provides [`is_write_blocked`] and [`is_read_blocked`] for code-level
 //! enforcement in tool executors (protects memory.db and config.toml on all
 //! platforms).
@@ -35,6 +43,14 @@ pub struct SandboxProfile {
     pub allowed_paths: Vec<PathBuf>,
     /// Extra paths that should be completely blocked for read/write.
     pub blocked_paths: Vec<PathBuf>,
+    /// When `true`, [`try_protected_command`] returns an error if OS-level
+    /// enforcement is unavailable (no Seatbelt on macOS, no Landlock kernel
+    /// support on Linux, or an unsupported platform). Defaults to `false`,
+    /// which preserves the historical fail-open behaviour of
+    /// [`protected_command`]: a warning is logged and a plain command is
+    /// returned. Set this to `true` for security-sensitive deployments where
+    /// running unsandboxed is unacceptable.
+    pub require_os_enforcement: bool,
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -46,18 +62,60 @@ mod seatbelt;
 #[cfg(target_os = "linux")]
 mod landlock_sandbox;
 
-/// Build a [`Command`] with OS-level system protection.
+/// Build a [`Command`] with OS-level system protection (best-effort).
 ///
-/// Always active — blocks writes to dangerous system directories and
-/// the runtime's core data directory (memory.db). No configuration needed.
+/// Blocks writes to dangerous system directories and the runtime's core
+/// data directory (memory.db). On platforms without OS-level enforcement
+/// (no `/usr/bin/sandbox-exec`, no Landlock kernel support, Windows, etc.)
+/// this falls back to a plain command with a warning, preserving the
+/// historical fail-open behaviour. For deployments where running
+/// unsandboxed is unacceptable, set `profile.require_os_enforcement = true`
+/// and use [`try_protected_command`].
 ///
 /// `data_dir` is the runtime data directory (e.g. `~/.kernex/`). Writes to
 /// `{data_dir}/data/` are blocked (protects memory.db). All other paths
 /// under `data_dir` (workspace, skills, projects) remain writable.
-///
-/// On unsupported platforms, logs a warning and returns a plain command.
 pub fn protected_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
     platform_command(program, data_dir, profile)
+}
+
+/// Strict variant of [`protected_command`].
+///
+/// Returns an [`io::Error`](std::io::Error) of kind [`Unsupported`](std::io::ErrorKind::Unsupported)
+/// when the host cannot apply OS-level enforcement *and*
+/// `profile.require_os_enforcement` is `true`. When the flag is `false`
+/// this behaves identically to [`protected_command`] and always returns
+/// `Ok(Command)`.
+pub fn try_protected_command(
+    program: &str,
+    data_dir: &Path,
+    profile: &SandboxProfile,
+) -> std::io::Result<Command> {
+    if profile.require_os_enforcement && !os_enforcement_available() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "OS-level sandbox enforcement is required but unavailable on this host",
+        ));
+    }
+    Ok(platform_command(program, data_dir, profile))
+}
+
+/// Returns `true` when the current host can apply OS-level sandbox
+/// enforcement (Seatbelt on macOS or Landlock on Linux). Used by
+/// [`try_protected_command`] to honour `require_os_enforcement`.
+pub fn os_enforcement_available() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        Path::new("/usr/bin/sandbox-exec").exists()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Path::new("/sys/kernel/security/landlock/abi_version").exists()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
 }
 
 /// Best-effort path canonicalization. Returns the canonicalized path or the
@@ -383,6 +441,36 @@ mod tests {
             None,
             None
         ));
+    }
+
+    #[test]
+    fn test_try_protected_command_lenient_returns_ok() {
+        // require_os_enforcement = false → always Ok, even when the platform
+        // cannot enforce.
+        let data_dir = PathBuf::from("/tmp/ws");
+        let profile = SandboxProfile::default();
+        let result = try_protected_command("claude", &data_dir, &profile);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_try_protected_command_strict_matches_capability() {
+        // require_os_enforcement = true → result depends on host capability.
+        // On a host that supports enforcement we expect Ok; on one that does
+        // not we expect Err(ErrorKind::Unsupported). This guards against the
+        // strict flag silently being ignored.
+        let data_dir = PathBuf::from("/tmp/ws");
+        let profile = SandboxProfile {
+            require_os_enforcement: true,
+            ..Default::default()
+        };
+        let result = try_protected_command("claude", &data_dir, &profile);
+        if os_enforcement_available() {
+            assert!(result.is_ok(), "expected Ok on a host with enforcement");
+        } else {
+            let err = result.expect_err("expected Err on a host without enforcement");
+            assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        }
     }
 
     #[test]
