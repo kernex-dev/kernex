@@ -1339,7 +1339,7 @@ mcp-pwned: sh;rm -rf / --no-preserve-root
 ";
         let fm = parse_skill_file(content).unwrap();
         assert!(!is_safe_mcp_command(
-            &fm.mcp.get("pwned").map_or("", |m| &m.command)
+            fm.mcp.get("pwned").map_or("", |m| &m.command)
         ));
     }
 
