@@ -51,7 +51,7 @@ use kernex_core::traits::Provider;
 use kernex_core::traits::StreamingProvider;
 use kernex_core::traits::Summarizer;
 #[cfg(feature = "sqlite-store")]
-use kernex_memory::Store;
+use kernex_memory::{Store, UsageBreakdown};
 use kernex_skills::{
     build_skill_prompt, match_skill_toolboxes, match_skill_triggers, Project, Skill,
 };
@@ -273,9 +273,15 @@ impl Runtime {
         if let Some(tokens) = response.metadata.tokens_used {
             let model = response.metadata.model.as_deref().unwrap_or("unknown");
             let session = response.metadata.session_id.as_deref().unwrap_or("default");
+            let breakdown = UsageBreakdown {
+                input_tokens: response.metadata.input_tokens,
+                output_tokens: response.metadata.output_tokens,
+                cache_read_tokens: response.metadata.cache_read_tokens,
+                cache_creation_tokens: response.metadata.cache_creation_tokens,
+            };
             if let Err(e) = self
                 .store
-                .record_usage(&request.sender_id, session, tokens, model)
+                .record_usage_full(&request.sender_id, session, tokens, model, breakdown)
                 .await
             {
                 tracing::warn!("failed to record token usage: {e}");
@@ -601,9 +607,15 @@ impl Runtime {
         if let Some(tokens) = response.metadata.tokens_used {
             let model = response.metadata.model.as_deref().unwrap_or("unknown");
             let session = response.metadata.session_id.as_deref().unwrap_or("default");
+            let breakdown = UsageBreakdown {
+                input_tokens: response.metadata.input_tokens,
+                output_tokens: response.metadata.output_tokens,
+                cache_read_tokens: response.metadata.cache_read_tokens,
+                cache_creation_tokens: response.metadata.cache_creation_tokens,
+            };
             if let Err(e) = self
                 .store
-                .record_usage(&request.sender_id, session, tokens, model)
+                .record_usage_full(&request.sender_id, session, tokens, model, breakdown)
                 .await
             {
                 tracing::warn!("failed to record token usage: {e}");
