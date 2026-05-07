@@ -448,6 +448,7 @@ impl Runtime {
                         processing_time_ms: elapsed_ms,
                         model: None,
                         session_id: None,
+                        ..Default::default()
                     },
                 };
                 if let Err(e) = store

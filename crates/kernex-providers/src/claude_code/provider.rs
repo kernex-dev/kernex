@@ -118,6 +118,7 @@ impl Provider for ClaudeCodeProvider {
                 processing_time_ms: elapsed_ms,
                 model,
                 session_id: returned_session_id,
+                ..Default::default()
             },
         })
     }

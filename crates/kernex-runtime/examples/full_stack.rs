@@ -61,6 +61,7 @@ impl Provider for MockProvider {
                 processing_time_ms: 0,
                 model: Some("mock-1.0".to_string()),
                 session_id: None,
+                ..Default::default()
             },
         })
     }

@@ -18,7 +18,9 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::http_retry::{read_truncated_error_body, send_with_retry};
-use crate::tools::{build_response, tools_enabled, ToolDef, ToolExecutor};
+use crate::tools::{
+    build_response_with_usage, tools_enabled, ToolDef, ToolExecutor, UsageBreakdown,
+};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -229,6 +231,15 @@ struct AnthropicUsage {
     input_tokens: u64,
     #[serde(default)]
     output_tokens: u64,
+    /// Tokens served from the prompt cache. Anthropic only emits this when
+    /// `cache_control` blocks were present on the request and the cache
+    /// matched; otherwise the field is absent.
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    /// Tokens written into the prompt cache. Present when a cache miss
+    /// triggered a fresh write, absent on pure read-or-no-cache responses.
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
 }
 
 /// Convert ToolDef to Anthropic format.
@@ -350,19 +361,37 @@ impl Provider for AnthropicProvider {
         })?;
 
         let text = extract_text_from_response(&parsed);
+        // Sum every billed dimension so the historical `tokens_used` total
+        // stays correct even when cache reads/writes are present.
         let tokens = parsed
             .usage
             .as_ref()
-            .map(|u| u.input_tokens + u.output_tokens)
+            .map(|u| {
+                u.input_tokens
+                    + u.output_tokens
+                    + u.cache_read_input_tokens.unwrap_or(0)
+                    + u.cache_creation_input_tokens.unwrap_or(0)
+            })
             .unwrap_or(0);
+        let usage = parsed
+            .usage
+            .as_ref()
+            .map(|u| UsageBreakdown {
+                input_tokens: Some(u.input_tokens),
+                output_tokens: Some(u.output_tokens),
+                cache_read_tokens: u.cache_read_input_tokens,
+                cache_creation_tokens: u.cache_creation_input_tokens,
+            })
+            .unwrap_or_default();
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
-        Ok(build_response(
+        Ok(build_response_with_usage(
             text,
             "anthropic",
             tokens,
             elapsed_ms,
             parsed.model,
+            usage,
         ))
     }
 
@@ -407,6 +436,13 @@ impl AnthropicProvider {
 
         let mut last_model: Option<String> = None;
         let mut total_tokens: u64 = 0;
+        // Per-dimension accumulation across the agentic loop so the final
+        // CompletionMeta reflects the entire turn, not just the last
+        // sub-request.
+        let mut total_input_tokens: u64 = 0;
+        let mut total_output_tokens: u64 = 0;
+        let mut total_cache_read: u64 = 0;
+        let mut total_cache_creation: u64 = 0;
 
         for turn in 0..max_turns {
             let body = AnthropicRequest {
@@ -465,7 +501,13 @@ impl AnthropicProvider {
                 last_model = Some(m.clone());
             }
             if let Some(ref u) = parsed.usage {
-                total_tokens += u.input_tokens + u.output_tokens;
+                let cache_read = u.cache_read_input_tokens.unwrap_or(0);
+                let cache_creation = u.cache_creation_input_tokens.unwrap_or(0);
+                total_tokens += u.input_tokens + u.output_tokens + cache_read + cache_creation;
+                total_input_tokens += u.input_tokens;
+                total_output_tokens += u.output_tokens;
+                total_cache_read += cache_read;
+                total_cache_creation += cache_creation;
             }
 
             // Check for tool_use in response.
@@ -533,23 +575,53 @@ impl AnthropicProvider {
             };
 
             let elapsed_ms = start.elapsed().as_millis() as u64;
-            return Ok(build_response(
+            let usage = UsageBreakdown {
+                input_tokens: Some(total_input_tokens),
+                output_tokens: Some(total_output_tokens),
+                cache_read_tokens: if total_cache_read > 0 {
+                    Some(total_cache_read)
+                } else {
+                    None
+                },
+                cache_creation_tokens: if total_cache_creation > 0 {
+                    Some(total_cache_creation)
+                } else {
+                    None
+                },
+            };
+            return Ok(build_response_with_usage(
                 text,
                 "anthropic",
                 total_tokens,
                 elapsed_ms,
                 last_model,
+                usage,
             ));
         }
 
         // Max turns exhausted.
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        Ok(build_response(
+        let usage = UsageBreakdown {
+            input_tokens: Some(total_input_tokens),
+            output_tokens: Some(total_output_tokens),
+            cache_read_tokens: if total_cache_read > 0 {
+                Some(total_cache_read)
+            } else {
+                None
+            },
+            cache_creation_tokens: if total_cache_creation > 0 {
+                Some(total_cache_creation)
+            } else {
+                None
+            },
+        };
+        Ok(build_response_with_usage(
             format!("anthropic: reached max turns ({max_turns}) without final response"),
             "anthropic",
             total_tokens,
             elapsed_ms,
             last_model,
+            usage,
         ))
     }
 }
@@ -830,6 +902,39 @@ mod tests {
                 .map(|u| u.input_tokens + u.output_tokens),
             Some(15)
         );
+    }
+
+    #[test]
+    fn test_anthropic_response_parses_cache_fields() {
+        let json = r#"{
+            "content":[{"type":"text","text":"hi"}],
+            "model":"claude-sonnet-4-20250514",
+            "usage":{
+                "input_tokens":12,
+                "output_tokens":3,
+                "cache_read_input_tokens":1024,
+                "cache_creation_input_tokens":512
+            },
+            "stop_reason":"end_turn"
+        }"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 3);
+        assert_eq!(usage.cache_read_input_tokens, Some(1024));
+        assert_eq!(usage.cache_creation_input_tokens, Some(512));
+    }
+
+    #[test]
+    fn test_anthropic_response_omits_cache_fields_when_absent() {
+        // Responses without prompt-cache hits omit the fields entirely;
+        // we must default them to None rather than 0 so downstream code can
+        // distinguish "no cache info" from "cache info but zero".
+        let json = r#"{"content":[{"type":"text","text":"x"}],"model":"claude-sonnet-4-20250514","usage":{"input_tokens":1,"output_tokens":1},"stop_reason":"end_turn"}"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        let usage = resp.usage.unwrap();
+        assert_eq!(usage.cache_read_input_tokens, None);
+        assert_eq!(usage.cache_creation_input_tokens, None);
     }
 
     #[test]
