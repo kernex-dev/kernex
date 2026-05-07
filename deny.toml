@@ -1,0 +1,47 @@
+# cargo-deny policy for the kernex workspace.
+#
+# Run locally with: cargo deny check
+# CI runs: cargo deny check (advisories, bans, licenses, sources).
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+ignore = []
+
+[licenses]
+version = 2
+# Allowed SPDX expressions. Anything not on this list trips a deny.
+# Keep this list trimmed to licenses actually encountered in the dep tree
+# so unused entries do not silently widen policy.
+allow = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0", # webpki-roots data license
+]
+confidence-threshold = 0.93
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+highlight = "all"
+deny = [
+    # We deliberately use rustls everywhere. Reject native-tls / openssl-sys.
+    { name = "openssl" },
+    { name = "openssl-sys" },
+    { name = "native-tls" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
