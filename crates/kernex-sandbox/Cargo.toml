@@ -14,3 +14,6 @@ anyhow = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
+
+[lints]
+workspace = true

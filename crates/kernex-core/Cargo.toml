@@ -21,3 +21,6 @@ tokio = { workspace = true, features = ["sync"] }
 
 [features]
 yaml = ["dep:serde_yml"]
+
+[lints]
+workspace = true
