@@ -20,6 +20,10 @@ const MAX_READ_OUTPUT: usize = 50_000;
 const BASH_TIMEOUT_SECS: u64 = 120;
 /// Default toolbox script timeout in seconds.
 const TOOLBOX_TIMEOUT_SECS: u64 = 120;
+/// Maximum length of a `grep` pattern. Bounds ReDoS attack surface:
+/// pathological backtracking regexes hit this length cap before the
+/// 30 s timeout becomes the only line of defence.
+const MAX_GREP_PATTERN_LEN: usize = 1024;
 
 /// A tool definition in provider-agnostic format.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -593,6 +597,18 @@ impl ToolExecutor {
                 is_error: true,
             };
         }
+        // Length cap on the pattern to limit ReDoS surface. The 30 s
+        // timeout is the ultimate safety net, but a tool-using model that
+        // sets `pattern` to a pathological backtracking regex (e.g.
+        // `(a+)+$`) on a large repo can still burn 30 s of CPU per call.
+        // 1024 chars is generous for any realistic search and shrinks the
+        // attack window.
+        if pattern.len() > MAX_GREP_PATTERN_LEN {
+            return ToolResult {
+                content: format!("Error: 'pattern' exceeds {MAX_GREP_PATTERN_LEN}-char limit"),
+                is_error: true,
+            };
+        }
 
         let search_path = args
             .get("path")
@@ -609,7 +625,16 @@ impl ToolExecutor {
 
         // Prefer `rg` (ripgrep) when available; fall back to `grep -r`.
         let (cmd_name, mut argv): (&str, Vec<String>) = if which_exists("rg") {
-            let mut a = vec!["--line-number".to_string(), "--color=never".to_string()];
+            let mut a = vec![
+                "--line-number".to_string(),
+                "--color=never".to_string(),
+                // Cap the compiled regex DFA size to 16 MiB. Without this,
+                // ripgrep allocates up to 500 MiB by default for complex
+                // patterns. 16 MiB is plenty for legitimate searches and
+                // bounds the worst-case memory footprint.
+                "--regex-size-limit".to_string(),
+                "16M".to_string(),
+            ];
             if let Some(g) = glob_pattern {
                 a.push("--glob".to_string());
                 a.push(g.to_string());
