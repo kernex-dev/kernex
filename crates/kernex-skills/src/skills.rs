@@ -316,26 +316,39 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             continue;
         };
         let available = fm.requires.iter().all(|t| which_exists(t));
-        // Collect MCP servers from frontmatter.
+        // Collect MCP servers from frontmatter. Each command must (a) pass the
+        // shell-metacharacter safety filter, and (b) be permitted by the
+        // skill's declared `permissions.commands` allow-list. Without the
+        // allow-list check, a skill could declare `permissions.commands: []`
+        // (or omit it entirely) and still ship `mcp.foo.command =
+        // /tmp/payload`, since the loader's only filter was metachar safety.
         let mut mcp_servers: Vec<McpServer> = fm
             .mcp
             .into_iter()
             .filter_map(|(name, mfm)| {
-                if is_safe_mcp_command(&mfm.command) {
-                    Some(McpServer {
-                        name,
-                        command: mfm.command,
-                        args: mfm.args,
-                        ..Default::default()
-                    })
-                } else {
+                if !is_safe_mcp_command(&mfm.command) {
                     warn!(
                         "skills: rejected unsafe MCP command {:?} in {}",
                         mfm.command,
                         skill_file.display()
                     );
-                    None
+                    return None;
                 }
+                if !fm.permissions.allows_command(&mfm.command) {
+                    warn!(
+                        "skills: MCP command {:?} not in permissions.commands allow-list ({:?}) in {}",
+                        mfm.command,
+                        fm.permissions.commands,
+                        skill_file.display()
+                    );
+                    return None;
+                }
+                Some(McpServer {
+                    name,
+                    command: mfm.command,
+                    args: mfm.args,
+                    ..Default::default()
+                })
             })
             .collect();
 
@@ -349,29 +362,39 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             }
         }
 
-        // Collect toolboxes from frontmatter.
+        // Collect toolboxes from frontmatter. Same two-step filter as MCP
+        // servers above: shell-metachar safety, then permissions.commands
+        // allow-list enforcement.
         let mut toolboxes: Vec<Toolbox> = fm
             .toolbox
             .into_iter()
             .filter_map(|(name, tbf)| {
-                if is_safe_mcp_command(&tbf.command) {
-                    Some(Toolbox {
-                        name,
-                        description: tbf.description,
-                        parameters: tbf.parameters,
-                        command: tbf.command,
-                        args: tbf.args,
-                        env: tbf.env,
-                        search_hints: Vec::new(),
-                    })
-                } else {
+                if !is_safe_mcp_command(&tbf.command) {
                     warn!(
                         "skills: rejected unsafe toolbox command {:?} in {}",
                         tbf.command,
                         skill_file.display()
                     );
-                    None
+                    return None;
                 }
+                if !fm.permissions.allows_command(&tbf.command) {
+                    warn!(
+                        "skills: toolbox command {:?} not in permissions.commands allow-list ({:?}) in {}",
+                        tbf.command,
+                        fm.permissions.commands,
+                        skill_file.display()
+                    );
+                    return None;
+                }
+                Some(Toolbox {
+                    name,
+                    description: tbf.description,
+                    parameters: tbf.parameters,
+                    command: tbf.command,
+                    args: tbf.args,
+                    env: tbf.env,
+                    search_hints: Vec::new(),
+                })
             })
             .collect();
 

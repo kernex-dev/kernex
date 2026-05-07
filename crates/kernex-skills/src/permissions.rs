@@ -60,6 +60,29 @@ impl Permissions {
             .filter_map(|p| p.strip_prefix('!'))
             .collect()
     }
+
+    /// Does this permission set allow the given command to be executed?
+    ///
+    /// - If `commands` is empty, no restriction is in effect → returns `true`.
+    /// - Allow-list entries containing `/` are interpreted as full paths and
+    ///   must match `command` exactly (e.g. `/usr/local/bin/mcp-foo` only
+    ///   permits that path, not `/tmp/mcp-foo`).
+    /// - Entries without `/` are interpreted as basenames and match any
+    ///   command whose final path segment equals the entry (e.g. `npx`
+    ///   permits `/usr/bin/npx`, `/opt/node/bin/npx`, or bare `npx`).
+    pub fn allows_command(&self, command: &str) -> bool {
+        if self.commands.is_empty() {
+            return true;
+        }
+        let basename = command.rsplit('/').next().unwrap_or(command);
+        self.commands.iter().any(|allowed| {
+            if allowed.contains('/') {
+                allowed == command
+            } else {
+                allowed == basename
+            }
+        })
+    }
 }
 
 /// Trust level assigned to a skill based on its source.
@@ -420,6 +443,39 @@ mod tests {
             commands: vec!["npx".into()],
         };
         assert!(!detector.has_high_risk(&perms));
+    }
+
+    #[test]
+    fn test_allows_command_unrestricted_when_empty() {
+        let perms = Permissions::default();
+        assert!(perms.allows_command("/usr/bin/npx"));
+        assert!(perms.allows_command("anything"));
+    }
+
+    #[test]
+    fn test_allows_command_basename_match() {
+        let perms = Permissions {
+            commands: vec!["npx".into()],
+            ..Default::default()
+        };
+        assert!(perms.allows_command("npx"));
+        assert!(perms.allows_command("/usr/bin/npx"));
+        assert!(perms.allows_command("/opt/node/bin/npx"));
+        assert!(!perms.allows_command("rm"));
+        assert!(!perms.allows_command("/tmp/payload"));
+    }
+
+    #[test]
+    fn test_allows_command_full_path_match() {
+        // Allow-list entries containing '/' must match exactly — basenames
+        // alone, or alternative paths, do not satisfy them.
+        let perms = Permissions {
+            commands: vec!["/usr/local/bin/mcp-foo".into()],
+            ..Default::default()
+        };
+        assert!(perms.allows_command("/usr/local/bin/mcp-foo"));
+        assert!(!perms.allows_command("mcp-foo"));
+        assert!(!perms.allows_command("/tmp/mcp-foo"));
     }
 
     #[test]
