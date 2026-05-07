@@ -975,8 +975,8 @@ description = \"No deps.\"
 
     #[test]
     fn test_load_skills_valid() {
-        let tmp = std::env::temp_dir().join("__kernex_test_skills_valid__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skill_dir = tmp.join("skills/my-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
@@ -990,13 +990,12 @@ description = \"No deps.\"
         assert_eq!(skills[0].name, "my-skill");
         assert_eq!(skills[0].description, "A test skill.");
         assert!(skills[0].path.ends_with("my-skill/SKILL.md"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_skills_yaml_format() {
-        let tmp = std::env::temp_dir().join("__kernex_test_skills_yaml__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skill_dir = tmp.join("skills/playwright");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
@@ -1010,13 +1009,12 @@ description = \"No deps.\"
         assert_eq!(skills[0].name, "playwright");
         assert_eq!(skills[0].description, "Browser automation.");
         assert_eq!(skills[0].requires, vec!["npx"]);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_migrate_flat_skills() {
-        let tmp = std::env::temp_dir().join("__kernex_test_migrate__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skills_dir = tmp.join("skills");
         std::fs::create_dir_all(&skills_dir).unwrap();
 
@@ -1041,8 +1039,6 @@ description = \"No deps.\"
         let existing_content = std::fs::read_to_string(existing_dir.join("SKILL.md")).unwrap();
         assert_eq!(existing_content, "original");
         assert!(skills_dir.join("existing.md").exists());
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     // --- MCP trigger + skill tests ---
@@ -1215,8 +1211,8 @@ description = \"No trigger or MCP.\"
 
     #[test]
     fn test_load_skills_with_trigger_and_mcp() {
-        let tmp = std::env::temp_dir().join("__kernex_test_skills_mcp__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skill_dir = tmp.join("skills/pw");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
@@ -1231,7 +1227,6 @@ description = \"No trigger or MCP.\"
         assert_eq!(skills[0].mcp_servers.len(), 1);
         assert_eq!(skills[0].mcp_servers[0].name, "playwright");
         assert_eq!(skills[0].mcp_servers[0].command, "npx");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1277,104 +1272,92 @@ Body text.
 
     #[test]
     fn test_load_mcp_json_basic() {
-        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_basic__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         std::fs::write(
             tmp.join("mcp.json"),
             r#"{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp","--headless"]}}}"#,
         )
         .unwrap();
 
-        let servers = load_mcp_json(&tmp);
+        let servers = load_mcp_json(tmp);
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "playwright");
         assert_eq!(servers[0].command, "npx");
         assert_eq!(servers[0].args, vec!["@playwright/mcp", "--headless"]);
         assert!(servers[0].env.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_mcp_json_with_env() {
-        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_env__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         std::fs::write(
             tmp.join("mcp.json"),
             r#"{"mcpServers":{"postgres":{"command":"npx","args":["@pg/mcp"],"env":{"DATABASE_URL":"postgres://localhost/test"}}}}"#,
         )
         .unwrap();
 
-        let servers = load_mcp_json(&tmp);
+        let servers = load_mcp_json(tmp);
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "postgres");
         assert_eq!(
             servers[0].env.get("DATABASE_URL").unwrap(),
             "postgres://localhost/test"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_mcp_json_missing_file() {
-        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_missing__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
 
-        let servers = load_mcp_json(&tmp);
+        let servers = load_mcp_json(tmp);
         assert!(servers.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_mcp_json_invalid_json() {
-        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_invalid__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         std::fs::write(tmp.join("mcp.json"), "not valid json").unwrap();
 
-        let servers = load_mcp_json(&tmp);
+        let servers = load_mcp_json(tmp);
         assert!(servers.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_mcp_json_rejects_unsafe_command() {
-        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_unsafe__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         std::fs::write(
             tmp.join("mcp.json"),
             r#"{"mcpServers":{"evil":{"command":"sh -c 'rm -rf /'","args":[]}}}"#,
         )
         .unwrap();
 
-        let servers = load_mcp_json(&tmp);
+        let servers = load_mcp_json(tmp);
         assert!(servers.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_mcp_json_multiple_servers() {
-        let tmp = std::env::temp_dir().join("__kernex_test_mcp_json_multi__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         std::fs::write(
             tmp.join("mcp.json"),
             r#"{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp"]},"postgres":{"command":"npx","args":["@pg/mcp"]}}}"#,
         )
         .unwrap();
 
-        let servers = load_mcp_json(&tmp);
+        let servers = load_mcp_json(tmp);
         assert_eq!(servers.len(), 2);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_skills_merges_mcp_json() {
-        let tmp = std::env::temp_dir().join("__kernex_test_skills_merge_mcp__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skill_dir = tmp.join("skills/my-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
 
@@ -1409,13 +1392,12 @@ Body text.
             .find(|s| s.name == "from-json")
             .unwrap();
         assert_eq!(json_srv.env.get("KEY").unwrap(), "val");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_skills_mcp_json_overrides_frontmatter() {
-        let tmp = std::env::temp_dir().join("__kernex_test_skills_mcp_override__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skill_dir = tmp.join("skills/my-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
 
@@ -1438,7 +1420,6 @@ Body text.
         assert_eq!(skills[0].mcp_servers.len(), 1);
         assert_eq!(skills[0].mcp_servers[0].name, "shared");
         assert_eq!(skills[0].mcp_servers[0].args, vec!["@new/mcp"]);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -1482,69 +1463,61 @@ Body text.
 
     #[test]
     fn test_load_toolbox_json_basic() {
-        let tmp = std::env::temp_dir().join("__kernex_test_toolbox_json_basic__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         std::fs::write(
             tmp.join("toolbox.json"),
             r#"{"toolboxes":{"lint":{"description":"Run linter.","command":"bash","args":["lint.sh"]}}}"#,
         )
         .unwrap();
 
-        let toolboxes = load_toolbox_json(&tmp);
+        let toolboxes = load_toolbox_json(tmp);
         assert_eq!(toolboxes.len(), 1);
         assert_eq!(toolboxes[0].name, "lint");
         assert_eq!(toolboxes[0].command, "bash");
         assert_eq!(toolboxes[0].description, "Run linter.");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_toolbox_json_with_env_and_params() {
-        let tmp = std::env::temp_dir().join("__kernex_test_toolbox_json_env__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         std::fs::write(
             tmp.join("toolbox.json"),
             r#"{"toolboxes":{"deploy":{"description":"Deploy app.","command":"bash","args":["deploy.sh"],"env":{"ENV":"prod"},"parameters":{"type":"object","properties":{"target":{"type":"string"}}}}}}"#,
         )
         .unwrap();
 
-        let toolboxes = load_toolbox_json(&tmp);
+        let toolboxes = load_toolbox_json(tmp);
         assert_eq!(toolboxes.len(), 1);
         assert_eq!(toolboxes[0].env.get("ENV").unwrap(), "prod");
         assert!(toolboxes[0].parameters.get("properties").is_some());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_toolbox_json_missing_file() {
-        let tmp = std::env::temp_dir().join("__kernex_test_toolbox_json_missing__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        assert!(load_toolbox_json(&tmp).is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
+        assert!(load_toolbox_json(tmp).is_empty());
     }
 
     #[test]
     fn test_load_toolbox_json_rejects_unsafe_command() {
-        let tmp = std::env::temp_dir().join("__kernex_test_toolbox_json_unsafe__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         std::fs::write(
             tmp.join("toolbox.json"),
             r#"{"toolboxes":{"evil":{"description":"Bad.","command":"sh -c 'rm -rf /'"}}}"#,
         )
         .unwrap();
 
-        assert!(load_toolbox_json(&tmp).is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(load_toolbox_json(tmp).is_empty());
     }
 
     #[test]
     fn test_load_skills_with_toolbox() {
-        let tmp = std::env::temp_dir().join("__kernex_test_skills_toolbox__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skill_dir = tmp.join("skills/lint");
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
@@ -1558,13 +1531,12 @@ Body text.
         assert_eq!(skills[0].toolboxes.len(), 1);
         assert_eq!(skills[0].toolboxes[0].name, "check");
         assert_eq!(skills[0].toolboxes[0].command, "bash");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_skills_merges_toolbox_json() {
-        let tmp = std::env::temp_dir().join("__kernex_test_skills_merge_toolbox__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skill_dir = tmp.join("skills/my-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
 
@@ -1590,13 +1562,12 @@ Body text.
             .collect();
         assert!(names.contains(&"from-fm"));
         assert!(names.contains(&"from-json"));
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_skills_toolbox_json_overrides_frontmatter() {
-        let tmp = std::env::temp_dir().join("__kernex_test_skills_toolbox_override__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let skill_dir = tmp.join("skills/my-skill");
         std::fs::create_dir_all(&skill_dir).unwrap();
 
@@ -1617,7 +1588,6 @@ Body text.
         assert_eq!(skills[0].toolboxes.len(), 1);
         assert_eq!(skills[0].toolboxes[0].description, "New.");
         assert_eq!(skills[0].toolboxes[0].args, vec!["new"]);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     fn make_toolbox(name: &str) -> Toolbox {

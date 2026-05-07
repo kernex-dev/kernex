@@ -922,8 +922,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_runtime_builder_creates_runtime() {
-        let tmp = std::env::temp_dir().join("__kernex_test_runtime__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
 
         let runtime = RuntimeBuilder::new()
             .data_dir(tmp.to_str().unwrap())
@@ -937,15 +937,12 @@ mod tests {
         assert_eq!(runtime.channel, "cli");
         assert!(runtime.project.is_none());
         assert!(std::path::Path::new(&runtime.data_dir).exists());
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
     async fn test_runtime_builder_custom_db_path() {
-        let tmp = std::env::temp_dir().join("__kernex_test_runtime_db__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
 
         let db = tmp.join("custom.db");
         let runtime = RuntimeBuilder::new()
@@ -957,13 +954,12 @@ mod tests {
 
         assert!(db.exists());
         drop(runtime);
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
     async fn test_runtime_builder_with_config() {
-        let tmp = std::env::temp_dir().join("__kernex_test_runtime_cfg__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
 
         let runtime = RuntimeBuilder::new()
             .data_dir(tmp.to_str().unwrap())
@@ -977,16 +973,14 @@ mod tests {
         assert_eq!(runtime.system_prompt, "You are helpful.");
         assert_eq!(runtime.channel, "api");
         assert_eq!(runtime.project, Some("my-project".to_string()));
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
     async fn test_runtime_builder_from_config() {
         use kernex_core::config::{KernexConfig, RuntimeConfig};
 
-        let tmp = std::env::temp_dir().join("__kernex_test_from_config__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
 
         let cfg = KernexConfig {
             runtime: RuntimeConfig {
@@ -1005,17 +999,14 @@ mod tests {
         assert_eq!(runtime.channel, "slack");
         assert_eq!(runtime.project, Some("my-proj".to_string()));
         assert_eq!(runtime.system_prompt, "Be concise.");
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[tokio::test]
     async fn test_runtime_builder_from_file_toml() {
         use std::io::Write;
 
-        let tmp = std::env::temp_dir().join("__kernex_test_from_file__");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
 
         let cfg_path = tmp.join("agent.toml");
         let mut f = std::fs::File::create(&cfg_path).unwrap();
@@ -1041,7 +1032,5 @@ system_prompt = "From file."
         assert_eq!(runtime.channel, "api");
         assert_eq!(runtime.project, Some("file-proj".to_string()));
         assert_eq!(runtime.system_prompt, "From file.");
-
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

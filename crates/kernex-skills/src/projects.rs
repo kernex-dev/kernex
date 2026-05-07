@@ -155,8 +155,8 @@ mod tests {
 
     #[test]
     fn test_load_projects_valid() {
-        let tmp = std::env::temp_dir().join("__kernex_test_projects_valid__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let proj_dir = tmp.join("projects/my-project");
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(proj_dir.join("ROLE.md"), "You are a helpful assistant.").unwrap();
@@ -165,32 +165,29 @@ mod tests {
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].name, "my-project");
         assert_eq!(projects[0].instructions, "You are a helpful assistant.");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_projects_empty_instructions() {
-        let tmp = std::env::temp_dir().join("__kernex_test_projects_empty__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let proj_dir = tmp.join("projects/empty-proj");
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(proj_dir.join("ROLE.md"), "   \n  ").unwrap();
 
         let projects = load_projects(tmp.to_str().unwrap());
         assert!(projects.is_empty(), "empty instructions should be skipped");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_projects_no_instructions_file() {
-        let tmp = std::env::temp_dir().join("__kernex_test_projects_no_file__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let proj_dir = tmp.join("projects/no-file");
         std::fs::create_dir_all(&proj_dir).unwrap();
 
         let projects = load_projects(tmp.to_str().unwrap());
         assert!(projects.is_empty(), "dir without ROLE.md should be skipped");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
@@ -260,8 +257,8 @@ Body text.
 
     #[test]
     fn test_load_projects_with_frontmatter() {
-        let tmp = std::env::temp_dir().join("__kernex_test_projects_fm__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let proj_dir = tmp.join("projects/trader");
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(
@@ -279,13 +276,12 @@ Body text.
             !projects[0].instructions.contains("---"),
             "frontmatter should be stripped"
         );
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_projects_agents_md_preferred_over_role_md() {
-        let tmp = std::env::temp_dir().join("__kernex_test_projects_agents_md__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let proj_dir = tmp.join("projects/modern");
         std::fs::create_dir_all(&proj_dir).unwrap();
         // Both files exist — AGENTS.md should win.
@@ -295,13 +291,12 @@ Body text.
         let projects = load_projects(tmp.to_str().unwrap());
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].instructions, "modern instructions");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_projects_agents_md_only() {
-        let tmp = std::env::temp_dir().join("__kernex_test_projects_agents_only__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let proj_dir = tmp.join("projects/agent-only");
         std::fs::create_dir_all(&proj_dir).unwrap();
         // Only AGENTS.md, no ROLE.md.
@@ -310,13 +305,12 @@ Body text.
         let projects = load_projects(tmp.to_str().unwrap());
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].instructions, "agent instructions");
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
     fn test_load_projects_without_frontmatter_backward_compat() {
-        let tmp = std::env::temp_dir().join("__kernex_test_projects_no_fm__");
-        let _ = std::fs::remove_dir_all(&tmp);
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
         let proj_dir = tmp.join("projects/simple");
         std::fs::create_dir_all(&proj_dir).unwrap();
         std::fs::write(proj_dir.join("ROLE.md"), "You are a helper.").unwrap();
@@ -325,6 +319,5 @@ Body text.
         assert_eq!(projects.len(), 1);
         assert_eq!(projects[0].instructions, "You are a helper.");
         assert!(projects[0].skills.is_empty());
-        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

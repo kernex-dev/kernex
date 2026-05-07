@@ -100,9 +100,8 @@ fn test_mcp_tool_patterns() {
 
 #[tokio::test]
 async fn test_write_and_cleanup_mcp_settings() {
-    let tmp = std::env::temp_dir().join("__kernex_test_mcp_settings__");
-    let _ = std::fs::remove_dir_all(&tmp);
-    std::fs::create_dir_all(&tmp).unwrap();
+    let tmp_dir = tempfile::TempDir::new().unwrap();
+    let tmp = tmp_dir.path();
 
     let servers = vec![McpServer {
         name: "playwright".into(),
@@ -111,7 +110,7 @@ async fn test_write_and_cleanup_mcp_settings() {
         ..Default::default()
     }];
 
-    let path = mcp::write_mcp_settings(&tmp, &servers).await.unwrap();
+    let path = mcp::write_mcp_settings(tmp, &servers).await.unwrap();
     assert!(path.exists());
 
     // Verify JSON structure.
@@ -125,8 +124,6 @@ async fn test_write_and_cleanup_mcp_settings() {
     // Cleanup.
     mcp::cleanup_mcp_settings(&path).await;
     assert!(!path.exists());
-
-    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 #[tokio::test]

@@ -28,6 +28,7 @@ opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
