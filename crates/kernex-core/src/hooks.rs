@@ -18,10 +18,15 @@ pub enum HookOutcome {
 /// workflows, rate limiting, or auditing. Wire into [`Context`] via
 /// [`Context::with_hooks`].
 ///
+/// `Send + Sync` are required so the runner can live behind an `Arc<dyn …>`
+/// shared across tasks. A previous `+ std::fmt::Debug` bound was dropped so
+/// closures or wrappers around third-party SDK clients (which often do not
+/// implement `Debug`) can still be used directly.
+///
 /// [`Context`]: crate::context::Context
 /// [`Context::with_hooks`]: crate::context::Context::with_hooks
 #[async_trait]
-pub trait HookRunner: Send + Sync + std::fmt::Debug {
+pub trait HookRunner: Send + Sync {
     /// Called before a tool executes. Return [`HookOutcome::Blocked`] to cancel it.
     async fn pre_tool(&self, tool_name: &str, input: &Value) -> HookOutcome;
     /// Called after a tool completes. Blocked tools do not fire this.

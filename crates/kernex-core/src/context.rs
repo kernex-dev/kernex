@@ -106,7 +106,7 @@ fn is_false(b: &bool) -> bool {
 }
 
 /// Conversation context passed to an AI provider.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Context {
     /// System prompt prepended to every request.
     pub system_prompt: String,
@@ -147,6 +147,36 @@ pub struct Context {
     /// Sends the `interleaved-thinking-2025-05-14` beta header when true.
     #[serde(default, skip_serializing_if = "is_false")]
     pub extended_thinking: bool,
+}
+
+// Manual Debug impl: HookRunner is no longer required to be Debug (lifted in
+// kernex-core::hooks so SDK clients without Debug derives can be wired in
+// directly). We surface a placeholder for the runner / rules so the rest of
+// Context still prints usefully in tracing spans.
+impl std::fmt::Debug for Context {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("system_prompt", &self.system_prompt)
+            .field("history", &self.history)
+            .field("current_message", &self.current_message)
+            .field("mcp_servers", &self.mcp_servers)
+            .field("toolboxes", &self.toolboxes)
+            .field("max_turns", &self.max_turns)
+            .field("allowed_tools", &self.allowed_tools)
+            .field("model", &self.model)
+            .field("session_id", &self.session_id)
+            .field("agent_name", &self.agent_name)
+            .field(
+                "hook_runner",
+                &self.hook_runner.as_ref().map(|_| "<runner>"),
+            )
+            .field(
+                "permission_rules",
+                &self.permission_rules.as_ref().map(|_| "<rules>"),
+            )
+            .field("extended_thinking", &self.extended_thinking)
+            .finish()
+    }
 }
 
 /// A structured message for API-based providers (OpenAI, Anthropic, etc.).
