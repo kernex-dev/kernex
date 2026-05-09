@@ -1,0 +1,35 @@
+ File  .text     Size Crate
+21.5%  44.6% 727.8KiB [Unknown]
+ 9.7%  20.0% 326.4KiB std
+ 2.2%   4.5%  73.8KiB sqlx_sqlite
+ 2.1%   4.3%  70.9KiB regex_automata
+ 1.8%   3.8%  61.8KiB regex_syntax
+ 1.7%   3.6%  59.1KiB tracing_subscriber
+ 1.7%   3.5%  57.8KiB kernex_skills
+ 1.2%   2.5%  40.7KiB tokio
+ 1.1%   2.3%  37.6KiB libsqlite3_sys
+ 0.9%   1.9%  31.2KiB kernex_memory
+ 0.8%   1.6%  25.6KiB sqlx_core
+ 0.6%   1.1%  18.8KiB kernex_runtime
+ 0.5%   1.1%  18.6KiB full_stack
+ 0.5%   0.9%  15.2KiB serde_json
+ 0.4%   0.9%  14.6KiB toml_edit
+ 0.4%   0.7%  12.0KiB winnow
+ 0.3%   0.7%  10.9KiB chrono
+ 0.3%   0.6%   9.4KiB toml
+ 0.2%   0.4%   6.9KiB kernex_core
+ 0.2%   0.4%   6.6KiB hashbrown
+ 0.1%   0.3%   4.5KiB tracing_core
+ 0.1%   0.3%   4.5KiB futures_util
+ 0.1%   0.2%   3.6KiB anyhow
+ 0.1%   0.2%   2.7KiB tracing
+ 0.1%   0.1%   2.0KiB tracing_log
+ 0.1%   0.1%   1.8KiB parking_lot_core
+ 0.1%   0.1%   1.8KiB nu_ansi_term
+ 0.0%   0.1%   1.7KiB bytes
+ 0.0%   0.1%   1.2KiB serde_core
+ 0.0%   0.1%   1.1KiB signal_hook_registry
+ 0.3%   0.7%  10.8KiB And 35 more crates. Use -n N to show more.
+48.2% 100.0%   1.6MiB .text section size, the file size is 3.3MiB
+
+Note: numbers above are a result of guesswork. They are not 100% correct and never will be.

@@ -25,8 +25,14 @@ secrets.toml
 credentials.json
 *.audit.log
 
-# Internal docs (extraction reference, not public — kept as a guard even if /docs/ is absent)
-/docs/
+# Internal docs (extraction reference, not public — kept as a guard even if /docs/ is absent).
+# Narrow exceptions: bloat and bench baselines are checked in so the size-gate
+# CI job has something to diff regressions against. The `/docs/*` form
+# (rather than `/docs/`) is required because `gitignore(5)` does not honor
+# `!` re-inclusions inside an excluded directory.
+/docs/*
+!/docs/bloat-baseline-*.txt
+!/docs/bench-baseline-*.txt
 NOTES.md
 TODO.md
 ARCHITECTURE.md
