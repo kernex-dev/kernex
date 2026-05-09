@@ -1048,6 +1048,8 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "futures",
+ "kernex-core",
+ "kernex-memory",
  "kernex-runtime",
  "libc",
  "tempfile",

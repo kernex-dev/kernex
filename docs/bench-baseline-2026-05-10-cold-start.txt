@@ -1,0 +1,25 @@
+    Finished `bench` profile [optimized] target(s) in 0.29s
+     Running benches/cold_start.rs (target/release/deps/cold_start-2a222966c8d7d0f5)
+Gnuplot not found, using plotters backend
+Benchmarking cold_start/RuntimeBuilder::build
+Benchmarking cold_start/RuntimeBuilder::build: Warming up for 3.0000 s
+
+Warning: Unable to complete 50 samples in 15.0s. You may wish to increase target time to 21.1s, enable flat sampling, or reduce sample count to 20.
+Benchmarking cold_start/RuntimeBuilder::build: Collecting 50 samples in estimated 21.060 s (1275 iterations)
+Benchmarking cold_start/RuntimeBuilder::build: Analyzing
+cold_start/RuntimeBuilder::build
+                        time:   [16.529 ms 16.983 ms 17.446 ms]
+Found 1 outliers among 50 measurements (2.00%)
+  1 (2.00%) high mild
+
+Benchmarking cold_start/memory_search_cold_start
+Benchmarking cold_start/memory_search_cold_start: Warming up for 3.0000 s
+Benchmarking cold_start/memory_search_cold_start: Collecting 50 samples in estimated 15.597 s (7650 iterations)
+Benchmarking cold_start/memory_search_cold_start: Analyzing
+cold_start/memory_search_cold_start
+                        time:   [1.8737 ms 1.9050 ms 1.9406 ms]
+Found 3 outliers among 50 measurements (6.00%)
+  1 (2.00%) low mild
+  1 (2.00%) high mild
+  1 (2.00%) high severe
+
