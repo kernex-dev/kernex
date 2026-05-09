@@ -1,0 +1,33 @@
+ File  .text    Size              Crate Name
+ 0.8%   1.7% 27.9KiB tracing_subscriber hashbrown::raw::RawTable<T,A>::reserve_rehash
+ 0.8%   1.7% 27.1KiB          [Unknown] _sqlite3VdbeExec
+ 0.6%   1.1% 18.6KiB          [Unknown] _sqlite3Select
+ 0.5%   1.1% 18.4KiB          [Unknown] _yy_reduce
+ 0.4%   0.9% 14.7KiB     regex_automata regex_automata::dfa::dense::Builder::build_from_nfa
+ 0.4%   0.8% 13.3KiB      kernex_skills kernex_skills::skills::load_skills
+ 0.3%   0.7% 11.7KiB                std core::ops::function::FnMut::call_mut
+ 0.3%   0.7% 11.1KiB          [Unknown] _sqlite3Pragma
+ 0.3%   0.7% 10.9KiB          [Unknown] _sqlite3WhereBegin
+ 0.3%   0.7% 10.9KiB      kernex_memory kernex_memory::store::context::<impl kernex_memory::store::Store>::build_context::{{closure}}
+ 0.3%   0.6% 10.6KiB     kernex_runtime kernex_runtime::RuntimeBuilder::build::{{closure}}
+ 0.3%   0.6% 10.2KiB        sqlx_sqlite sqlx_sqlite::connection::explain::explain
+ 0.3%   0.6% 10.0KiB         full_stack full_stack::main::{{closure}}
+ 0.3%   0.6%  9.9KiB     regex_automata regex_automata::nfa::thompson::compiler::Compiler::build_many
+ 0.3%   0.5%  8.7KiB                std std::backtrace_rs::symbolize::gimli::resolve
+ 0.3%   0.5%  8.5KiB               toml toml_edit::de::Deserializer<S>::parse
+ 0.2%   0.5%  8.3KiB      kernex_memory kernex_memory::store::context_helpers::build_system_prompt
+ 0.2%   0.5%  7.8KiB         full_stack full_stack::main
+ 0.2%   0.5%  7.4KiB                std std::backtrace_rs::symbolize::gimli::Context::new
+ 0.2%   0.5%  7.4KiB     regex_automata regex_automata::nfa::thompson::compiler::Compiler::c
+ 0.2%   0.4%  7.0KiB          [Unknown] _sqlite3Insert
+ 0.2%   0.4%  6.7KiB          [Unknown] _sqlite3Update
+ 0.2%   0.4%  6.6KiB                std gimli::read::dwarf::Unit<R>::new
+ 0.2%   0.4%  6.6KiB        sqlx_sqlite std::sys::backtrace::__rust_begin_short_backtrace
+ 0.2%   0.4%  6.3KiB     kernex_runtime kernex_runtime::Runtime::complete_with_needs::{{closure}}::{{closure}}
+ 0.2%   0.4%  6.1KiB          [Unknown] _balance
+ 0.2%   0.4%  5.8KiB     libsqlite3_sys _sqlite3_str_vappendf
+ 0.2%   0.3%  5.7KiB                std core::cell::once::OnceCell<T>::try_init
+ 0.2%   0.3%  5.5KiB          [Unknown] _exprAnalyze
+ 0.2%   0.3%  5.4KiB          [Unknown] _resolveExprStep
+39.8%  82.5%  1.3MiB                    And 12243 smaller methods. Use -n N to show more.
+48.2% 100.0%  1.6MiB                    .text section size, the file size is 3.3MiB
