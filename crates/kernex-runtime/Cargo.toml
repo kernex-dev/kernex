@@ -30,5 +30,10 @@ opentelemetry = ["dep:opentelemetry", "dep:tracing-opentelemetry"]
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
 
+# tracing-opentelemetry is exposed to downstream consumers via the
+# `opentelemetry` feature; cargo-machete cannot see that intent.
+[package.metadata.cargo-machete]
+ignored = ["tracing-opentelemetry"]
+
 [lints]
 workspace = true

@@ -17,9 +17,7 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-anyhow = { workspace = true }
 async-trait = { workspace = true }
-uuid = { workspace = true }
 chrono = { workspace = true }
 secrecy = { version = "0.8", features = ["serde"] }
 schemars = { workspace = true }

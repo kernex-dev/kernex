@@ -1077,7 +1077,6 @@ dependencies = [
  "async-trait",
  "chrono",
  "kernex-core",
- "serde",
  "serde_json",
  "sqlx",
  "tempfile",
@@ -1096,14 +1095,12 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "toml",
- "tracing",
 ]
 
 [[package]]
 name = "kernex-providers"
 version = "0.5.0"
 dependencies = [
- "anyhow",
  "async-trait",
  "chrono",
  "futures-util",
@@ -1122,7 +1119,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "uuid",
 ]
 
 [[package]]
