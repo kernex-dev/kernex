@@ -67,3 +67,24 @@ expect_used = "deny"
 
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
+
+# Release profile tuned for binary size on macOS aarch64. The `kx` binary
+# (sister repo) inherits these settings via the workspace; the headline
+# "Single Binary · Under 15 MB" claim depends on this configuration.
+#
+# panic = "abort" is safe per a workspace-wide audit (no production callers
+# of catch_unwind, panic::set_hook, panic::take_hook, resume_unwind,
+# UnwindSafe, AssertUnwindSafe; #[should_panic] usage = none).
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+opt-level = "z"
+
+# Internal benchmark fallback. Activated only if the cold-start bench
+# regresses past its threshold under opt-level = "z". The shipped binary
+# stays size-optimized unless that threshold forces the flip.
+[profile.release-fast]
+inherits = "release"
+opt-level = "s"
