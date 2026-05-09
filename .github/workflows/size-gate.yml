@@ -1,0 +1,89 @@
+name: size-gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # binary-size and feature-matrix gate the `kx` binary in the sister repo;
+  # this workspace ships only library crates, so they are scaffolded here for
+  # the sister repo to copy. The `if:` guard activates only when the workflow
+  # runs from a repository that ships the `kx` binary (`crates/kernex-agent`).
+  binary-size:
+    name: Binary size (kx default <= 15 MB)
+    if: contains(github.repository, 'kernex-agent')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build kx (default features)
+        run: cargo build --release --bin kx --locked
+      - name: Check size
+        run: bash scripts/check-size.sh kx 15728640 target/release/kx
+
+  feature-matrix:
+    name: Feature matrix (per-variant ceilings)
+    if: contains(github.repository, 'kernex-agent')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: minimal
+            flags: "--no-default-features --features memory-cli"
+            limit: 8388608
+          - name: default
+            flags: ""
+            limit: 15728640
+          - name: full
+            flags: "--features agent-all,tui,preset-all"
+            limit: 26214400
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Build variant
+        run: cargo build --release --bin kx ${{ matrix.config.flags }} --locked
+      - name: Check size
+        run: bash scripts/check-size.sh "${{ matrix.config.name }}" ${{ matrix.config.limit }} target/release/kx
+
+  bloat:
+    name: Bloat diff vs baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - name: Install cargo-bloat
+        run: cargo install cargo-bloat --locked
+      - name: Run cargo-bloat against full_stack example
+        run: |
+          cargo bloat --release --example full_stack --crates -n 30 \
+            > docs/bloat-current-crates.txt 2> /dev/null
+      - name: Diff against committed baseline
+        run: |
+          BASELINE=$(find docs -maxdepth 1 -name 'bloat-baseline-*-crates.txt' -print 2>/dev/null | sort -r | head -1)
+          if [ -z "$BASELINE" ]; then
+            echo "No bloat baseline found in docs/; skipping diff."
+            exit 0
+          fi
+          echo "Diffing against $BASELINE"
+          python3 scripts/diff-bloat.py "$BASELINE" docs/bloat-current-crates.txt
+
+  unused-deps:
+    name: Unused dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Install cargo-machete
+        run: cargo install cargo-machete --locked
+      - name: Run cargo-machete
+        run: cargo machete
