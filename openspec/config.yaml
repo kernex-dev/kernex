@@ -1,0 +1,59 @@
+schema: spec-driven
+
+context: |
+  Project: kernex (workspace, public, Apache-2.0 OR MIT).
+  Purpose: Rust runtime engine for AI agents. Sandboxed execution,
+  multi-provider AI, reward-based learning, and topology-driven multi-agent
+  pipelines as composable crates.
+  Stack: Cargo workspace with 7 crates: `kernex` umbrella, `kernex-core`,
+  `kernex-runtime`, `kernex-providers`, `kernex-memory`, `kernex-skills`,
+  `kernex-sandbox`. Rust edition 2021, MSRV 1.74, tokio async, `tracing` for
+  logs, `thiserror` in libraries.
+  Sister repo: `github.com/kernex-dev/kernex-agent` (binary `kx`) consumes
+  this workspace via crates.io.
+  Style: English in all artifacts. No em-dashes. Conventional commits.
+  Testing: `cargo build --workspace`, `cargo clippy --workspace -- -D warnings`,
+  `cargo test --workspace`, `cargo fmt --check` is the pre-commit gate; plus
+  `cargo audit && cargo deny check`.
+
+strict_tdd: false
+
+rules:
+  proposal:
+    - State the operator or framework friction explicitly before the solution.
+    - Name what is intentionally OUT of scope.
+    - Identify cross-repo work (e.g. paired PR in `kernex-dev/kernex-agent`)
+      and flag it as paired PR coordination.
+  specs:
+    - Use Given/When/Then for behavioral scenarios where applicable.
+    - For pure infrastructure changes (profile, hygiene, workspace splitting),
+      a spec.md is optional; tasks.md and design.md may be sufficient.
+  design:
+    - Document architecture decisions with rationale (ADR style).
+    - Show source-tree deltas with one-line purpose per new file or module.
+    - Define every public trait, struct, and enum referenced by the spec.
+    - Call out reuse of existing infrastructure; never invent parallel paths.
+  tasks:
+    - Each task completable in under 2 focused hours.
+    - Group tasks by phase or block.
+    - Tag every task with sprint identifier where applicable.
+  apply:
+    - Follow the design's source tree exactly.
+    - Never commit without explicit user approval.
+    - Pre-commit gate must pass on every commit:
+      `cargo build --workspace && cargo clippy --workspace -- -D warnings &&
+       cargo test --workspace && cargo fmt --check`.
+  verify:
+    - Pre-commit gate green.
+    - For workspace-level SDDs, also run `cargo audit && cargo deny check`.
+    - Smoke-run new APIs against the bench crate or examples where applicable.
+  archive:
+    - Move `openspec/changes/<change-id>/` to
+      `openspec/archive/YYYY-MM-<change-id>/` post-merge.
+
+testing:
+  strict_tdd: false
+  detected: "2026-05-09"
+  runner:
+    command: "cargo build --workspace && cargo clippy --workspace -- -D warnings && cargo test --workspace && cargo fmt --check && cargo audit && cargo deny check"
+    framework: "cargo + clippy + rustfmt + audit + deny"
