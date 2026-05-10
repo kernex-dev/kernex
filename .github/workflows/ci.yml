@@ -9,6 +9,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # Bump this string to force a fresh Swatinem/rust-cache namespace across all
+  # jobs. The 2026-05-10 v0-rust cache for `Test (ubuntu-22.04)` poisoned to a
+  # state where `cargo test --workspace --locked` resolved a target/ that no
+  # longer matched the dep graph and could not find `sqlx` at compile time
+  # (4-second compile finish on Linux 22.04, vs ~90 s cold). All other matrix
+  # jobs were unaffected. Rotating to v1-rust-2026-05-10 forces a clean
+  # rebuild and isolates the failure window.
+  CACHE_NAMESPACE: v1-rust-2026-05-10
 
 jobs:
   check:
@@ -21,6 +29,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ${{ env.CACHE_NAMESPACE }}
       - run: cargo build --workspace --locked
 
   security:
@@ -30,6 +40,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ${{ env.CACHE_NAMESPACE }}
       - name: Install cargo-audit and cargo-deny
         run: cargo install cargo-audit cargo-deny --locked
       - name: Run cargo-audit
@@ -46,6 +58,8 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ${{ env.CACHE_NAMESPACE }}
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   test:
@@ -63,6 +77,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ${{ env.CACHE_NAMESPACE }}
       - run: cargo test --workspace --locked
 
   fmt:
@@ -82,6 +98,8 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ${{ env.CACHE_NAMESPACE }}
       - name: Build examples
         run: cargo build --workspace --examples --locked
       - name: Compile benches (no run)
