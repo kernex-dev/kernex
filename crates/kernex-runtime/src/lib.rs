@@ -1,5 +1,6 @@
-//! kernex-runtime: The facade crate that composes all Kernex components.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+//! kernex-runtime: The facade crate that composes all Kernex components.
 //!
 //! Provides `Runtime` for configuring and running an AI agent runtime
 //! with sandboxed execution, multi-provider support, persistent memory,

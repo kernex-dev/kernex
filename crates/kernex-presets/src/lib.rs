@@ -9,9 +9,19 @@ use kernex_adapter_core::AdapterId;
 use thiserror::Error;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub struct Preset {
     pub adapters: Vec<AdapterId>,
     pub components: Vec<String>,
+}
+
+impl Preset {
+    pub fn new(adapters: Vec<AdapterId>, components: Vec<String>) -> Self {
+        Self {
+            adapters,
+            components,
+        }
+    }
 }
 
 #[derive(Debug, Error)]
