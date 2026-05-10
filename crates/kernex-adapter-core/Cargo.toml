@@ -1,12 +1,11 @@
 [package]
 name = "kernex-adapter-core"
-description = "Workspace-internal core trait and supporting types for kernex agent adapters."
+description = "Core Adapter trait and supporting types (AdapterId, Capability, Detection, AdapterRegistry) for Kernex agent adapters."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 
 [lints]
 workspace = true

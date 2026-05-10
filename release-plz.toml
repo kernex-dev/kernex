@@ -62,11 +62,14 @@ version_group = "kernex"
 name = "kernex"
 version_group = "kernex"
 
-# --- Workspace-internal crates: not published, not released ---
+# Required by `kernex-runtime` for the `Adapter` trait surface; published so
+# `cargo publish -p kernex-runtime` can resolve the dependency from crates.io.
 
 [[package]]
 name = "kernex-adapter-core"
-release = false
+version_group = "kernex"
+
+# --- Workspace-internal crates: not published, not released ---
 
 [[package]]
 name = "kernex-presets"
@@ -76,6 +79,6 @@ release = false
 name = "kernex-brain"
 release = false
 
-# `bench/` and the workspace-internal crates above already declare
+# `bench/` and the two workspace-internal crates above already declare
 # `publish = false` in their Cargo.toml; release-plz auto-detects this for
 # `bench/`. The explicit overrides above keep the intent visible in this file.
