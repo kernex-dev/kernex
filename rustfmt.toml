@@ -4,7 +4,7 @@
 # invocations match `cargo fmt`'s behaviour. See
 # https://rust-lang.github.io/rustfmt/ for the full options reference.
 #
-# Stable options only — nightly options (imports_granularity,
+# Stable options only. Nightly options (imports_granularity,
 # group_imports, etc.) require `cargo +nightly fmt` and would fail
 # CI's `cargo fmt --check` job.
 edition = "2021"
