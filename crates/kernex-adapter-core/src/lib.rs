@@ -99,8 +99,12 @@ impl AdapterRegistry {
         Self::default()
     }
 
-    pub fn register(&mut self, adapter: Arc<dyn Adapter>) {
-        self.inner.insert(adapter.id(), adapter);
+    /// Register an adapter handle keyed by its [`AdapterId`]. Returns the
+    /// previous handle for that id if one was already registered, mirroring
+    /// [`std::collections::HashMap::insert`]. Callers can detect duplicate
+    /// registrations by checking for `Some(_)`.
+    pub fn register(&mut self, adapter: Arc<dyn Adapter>) -> Option<Arc<dyn Adapter>> {
+        self.inner.insert(adapter.id(), adapter)
     }
 
     pub fn get(&self, id: AdapterId) -> Option<Arc<dyn Adapter>> {
@@ -113,7 +117,7 @@ impl AdapterRegistry {
 pub fn default_registry() -> Result<AdapterRegistry, AdapterError> {
     let mut registry = AdapterRegistry::new();
     for id in DEFAULT_ADAPTER_IDS {
-        registry.register(new_adapter(*id)?);
+        let _ = registry.register(new_adapter(*id)?);
     }
     Ok(registry)
 }
