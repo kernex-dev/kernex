@@ -116,3 +116,12 @@ jobs:
             | tar xz actionlint
       - name: Run actionlint
         run: ./actionlint -color
+
+  publish-chain:
+    name: Publish-chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - name: Validate publish-chain (no publishable -> publish=false edges)
+        run: ./scripts/validate-publish-chain.sh
