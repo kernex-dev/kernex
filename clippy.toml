@@ -1,0 +1,14 @@
+# Clippy lint tuning for the kernex workspace.
+#
+# Lint LEVELS (deny / warn / allow) are configured in the workspace
+# `[workspace.lints.clippy]` table in Cargo.toml. This file is for
+# lint TUNING only: thresholds, allowed type names, MSRV signal.
+#
+# See https://doc.rust-lang.org/clippy/lint_configuration.html for
+# the full options reference.
+
+# Pin the MSRV signal so MSRV-aware clippy lints (e.g.
+# incompatible_msrv, manual_let_else gating) match the workspace's
+# rust-version setting. Mirror this with [workspace.package]
+# rust-version in Cargo.toml when one moves.
+msrv = "1.74"
