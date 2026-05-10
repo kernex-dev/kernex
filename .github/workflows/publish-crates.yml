@@ -25,14 +25,19 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
+# Serialize publish runs across rapid tag pushes; never cancel an in-flight
+# publish since `cargo publish` is not idempotent against crates.io.
+concurrency:
+  group: publish-crates-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   gate:
     name: Pre-publish gate
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.ref }}
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
@@ -49,10 +54,11 @@ jobs:
     name: Publish crates in dependency order
     needs: gate
     runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-        with:
-          ref: ${{ github.ref }}
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
@@ -64,50 +70,37 @@ jobs:
       #
       # Each publish is followed by a 30s wait to let crates.io's index
       # propagate before the next dependency resolution runs.
+      #
+      # CARGO_REGISTRY_TOKEN is set at the job level above so each publish
+      # step inherits it without per-step duplication.
 
       - name: Publish kernex-core
         run: cargo publish -p kernex-core --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - run: sleep 30
 
       - name: Publish kernex-sandbox
         run: cargo publish -p kernex-sandbox --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - run: sleep 30
 
       - name: Publish kernex-memory
         run: cargo publish -p kernex-memory --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - run: sleep 30
 
       - name: Publish kernex-pipelines
         run: cargo publish -p kernex-pipelines --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - run: sleep 30
 
       - name: Publish kernex-skills
         run: cargo publish -p kernex-skills --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - run: sleep 30
 
       - name: Publish kernex-providers
         run: cargo publish -p kernex-providers --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - run: sleep 30
 
       - name: Publish kernex-runtime
         run: cargo publish -p kernex-runtime --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       - run: sleep 30
 
       - name: Publish kernex (umbrella)
         run: cargo publish -p kernex --locked
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
