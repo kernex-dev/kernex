@@ -46,12 +46,33 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # Mint a short-lived GitHub App installation token. Using a user-
+      # identity token (vs the default GITHUB_TOKEN) is the only way to
+      # work around GitHub's recursion-prevention rule that silently drops
+      # workflow triggers for refs pushed by GITHUB_TOKEN. With this App
+      # token, release-plz's branch push fires CI on the Release PR, and
+      # its tag push fires publish-crates.yml automatically. The
+      # `RELEASE_PLZ_APP_ID` (repo variable) and
+      # `RELEASE_PLZ_APP_PRIVATE_KEY` (repo secret) are configured at the
+      # repo level; the App must be installed on this repo with Contents
+      # (read+write) and Pull requests (read+write) permissions.
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@1b10c78c7865c340bc4f6099eb2f838309f1e8c3 # v3.1.1
+        with:
+          app-id: ${{ vars.RELEASE_PLZ_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
           # release-plz needs full git history to derive CHANGELOG entries
           # from conventional commits between the last tag and HEAD.
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # Use the App token so the remote's stored credentials are tied
+          # to the App identity. Subsequent git push operations (branch
+          # for the Release PR, tag for the release) then use the App
+          # identity and trigger downstream workflows.
+          token: ${{ steps.app-token.outputs.token }}
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
@@ -64,4 +85,4 @@ jobs:
         # PR has merged and Cargo.toml > last tag). The tag push then fires
         # publish-crates.yml.
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
