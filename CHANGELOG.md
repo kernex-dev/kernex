@@ -7,15 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`kernex-memory`, `kernex-runtime`, `kernex` umbrella**: replaced em-dash separators in `Cargo.toml` description fields with periods or colons to align with the project's no-em-dash-in-user-facing-copy rule. Metadata-only; ships at the next publish.
+
+### CI / Release tooling
+
+- **Trusted publishing (OIDC)** wired into `.github/workflows/publish-crates.yml` via `rust-lang/crates-io-auth-action@v1.0.4`. Replaces the long-lived `CARGO_REGISTRY_TOKEN` secret. Publish job binds to the `release` GitHub Environment so optional protection rules can be configured in repo Settings. Each crate must register a trusted publisher at `https://crates.io/crates/<name>/settings -> Trusted Publishing` before the next tag push fires the workflow.
+- **`scripts/validate-publish-chain.sh`** plus matching CI job catches publishable crates that depend on `publish = false` workspace members via path. Designed to surface the class of failure that broke the v0.6.0 cut mid-chain.
+- **`Swatinem/rust-cache`** pinned to `prefix-key: v1-rust-2026-05-10` across `ci.yml` and `publish-crates.yml` to invalidate a stale cache namespace that was poisoning `Test (ubuntu-22.04)` runs for 3 days.
+
+## [0.6.0] - 2026-05-10
+
+All 9 publishable crates shipped to crates.io on 2026-05-10. See the GitHub Release at [v0.6.0](https://github.com/kernex-dev/kernex/releases/tag/v0.6.0) for full release notes. The publish chain hit two issues mid-flight (revoked pre-2020 token, then `publish = false` blast radius on `kernex-runtime`); the second forced an in-cycle promotion of `kernex-adapter-core` to public.
+
 ### Added
 
-- New workspace-internal crate `kernex-adapter-core` defining the `Adapter` trait, `AdapterId` enum, `Capability` flags, `Detection` outcome, `AdapterError`, `AdapterRegistry`, and a `new_adapter` factory. `publish = false`.
+- New public crate `kernex-adapter-core` defining the `Adapter` trait, `AdapterId` enum, `Capability` flags, `Detection` outcome, `AdapterError`, `AdapterRegistry`, and a `new_adapter` factory. Originally introduced as `publish = false`; promoted to `publish = true` at commit `586509e` during the release cut to unblock `cargo publish -p kernex-runtime`.
 - New workspace-internal crate `kernex-presets` shipping a TOML preset loader plus five empty preset stubs (`full-kernex`, `security-hardened`, `airgapped-defense`, `solo-dev`, `ci-only`). Loader returns `PresetError::Empty` for stub bodies. `publish = false`.
 - New workspace-internal crate `kernex-brain` shipping a `BrainStore` trait scaffold with stub method bodies. Trait surface only; implementations land in a follow-up change. `publish = false`.
 - `kernex-runtime` now re-exports `Adapter`, `AdapterId`, `AdapterError`, `AdapterRegistry`, and `Capability` from `kernex-adapter-core`, so downstream consumers reach the adapter trait surface through a single import path.
 - **kernex-memory**: new public `MemoryStore` trait covering the 17-method conversation, fact, and scheduled-task surface that downstream consumers (runtime composition, future CLI/HTTP/MCP frontends) call today. The trait is `Send + Sync`, object-safe, and uses `#[async_trait]`. `kernex-memory` re-exports `MemoryStore` and the `into_handle` constructor for use by integrators.
 - **kernex-memory**: soft-delete on `facts` via a new `deleted_at` column. Adds `Store::soft_delete_fact`, `Store::soft_delete_facts`, and `Store::list_soft_deleted_facts` (recovery / debug helper). Default-filtered reads (`get_fact`, `get_facts`, `get_all_facts`, `get_all_facts_by_key`, `is_new_user`, `find_canonical_user`, `get_memory_stats`) skip soft-deleted rows. Migration `017_soft_delete.sql` adds the column and a partial index `idx_facts_active (sender_id, key) WHERE deleted_at IS NULL`.
 - **kernex-runtime**: `Runtime::store_handle()` returns `Arc<dyn kernex_memory::MemoryStore>` so a binary consumer can share the runtime's composed `Store` instance instead of opening a second SQLite connection against the same database file (gated on the `sqlite-store` feature).
+- **Release tooling**: release-plz adopted as the version-bump + CHANGELOG-update + tag-creation engine for the workspace. Per-crate `CHANGELOG.md` files now auto-generated under `crates/*/CHANGELOG.md`, supplementing this workspace-level CHANGELOG. `.github/workflows/release-plz.yml` opens a draft Release PR on every push to main; `.github/workflows/publish-crates.yml` runs the pre-publish gate and ships the 9-crate dependency-ordered chain on `v[0-9]+.[0-9]+.[0-9]+` tag pushes.
 
 ### Changed
 
