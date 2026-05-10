@@ -2,9 +2,21 @@
 
 > **Change ID:** `workspace-profile-baseline`
 > **Author:** Jose Hurtado
-> **Status:** Landed
+> **Status:** Archived. Landed at `kernex-dev/kernex@f167ecf` on 2026-05-10.
 > **Estimated effort:** ~5 working days
 > **Repo:** `kernex-dev/kernex` (this repo)
+>
+> ## Post-merge notes
+>
+> Six atomic commits landed: `f5cc15a` openspec scaffold + redacted SDD, `257380e` `[profile.release]` and `[profile.release-fast]` profiles (lto=fat, codegen-units=1, strip=symbols, panic=abort, opt-level=z), `c6ab864` cargo-machete cleanup (4 unused deps removed), `d0203e1` cargo-bloat baseline at `docs/bloat-baseline-2026-05-10-{crates,functions}.txt`, `0f804a5` `size-gate.yml` workflow scaffold (4 jobs), `f167ecf` `bench/benches/cold_start.rs` extended with `bench_memory_search_cold_start` against a 200-message FTS5 seed corpus.
+>
+> Final shipped numbers:
+> - Binary size: `full_stack` example release binary 3.3 MB (.text 1.6 MB), well under the 15 MB ceiling.
+> - Cold-start (Apple M-series, NVMe, macOS release): `cold_start::RuntimeBuilder::build` 16.5–17.4 ms; `cold_start::memory_search_cold_start` 1.87–1.94 ms (~25× headroom under the 50 ms threshold; promoted to a hard CI gate after 3 stable runs per FU-A-03 in the studio operational follow-up tracker).
+>
+> One drift from the as-drafted scope: the `[workspace.dependencies]` consumer audit (Phase 2) found the table was already feature-tight. Tightening `reqwest` to `["rustls-tls"]` only would have broken `kernex-providers` (needs `json` and `stream`); adding `clap` and `regex` to workspace deps was unnecessary because no in-workspace consumer exists for them (the `kx` binary that consumes them lives in the sister repo). Phase 2 work collapsed to the `cargo-machete` cleanup only.
+>
+> This archive directory was created from the `openspec/changes/workspace-profile-baseline/` location after the openspec lifecycle rename was missed at original merge time. Content preserved verbatim aside from this status header. Spec section 6 ("Move the change directory to archive") was the deferred step — now closed.
 
 ## Operator friction
 
