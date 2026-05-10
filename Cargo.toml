@@ -65,6 +65,10 @@ kernex = { version = "0.5.0", path = "crates/kernex" }
 unwrap_used = "deny"
 expect_used = "deny"
 
+# Workspace-wide unsafe-code ban; kernex-sandbox opts out via its own Cargo.toml.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
 [workspace.lints.rustdoc]
 broken_intra_doc_links = "deny"
 

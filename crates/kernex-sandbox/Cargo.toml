@@ -15,5 +15,16 @@ anyhow = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 
-[lints]
-workspace = true
+# Mirrors [workspace.lints] from the root Cargo.toml, except `unsafe_code` is
+# allowed here because this crate hosts the Seatbelt (macOS) / Landlock (Linux)
+# FFI. Each `unsafe { ... }` block in src/ has a `// SAFETY:` comment per
+# project convention. Keep this list in sync with the workspace lint set.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+
+[lints.rust]
+unsafe_code = "allow"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"

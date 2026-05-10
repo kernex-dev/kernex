@@ -38,7 +38,14 @@ fn rss_bytes() -> u64 {
     }
     #[cfg(target_os = "macos")]
     {
-        // task_info via rusage — uses getrusage(2) which reports maxrss in bytes on macOS.
+        // task_info via rusage. uses getrusage(2) which reports maxrss in bytes on macOS.
+        // SAFETY:
+        // - `u` is a stack-local `libc::rusage`, a C struct of POD fields, so
+        //   `mem::zeroed()` is a valid initial bit pattern for it.
+        // - `getrusage(RUSAGE_SELF, &mut u)` only writes into `u` for the duration
+        //   of the call and does not retain the pointer afterwards.
+        // - `RUSAGE_SELF` is the documented constant for self-introspection and
+        //   is always valid on macOS.
         let usage = unsafe {
             let mut u: libc::rusage = std::mem::zeroed();
             libc::getrusage(libc::RUSAGE_SELF, &mut u);
