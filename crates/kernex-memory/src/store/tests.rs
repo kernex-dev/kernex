@@ -426,6 +426,112 @@ async fn test_delete_fact() {
 }
 
 #[tokio::test]
+async fn test_soft_delete_fact_hides_from_default_reads() {
+    let store = test_store().await;
+
+    // Soft-deleting a missing row returns false.
+    assert!(!store.soft_delete_fact("user1", "color").await.unwrap());
+
+    store.store_fact("user1", "color", "blue").await.unwrap();
+    store.store_fact("user1", "size", "large").await.unwrap();
+
+    // Soft-delete transitions the row from active to deleted.
+    assert!(store.soft_delete_fact("user1", "color").await.unwrap());
+
+    // Default reads do not see soft-deleted rows.
+    assert!(store.get_fact("user1", "color").await.unwrap().is_none());
+    let facts = store.get_facts("user1").await.unwrap();
+    assert_eq!(facts, vec![("size".to_string(), "large".to_string())]);
+
+    // Re-soft-deleting returns false (idempotent).
+    assert!(!store.soft_delete_fact("user1", "color").await.unwrap());
+}
+
+#[tokio::test]
+async fn test_list_soft_deleted_facts() {
+    let store = test_store().await;
+
+    store.store_fact("user1", "color", "blue").await.unwrap();
+    store.store_fact("user1", "size", "large").await.unwrap();
+    store.soft_delete_fact("user1", "color").await.unwrap();
+
+    let deleted = store.list_soft_deleted_facts("user1").await.unwrap();
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].0, "color");
+    assert_eq!(deleted[0].1, "blue");
+    assert!(!deleted[0].2.is_empty(), "deleted_at timestamp populated");
+    // Ensure the still-active row does not leak into the deleted list.
+    assert!(deleted.iter().all(|(k, _, _)| k != "size"));
+}
+
+#[tokio::test]
+async fn test_memory_stats_excludes_soft_deleted_facts() {
+    let store = test_store().await;
+
+    store.store_fact("user1", "color", "blue").await.unwrap();
+    store.store_fact("user1", "size", "large").await.unwrap();
+    let (_, _, fact_count_before) = store.get_memory_stats("user1").await.unwrap();
+    assert_eq!(fact_count_before, 2);
+
+    store.soft_delete_fact("user1", "color").await.unwrap();
+    let (_, _, fact_count_after) = store.get_memory_stats("user1").await.unwrap();
+    assert_eq!(
+        fact_count_after, 1,
+        "get_memory_stats must not count soft-deleted facts"
+    );
+}
+
+#[tokio::test]
+async fn test_store_fact_undeletes_soft_deleted_row() {
+    let store = test_store().await;
+
+    store.store_fact("user1", "color", "blue").await.unwrap();
+    assert!(store.soft_delete_fact("user1", "color").await.unwrap());
+    assert!(store.get_fact("user1", "color").await.unwrap().is_none());
+
+    // Re-storing the same key clears deleted_at and applies the new value.
+    store.store_fact("user1", "color", "red").await.unwrap();
+    assert_eq!(
+        store.get_fact("user1", "color").await.unwrap(),
+        Some("red".to_string())
+    );
+    assert!(store
+        .list_soft_deleted_facts("user1")
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn test_soft_delete_facts_with_and_without_key() {
+    let store = test_store().await;
+
+    store.store_fact("user1", "color", "blue").await.unwrap();
+    store.store_fact("user1", "size", "large").await.unwrap();
+    store.store_fact("user1", "weight", "10").await.unwrap();
+
+    // With Some(key): soft-deletes only that key.
+    assert_eq!(
+        store
+            .soft_delete_facts("user1", Some("color"))
+            .await
+            .unwrap(),
+        1
+    );
+    assert_eq!(store.get_facts("user1").await.unwrap().len(), 2);
+
+    // With None: soft-deletes every remaining active fact.
+    assert_eq!(store.soft_delete_facts("user1", None).await.unwrap(), 2);
+    assert!(store.get_facts("user1").await.unwrap().is_empty());
+
+    // list_soft_deleted_facts captures all three.
+    assert_eq!(
+        store.list_soft_deleted_facts("user1").await.unwrap().len(),
+        3
+    );
+}
+
+#[tokio::test]
 async fn test_is_new_user() {
     let store = test_store().await;
 

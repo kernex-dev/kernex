@@ -282,6 +282,10 @@ impl Store {
                 "016_cache_token_breakdown",
                 include_str!("../../migrations/016_cache_token_breakdown.sql"),
             ),
+            (
+                "017_soft_delete",
+                include_str!("../../migrations/017_soft_delete.sql"),
+            ),
         ];
 
         for (name, sql) in migrations {

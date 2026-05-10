@@ -13,11 +13,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - New workspace-internal crate `kernex-presets` shipping a TOML preset loader plus five empty preset stubs (`full-kernex`, `security-hardened`, `airgapped-defense`, `solo-dev`, `ci-only`). Loader returns `PresetError::Empty` for stub bodies. `publish = false`.
 - New workspace-internal crate `kernex-brain` shipping a `BrainStore` trait scaffold with stub method bodies. Trait surface only; implementations land in a follow-up change. `publish = false`.
 - `kernex-runtime` now re-exports `Adapter`, `AdapterId`, `AdapterError`, `AdapterRegistry`, and `Capability` from `kernex-adapter-core`, so downstream consumers reach the adapter trait surface through a single import path.
+- **kernex-memory**: new public `MemoryStore` trait covering the 17-method conversation, fact, and scheduled-task surface that downstream consumers (runtime composition, future CLI/HTTP/MCP frontends) call today. The trait is `Send + Sync`, object-safe, and uses `#[async_trait]`. `kernex-memory` re-exports `MemoryStore` and the `into_handle` constructor for use by integrators.
+- **kernex-memory**: soft-delete on `facts` via a new `deleted_at` column. Adds `Store::soft_delete_fact`, `Store::soft_delete_facts`, and `Store::list_soft_deleted_facts` (recovery / debug helper). Default-filtered reads (`get_fact`, `get_facts`, `get_all_facts`, `get_all_facts_by_key`, `is_new_user`, `find_canonical_user`, `get_memory_stats`) skip soft-deleted rows. Migration `017_soft_delete.sql` adds the column and a partial index `idx_facts_active (sender_id, key) WHERE deleted_at IS NULL`.
+- **kernex-runtime**: `Runtime::store_handle()` returns `Arc<dyn kernex_memory::MemoryStore>` so a binary consumer can share the runtime's composed `Store` instance instead of opening a second SQLite connection against the same database file (gated on the `sqlite-store` feature).
 
 ### Changed
 
 - Workspace version bumped from `0.5.0` to `0.6.0` (additive re-exports in `kernex-runtime`; no removed or renamed symbols).
 - The seven existing publishable library crates and the `kernex` umbrella follow the workspace version bump.
+- **kernex-memory**: `Store::store_fact` now clears `deleted_at` on upsert, so re-storing a previously soft-deleted key restores the row to default-filtered reads. The hard-delete methods (`Store::delete_fact`, `Store::delete_facts`) remain inherent-only and are deliberately not exposed on the `MemoryStore` trait, keeping the default consumer path on the recoverable soft-delete API.
+- **bench/cold_start**: `memory_search_cold_start` now dispatches through `Arc<dyn MemoryStore>::search_messages` so the cold-start benchmark validates the trait surface that downstream consumers call into, not a bypassed direct-struct path.
 
 ## [0.5.0] - 2026-05-07
 
