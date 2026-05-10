@@ -1,0 +1,51 @@
+# Release-PR workflow.
+#
+# Triggers on push to `main`. release-plz analyzes conventional commits since
+# the last `v*` tag and either opens or updates a Release PR with the proposed
+# version bump and a CHANGELOG diff. The Release PR is a draft for human
+# review; merging it creates the `v{version}` tag, which then triggers
+# `publish-crates.yml` to run the actual `cargo publish` chain.
+#
+# Permissions: `contents: write` (push the release branch and tag),
+# `pull-requests: write` (open the Release PR). No registry or org-secret
+# scope is needed here; publishing happens in a separate workflow.
+
+name: release-plz
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz:
+    name: release-plz Release PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # release-plz needs full git history to derive CHANGELOG entries
+          # from conventional commits between the last tag and HEAD.
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - name: Run release-plz
+        uses: release-plz/release-plz-action@5b353e755cfc29e2efff7365a831d69fef0aaea9 # v0.5.99
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
