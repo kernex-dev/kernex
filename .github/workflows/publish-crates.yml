@@ -27,6 +27,19 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+  # Manual escape hatch:
+  # - Fires the same gate + OIDC publish chain against any `v*` tag.
+  # - Needed when release-plz tags via the workflow's default GITHUB_TOKEN
+  #   and GitHub Actions blocks the recursive trigger (until the GitHub
+  #   App migration lands, after which automatic triggers work).
+  # - Also useful for emergency republishes or yank recovery.
+  # Usage: `gh workflow run publish-crates.yml --ref v0.6.1`
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to publish (e.g. v0.6.1). Must already exist.'
+        required: true
+        type: string
 
 permissions:
   contents: read
