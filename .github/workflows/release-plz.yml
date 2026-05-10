@@ -31,6 +31,7 @@ jobs:
   release-plz:
     name: release-plz Release PR
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
         with:
@@ -44,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run release-plz
-        uses: release-plz/release-plz-action@5b353e755cfc29e2efff7365a831d69fef0aaea9 # v0.5.99
+        uses: release-plz/release-plz-action@4a08fbe6cb1bb0e4d066058e6efcf50f352db236 # v0.5.129
         with:
           command: release-pr
         env:
