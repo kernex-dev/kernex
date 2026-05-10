@@ -2,7 +2,7 @@
 
 > **Reference:** [proposal.md](proposal.md).
 > Each task is sized at roughly two focused hours. Change tag: `[s2-c]`.
-> **Status:** Draft v0.1.
+> **Status:** Archived. Landed at `kernex-dev/kernex@53b5537` on 2026-05-10. See `proposal.md` post-merge notes for drifts.
 
 ## Coordination
 

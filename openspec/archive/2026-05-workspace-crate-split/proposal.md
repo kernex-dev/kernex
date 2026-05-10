@@ -2,9 +2,17 @@
 
 > **Change ID:** `workspace-crate-split`
 > **Author:** Jose Hurtado
-> **Status:** Draft v0.1
+> **Status:** Archived. Landed at `kernex-dev/kernex@53b5537` on 2026-05-10.
 > **Estimated effort:** ~5 to 7 working days
 > **Repo:** `kernex-dev/kernex` (this repo)
+>
+> ## Post-merge notes
+>
+> Three drifts from the proposal as authored:
+>
+> 1. **Smoke tests rewired off struct-literal construction.** `Preset` and the kernex-brain value types (`HealthScore`, `ConflictRelation`, `DecayRanking`) are `#[non_exhaustive]`, which blocks struct-literal construction outside the defining crate. Smoke tests now exercise serde round-trip against a known JSON body and lean on `::new` constructors. Coverage equivalent.
+> 2. **`BrainStore::search` signature tightened.** Originally returned `Vec<i64>`, which leaks the storage representation into the trait API. A `pub struct ObservationId(pub i64)` newtype was introduced and the trait method now returns `Vec<ObservationId>`. `record` and the value types reference `ObservationId` instead of raw `i64` for consistency.
+> 3. **`#[non_exhaustive]` re-applied to brain value types.** Required `#[non_exhaustive]` was dropped during initial scaffold to satisfy struct-literal smoke tests, then re-added with constructors after a code review caught the forward-compat regression.
 
 ## Operator friction
 
