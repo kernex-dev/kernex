@@ -1,11 +1,29 @@
 # Proposal: Memory store trait introduction
 
-- **Status:** Draft v0.1
+- **Status:** Archived. Landed at `kernex-dev/kernex@d9fc777` on 2026-05-10.
 - **Author:** Jose Hurtado
 - **Estimated effort:** ~10 working days
 - **Repo:** `kernex-dev/kernex`
 - **Change ID:** `memory-store-trait-introduction`
 - **Change tag:** `[s4-d]`
+
+## Post-merge notes
+
+Three drifts from the proposal as authored, all surfaced and resolved during the multi-agent verification gate. Net trait method count is 18 (proposal claimed 14 listed + 3 soft-delete = 17; final count reflects one removal and two additions, see drifts 1 and 2).
+
+1. **Hard-delete moved fully off the trait.** The proposal listed `delete_fact` as one of the 14 trait methods (with `delete_facts` deliberately inherent-only). During implementation, both hard-delete methods were kept inherent-only on `Store` so the default consumer path always goes through the recoverable soft-delete API. `delete_fact` and `delete_facts` are reachable for emergency cleanup tooling that has direct concrete access to the `Store` struct, but never through the public trait. The trait module's doc comment records this decision.
+
+2. **Trait surface gained `store_fact` and `get_fact` after post-verify review.** Code-reviewer flagged the trait as forward-compat-incomplete: without `store_fact` and `get_fact`, every consumer that needed to write or read a single fact would have had to fall back to the concrete `Store` struct, defeating the whole point of the trait surface. Both methods were added to the trait and the `impl MemoryStore for Store` block before archive.
+
+3. **`get_memory_stats` fact count filter.** Code-reviewer also flagged that `Store::get_memory_stats` returned a fact count that included soft-deleted rows, which would have surprised any consumer that observed the count diverging from `get_facts().len()`. Fixed in the same post-verify pass: the `COUNT(*)` query now filters `WHERE deleted_at IS NULL`. A regression test (`test_memory_stats_excludes_soft_deleted_facts`) was added.
+
+Final shipped numbers:
+
+- Trait method count: 18 (6 conversation/message + 6 fact + 6 task).
+- Migration count: 17 (added `017_soft_delete.sql`).
+- Test count delta: +5 in `kernex-memory` (`test_soft_delete_fact_hides_from_default_reads`, `test_list_soft_deleted_facts`, `test_store_fact_undeletes_soft_deleted_row`, `test_soft_delete_facts_with_and_without_key`, `test_memory_stats_excludes_soft_deleted_facts`). Workspace test count moved from 487 → 488; full `cargo test --workspace` green at the gate.
+- `bench_memory_search_cold_start` (now dispatching through `Arc<dyn MemoryStore>::search_messages`): ~2.14 ms median on macOS aarch64 release build, well under the 50 ms p95 gate. Criterion flagged the trait-dispatch path as a "regression" against the 1.87–1.94 ms direct-struct baseline; this is expected and accepted (Arc<dyn> dispatch overhead, still well under the gate).
+- `Runtime::store_handle()` exposed on `kernex-runtime` (gated on `sqlite-store` feature) returning `Arc<dyn kernex_memory::MemoryStore>`.
 
 ## Operator friction
 
