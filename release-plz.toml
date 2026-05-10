@@ -1,0 +1,81 @@
+# release-plz configuration for the kernex workspace.
+#
+# All publishable crates plus the `kernex` umbrella share `version_group = "kernex"`
+# so release-plz bumps every member to the same version (matching the existing
+# workspace-pinned model under `[workspace.package].version`). The three
+# workspace-internal crates (`kernex-adapter-core`, `kernex-presets`,
+# `kernex-brain`) and `bench/` carry `publish = false` in their Cargo.toml
+# and are explicitly disabled here for clarity.
+#
+# CHANGELOG generation: release-plz invokes git-cliff over the conventional
+# commits since the last `v*` tag and prepends a Keep-a-Changelog entry to
+# `CHANGELOG.md`. The opened Release PR is a draft for human review; the
+# release manager edits the CHANGELOG diff before merging.
+#
+# Publishing: the `release-plz.yml` workflow runs with `command: release-pr`
+# so the action only opens or updates the Release PR. The actual `cargo
+# publish` chain runs in `.github/workflows/publish-crates.yml` on `v*` tag
+# push (after the Release PR merges).
+
+[workspace]
+# Maintain CHANGELOG.md per Keep-a-Changelog 1.1.0 (existing format).
+changelog_update = true
+# Tag releases as `v{version}` matching existing convention (v0.5.0, etc).
+git_tag_enable = true
+git_tag_name = "v{{ version }}"
+# release-plz Release PR is the review surface; do not create GitHub releases
+# automatically. The release manager creates GitHub releases manually after
+# the publish chain completes.
+git_release_enable = false
+
+# --- Publishable crates: pin to the same workspace version ---
+
+[[package]]
+name = "kernex-core"
+version_group = "kernex"
+
+[[package]]
+name = "kernex-sandbox"
+version_group = "kernex"
+
+[[package]]
+name = "kernex-memory"
+version_group = "kernex"
+
+[[package]]
+name = "kernex-pipelines"
+version_group = "kernex"
+
+[[package]]
+name = "kernex-skills"
+version_group = "kernex"
+
+[[package]]
+name = "kernex-providers"
+version_group = "kernex"
+
+[[package]]
+name = "kernex-runtime"
+version_group = "kernex"
+
+[[package]]
+name = "kernex"
+version_group = "kernex"
+
+# --- Workspace-internal crates: not published, not released ---
+
+[[package]]
+name = "kernex-adapter-core"
+release = false
+
+[[package]]
+name = "kernex-presets"
+release = false
+
+[[package]]
+name = "kernex-brain"
+release = false
+
+# `bench/` and the workspace-internal crates above already declare
+# `publish = false` in their Cargo.toml; release-plz auto-detects this for
+# `bench/`. The explicit overrides above keep the intent visible in this file.

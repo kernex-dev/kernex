@@ -1,0 +1,113 @@
+# Publish-to-crates.io workflow.
+#
+# Triggers on push of `v[0-9]+.[0-9]+.[0-9]+` tags created by release-plz when
+# the Release PR merges. Runs the pre-commit gate, then publishes each crate
+# in dependency order with a wait between steps so crates.io's index has time
+# to propagate the previous publish before the next crate's dependency
+# resolution runs.
+#
+# Failure mode: if any `cargo publish` step fails, the workflow halts. The
+# release manager runs the remaining publishes manually with
+# `cargo publish -p <name>`, in the order documented below. Yanking a failed
+# publish is a separate manual step against crates.io.
+
+name: publish-crates
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  gate:
+    name: Pre-publish gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      - run: cargo build --workspace --locked
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo fmt --all --check
+
+  publish:
+    name: Publish crates in dependency order
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: ${{ github.ref }}
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+
+      # Publish chain. Order matches `RELEASE_CHECKLIST.md` Step 3:
+      #   kernex-core -> kernex-sandbox -> kernex-memory -> kernex-pipelines ->
+      #   kernex-skills -> kernex-providers -> kernex-runtime -> kernex
+      #
+      # Each publish is followed by a 30s wait to let crates.io's index
+      # propagate before the next dependency resolution runs.
+
+      - name: Publish kernex-core
+        run: cargo publish -p kernex-core --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: sleep 30
+
+      - name: Publish kernex-sandbox
+        run: cargo publish -p kernex-sandbox --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: sleep 30
+
+      - name: Publish kernex-memory
+        run: cargo publish -p kernex-memory --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: sleep 30
+
+      - name: Publish kernex-pipelines
+        run: cargo publish -p kernex-pipelines --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: sleep 30
+
+      - name: Publish kernex-skills
+        run: cargo publish -p kernex-skills --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: sleep 30
+
+      - name: Publish kernex-providers
+        run: cargo publish -p kernex-providers --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: sleep 30
+
+      - name: Publish kernex-runtime
+        run: cargo publish -p kernex-runtime --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: sleep 30
+
+      - name: Publish kernex (umbrella)
+        run: cargo publish -p kernex --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
