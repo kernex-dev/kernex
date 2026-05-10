@@ -27,6 +27,12 @@ git_tag_name = "v{{ version }}"
 # automatically. The release manager creates GitHub releases manually after
 # the publish chain completes.
 git_release_enable = false
+# release-plz creates the tag but does NOT run `cargo publish`. Publishing
+# is delegated to `.github/workflows/publish-crates.yml`, which uses
+# crates.io trusted publishing (OIDC) via `rust-lang/crates-io-auth-action`.
+# Setting `publish = false` here keeps release-plz tag-only; the tag push
+# fires publish-crates.yml which exercises the OIDC chain.
+publish = false
 
 # --- Publishable crates: pin to the same workspace version ---
 
