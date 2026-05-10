@@ -288,7 +288,7 @@ mod tests {
             .upsert_phase_checkpoint(
                 &run_id,
                 "topo",
-                "phase-a",
+                "alpha",
                 "user-1",
                 "",
                 "in_progress",
@@ -303,7 +303,7 @@ mod tests {
             .upsert_phase_checkpoint(
                 &run_id,
                 "topo",
-                "phase-a",
+                "alpha",
                 "user-1",
                 "",
                 "completed",
@@ -315,7 +315,7 @@ mod tests {
             .unwrap();
 
         let cp = store
-            .get_phase_checkpoint(&run_id, "phase-a")
+            .get_phase_checkpoint(&run_id, "alpha")
             .await
             .unwrap()
             .unwrap();

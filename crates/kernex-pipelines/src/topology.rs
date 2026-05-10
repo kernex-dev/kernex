@@ -750,11 +750,11 @@ description = "Multi-agent"
 version = 1
 
 [[phases]]
-name = "phase-a"
+name = "alpha"
 agent = "agent-a"
 
 [[phases]]
-name = "phase-b"
+name = "beta"
 agent = "agent-b"
 phase_type = "corrective-loop"
 
