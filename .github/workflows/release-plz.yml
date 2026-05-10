@@ -45,7 +45,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run release-plz
-        uses: release-plz/release-plz-action@4a08fbe6cb1bb0e4d066058e6efcf50f352db236 # v0.5.129
+        uses: release-plz/action@4a08fbe6cb1bb0e4d066058e6efcf50f352db236 # v0.5.129
         with:
           command: release-pr
         env:
