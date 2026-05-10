@@ -12,15 +12,3 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Other
 
 - *(deps)* replace em-dash with period or colon in crate descriptions
-
-## [0.6.0](https://github.com/kernex-dev/kernex/compare/v0.5.0...v0.6.0) - 2026-05-10
-
-### Added
-
-- *(memory)* introduce MemoryStore trait + soft-delete on facts + Runtime::store_handle()
-
-### Other
-
-- *(workspace)* relocate inner attributes above crate doc blocks; tighten kernex-presets forward-compat
-- rewrite workspace-profile-baseline SDD as a static change record
-- *(deps)* drop unused dependencies flagged by cargo-machete
