@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- New workspace-internal crate `kernex-adapter-core` defining the `Adapter` trait, `AdapterId` enum, `Capability` flags, `Detection` outcome, `AdapterError`, `AdapterRegistry`, and a `new_adapter` factory. `publish = false`.
+- New workspace-internal crate `kernex-presets` shipping a TOML preset loader plus five empty preset stubs (`full-kernex`, `security-hardened`, `airgapped-defense`, `solo-dev`, `ci-only`). Loader returns `PresetError::Empty` for stub bodies. `publish = false`.
+- New workspace-internal crate `kernex-brain` shipping a `BrainStore` trait scaffold with stub method bodies. Trait surface only; implementations land in a follow-up change. `publish = false`.
+- `kernex-runtime` now re-exports `Adapter`, `AdapterId`, `AdapterError`, `AdapterRegistry`, and `Capability` from `kernex-adapter-core`, so downstream consumers reach the adapter trait surface through a single import path.
+
+### Changed
+
+- Workspace version bumped from `0.5.0` to `0.6.0` (additive re-exports in `kernex-runtime`; no removed or renamed symbols).
+- All seven existing internal crates and the umbrella `kernex` follow the workspace version bump.
+
 ## [0.5.0] - 2026-05-07
 
 ### BREAKING

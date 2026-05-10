@@ -34,6 +34,8 @@
 //! }
 //! ```
 
+pub use kernex_adapter_core::{Adapter, AdapterError, AdapterId, AdapterRegistry, Capability};
+
 #[cfg(feature = "opentelemetry")]
 pub mod telemetry;
 
