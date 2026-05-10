@@ -224,12 +224,14 @@ impl Store {
         .await
         .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
-        let (fact_count,): (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM facts WHERE sender_id = ?")
-                .bind(sender_id)
-                .fetch_one(&self.pool)
-                .await
-                .map_err(|e| MemoryError::sqlite("query failed", e))?;
+        let (fact_count,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM facts \
+             WHERE sender_id = ? AND deleted_at IS NULL",
+        )
+        .bind(sender_id)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
         Ok((conv_count, msg_count, fact_count))
     }

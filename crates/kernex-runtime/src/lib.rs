@@ -131,6 +131,19 @@ impl Summarizer for ProviderSummarizer<'_> {
 }
 
 impl Runtime {
+    /// Return an `Arc<dyn MemoryStore>` over this runtime's composed
+    /// memory store. Downstream consumers (a binary CLI, an HTTP API, an
+    /// MCP shim) can call this to share the runtime's connection pool
+    /// rather than opening a second SQLite connection against the same
+    /// database file.
+    ///
+    /// `Store` already implements `Clone` (its `SqlitePool` is internally
+    /// reference-counted), so cloning here shares the same pool.
+    #[cfg(feature = "sqlite-store")]
+    pub fn store_handle(&self) -> Arc<dyn kernex_memory::MemoryStore> {
+        Arc::new(self.store.clone())
+    }
+
     /// Send a request through the full runtime pipeline:
     /// build context from memory → enrich with skills → complete via provider → save exchange.
     ///

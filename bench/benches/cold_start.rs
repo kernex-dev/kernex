@@ -23,8 +23,9 @@
 use criterion::{criterion_group, criterion_main, Criterion};
 use kernex_core::config::MemoryConfig;
 use kernex_core::message::{CompletionMeta, Request, Response};
-use kernex_memory::Store;
+use kernex_memory::{MemoryStore, Store};
 use kernex_runtime::RuntimeBuilder;
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::TempDir;
 
@@ -122,14 +123,18 @@ fn bench_memory_search_cold_start(c: &mut Criterion) {
             rt.block_on(async move {
                 // Cold-start path: open the pre-populated store from disk + run
                 // one FTS5 search. Targets p95 <= 50 ms on macOS aarch64
-                // release builds.
+                // release builds. The dispatch path goes through
+                // `&dyn MemoryStore::search_messages` so the bench
+                // continues to validate the trait surface that downstream
+                // consumers call into, not a bypassed direct-struct path.
                 let config = MemoryConfig {
                     backend: "sqlite".to_string(),
                     db_path: path,
                     ..Default::default()
                 };
                 let store = Store::new(&config).await.expect("open store");
-                let _hits = store
+                let store_handle: Arc<dyn MemoryStore> = Arc::new(store);
+                let _hits = store_handle
                     .search_messages(SEARCH_QUERY, "no-conv", "user_0", SEARCH_LIMIT)
                     .await
                     .expect("search");
