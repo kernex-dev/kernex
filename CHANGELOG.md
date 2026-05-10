@@ -7,15 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### CI / Release tooling
+
+- **GitHub App identity for release-plz** (`actions/create-github-app-token@v3.1.1`) replaces the workflow's default `GITHUB_TOKEN`. The App (owned by `kernex-dev`, installed on `kernex-dev/kernex` with Contents + Pull requests read+write) mints a short-lived installation token at job time. Because GitHub Actions blocks recursive workflow triggers for refs pushed by `GITHUB_TOKEN`, this is the only way release-plz's Release PR branch can fire CI on the PR, and its tag push can auto-fire `publish-crates.yml`. Without this, every cycle required a manual `git push --delete origin v* && git push origin v*` from a developer machine to fire the publish chain.
+- **`workflow_dispatch` trigger** added to `publish-crates.yml` as an escape hatch (`gh workflow run publish-crates.yml --ref v<version>`). Used for emergency republishes, yank recovery, or when the App token mint fails.
+- **release-plz workspace-level `publish = false`** added to `release-plz.toml` so release-plz only tags and never tries to `cargo publish`. Publishing is delegated entirely to `publish-crates.yml` (which uses OIDC).
+- **release-plz workflow defaults** restored: dropped the `command: release-pr` override so the action runs both `release-pr` (open Release PR) and `release` (create tag on Cargo.toml > last-tag drift) in sequence.
+
+## [0.6.1] - 2026-05-10
+
+First release through the new OIDC trusted-publishing pipeline. All 9 crates published cleanly with no long-lived `CARGO_REGISTRY_TOKEN` secret involved; the token was deleted from repo secrets the same day.
+
 ### Changed
 
-- **`kernex-memory`, `kernex-runtime`, `kernex` umbrella**: replaced em-dash separators in `Cargo.toml` description fields with periods or colons to align with the project's no-em-dash-in-user-facing-copy rule. Metadata-only; ships at the next publish.
+- **`kernex-memory`, `kernex-runtime`, `kernex` umbrella**: replaced em-dash separators in `Cargo.toml` description fields with periods or colons to align with the project's no-em-dash-in-user-facing-copy rule. Metadata-only; visible on crates.io as of this release.
 
 ### CI / Release tooling
 
-- **Trusted publishing (OIDC)** wired into `.github/workflows/publish-crates.yml` via `rust-lang/crates-io-auth-action@v1.0.4`. Replaces the long-lived `CARGO_REGISTRY_TOKEN` secret. Publish job binds to the `release` GitHub Environment so optional protection rules can be configured in repo Settings. Each crate must register a trusted publisher at `https://crates.io/crates/<name>/settings -> Trusted Publishing` before the next tag push fires the workflow.
+- **Trusted publishing (OIDC)** wired into `.github/workflows/publish-crates.yml` via `rust-lang/crates-io-auth-action@v1.0.4`. Each of the 9 publishable crates is registered as a trusted publisher at `https://crates.io/crates/<name>/settings -> Trusted Publishing` with `owner=kernex-dev / repo=kernex / workflow=publish-crates.yml / environment=release`. Publish job is bound to the `release` GitHub Environment for optional protection rules.
 - **`scripts/validate-publish-chain.sh`** plus matching CI job catches publishable crates that depend on `publish = false` workspace members via path. Designed to surface the class of failure that broke the v0.6.0 cut mid-chain.
-- **`Swatinem/rust-cache`** pinned to `prefix-key: v1-rust-2026-05-10` across `ci.yml` and `publish-crates.yml` to invalidate a stale cache namespace that was poisoning `Test (ubuntu-22.04)` runs for 3 days.
+- **`Swatinem/rust-cache`** pinned to `prefix-key: v1-rust-2026-05-10` across `ci.yml` and `publish-crates.yml` to invalidate a stale cache namespace that was poisoning `Test (ubuntu-22.04)` runs.
 
 ## [0.6.0] - 2026-05-10
 
