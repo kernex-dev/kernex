@@ -1,14 +1,27 @@
-# Release-PR workflow.
+# Release-PR + tag workflow.
 #
-# Triggers on push to `main`. release-plz analyzes conventional commits since
-# the last `v*` tag and either opens or updates a Release PR with the proposed
-# version bump and a CHANGELOG diff. The Release PR is a draft for human
-# review; merging it creates the `v{version}` tag, which then triggers
-# `publish-crates.yml` to run the actual `cargo publish` chain.
+# Triggers on push to `main`. release-plz runs in its default mode (both
+# `release-pr` and `release` commands in sequence):
+#
+# 1. `release-pr`: analyzes conventional commits since the last `v*` tag and
+#    either opens or updates a Release PR with the proposed version bump and
+#    a CHANGELOG diff. The PR is a regular non-draft PR for human review.
+#
+# 2. `release`: looks at the current Cargo.toml `[workspace.package].version`
+#    and compares against the last `v*` tag. If Cargo.toml > last tag (which
+#    is true right after a Release PR merges), creates and pushes the
+#    `v{version}` tag. The tag push then triggers `publish-crates.yml` to
+#    run the OIDC publish chain.
 #
 # Permissions: `contents: write` (push the release branch and tag),
 # `pull-requests: write` (open the Release PR). No registry or org-secret
-# scope is needed here; publishing happens in a separate workflow.
+# scope is needed here; publishing happens in a separate workflow via OIDC.
+#
+# Historical: until commit <FUTURE>, this workflow ran with `command:
+# release-pr` only, which never tagged. Release PRs merged but no v* tag
+# appeared, leaving the workspace in a release-plz loop because Cargo.toml
+# > last tag kept proposing the same bump. Dropping the `command:` override
+# lets release-plz close the loop by tagging.
 
 name: release-plz
 
@@ -44,9 +57,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
-      - name: Run release-plz
+      - name: Run release-plz (release-pr + release)
         uses: release-plz/action@4a08fbe6cb1bb0e4d066058e6efcf50f352db236 # v0.5.129
-        with:
-          command: release-pr
+        # No `command:` override: runs both `release-pr` (opens / updates the
+        # draft Release PR) and `release` (creates the v* tag once a Release
+        # PR has merged and Cargo.toml > last tag). The tag push then fires
+        # publish-crates.yml.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
