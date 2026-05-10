@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - Workspace version bumped from `0.5.0` to `0.6.0` (additive re-exports in `kernex-runtime`; no removed or renamed symbols).
-- All seven existing internal crates and the umbrella `kernex` follow the workspace version bump.
+- The seven existing publishable library crates and the `kernex` umbrella follow the workspace version bump.
 
 ## [0.5.0] - 2026-05-07
 

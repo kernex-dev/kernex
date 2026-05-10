@@ -5,10 +5,12 @@ context: |
   Purpose: Rust runtime engine for AI agents. Sandboxed execution,
   multi-provider AI, reward-based learning, and topology-driven multi-agent
   pipelines as composable crates.
-  Stack: Cargo workspace with 7 crates: `kernex` umbrella, `kernex-core`,
-  `kernex-runtime`, `kernex-providers`, `kernex-memory`, `kernex-skills`,
-  `kernex-sandbox`. Rust edition 2021, MSRV 1.74, tokio async, `tracing` for
-  logs, `thiserror` in libraries.
+  Stack: Cargo workspace with 11 member crates: `kernex` umbrella,
+  `kernex-core`, `kernex-runtime`, `kernex-providers`, `kernex-memory`,
+  `kernex-pipelines`, `kernex-skills`, `kernex-sandbox`, plus three
+  workspace-internal trait-surface crates `kernex-adapter-core`,
+  `kernex-presets`, `kernex-brain` (all `publish = false`). Rust edition 2021,
+  MSRV 1.74, tokio async, `tracing` for logs, `thiserror` in libraries.
   Sister repo: `github.com/kernex-dev/kernex-agent` (binary `kx`) consumes
   this workspace via crates.io.
   Style: English in all artifacts. No em-dashes. Conventional commits.

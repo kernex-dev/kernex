@@ -317,19 +317,16 @@ All four green. If any red, do not move to Step 3.
 
 ## Step 3: code surface verification
 
-### P3-1. Grep new crates' source for prohibited prior-art tokens `[s2-c]`
+### P3-1. Grep new crates' source against the maintainer-side identifier deny-list `[s2-c]`
 
-This SDD lives in a public repo. The three new crates' source must not name any prior-art memory-system token. Run:
+This SDD lives in a public repo. The three new crates' source must not name any prior-art memory-system identifiers. The deny-list itself is maintained out-of-band by the maintainer (so this public file does not enumerate the forbidden tokens) and is run against:
 
 ```
-grep -rniE '\b(engram|claude-mem|topic_key|mem_doctor|mem_judge|mem_compare)\b' \
-  crates/kernex-adapter-core/ \
-  crates/kernex-presets/ \
-  crates/kernex-brain/ \
+crates/kernex-adapter-core/  crates/kernex-presets/  crates/kernex-brain/
   --include='*.rs' --include='*.toml' --include='*.md'
 ```
 
-Expected output: zero matches. The grep list above is the deny-list; the crates' source must not name any of these tokens in identifiers, comments, or doc strings. If any match exists, halt and rewrite the offending source.
+Expected output: zero matches. If any match exists, halt and rewrite the offending source.
 
 ### P3-2. Confirm runtime re-export round-trips `[s2-c]`
 
