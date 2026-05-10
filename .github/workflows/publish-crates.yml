@@ -6,6 +6,16 @@
 # to propagate the previous publish before the next crate's dependency
 # resolution runs.
 #
+# Auth: uses crates.io trusted publishing via GitHub OIDC. No long-lived
+# CARGO_REGISTRY_TOKEN secret is read here. The token is minted at job time
+# by `rust-lang/crates-io-auth-action` and bound to the workflow + repo +
+# environment registered for each crate at
+# `https://crates.io/crates/<name>/settings -> Trusted Publishing`. The
+# `permissions: id-token: write` block on the publish job is mandatory for
+# OIDC token exchange. See RFC 3691 and the action README:
+#   https://github.com/rust-lang/crates-io-auth-action
+#   https://rust-lang.github.io/rfcs/3691-trusted-publishing-cratesio.html
+#
 # Failure mode: if any `cargo publish` step fails, the workflow halts. The
 # release manager runs the remaining publishes manually with
 # `cargo publish -p <name>`, in the order documented below. Yanking a failed
@@ -24,6 +34,9 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
+  # See ci.yml for the cache-namespace rationale; same string keeps the
+  # publish-gate cache aligned with the CI cache.
+  CACHE_NAMESPACE: v1-rust-2026-05-10
 
 # Serialize publish runs across rapid tag pushes; never cancel an in-flight
 # publish since `cargo publish` is not idempotent against crates.io.
@@ -44,6 +57,8 @@ jobs:
           components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ${{ env.CACHE_NAMESPACE }}
 
       - run: cargo build --workspace --locked
       - run: cargo clippy --workspace --all-targets -- -D warnings
@@ -54,15 +69,29 @@ jobs:
     name: Publish crates in dependency order
     needs: gate
     runs-on: ubuntu-latest
+    # Bind to the `release` GitHub Environment so optional protection rules
+    # (required reviewer, wait timer) can be configured in repo Settings ->
+    # Environments. The crates.io trusted-publisher registration for each
+    # of the 9 crates must list `release` as the environment name.
+    environment: release
     timeout-minutes: 60
-    env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+    permissions:
+      # Required for OIDC token exchange with crates.io. Without this,
+      # rust-lang/crates-io-auth-action errors at token mint time.
+      id-token: write
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ${{ env.CACHE_NAMESPACE }}
+
+      - name: Mint crates.io OIDC token
+        id: auth
+        uses: rust-lang/crates-io-auth-action@bbd81622f20ce9e2dd9622e3218b975523e45bbe # v1.0.4
 
       # Publish chain. Order matches `RELEASE_CHECKLIST.md` Step 3:
       #   kernex-core -> kernex-sandbox -> kernex-memory -> kernex-pipelines ->
@@ -76,40 +105,59 @@ jobs:
       # Each publish is followed by a 30s wait to let crates.io's index
       # propagate before the next dependency resolution runs.
       #
-      # CARGO_REGISTRY_TOKEN is set at the job level above so each publish
-      # step inherits it without per-step duplication.
+      # CARGO_REGISTRY_TOKEN is set per-step from the OIDC auth step's
+      # output. GitHub Actions does not allow job-level `env:` to reference
+      # step outputs, so each publish step carries the same env block.
 
       - name: Publish kernex-core
         run: cargo publish -p kernex-core --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-sandbox
         run: cargo publish -p kernex-sandbox --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-memory
         run: cargo publish -p kernex-memory --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-pipelines
         run: cargo publish -p kernex-pipelines --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-skills
         run: cargo publish -p kernex-skills --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-providers
         run: cargo publish -p kernex-providers --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-adapter-core
         run: cargo publish -p kernex-adapter-core --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-runtime
         run: cargo publish -p kernex-runtime --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex (umbrella)
         run: cargo publish -p kernex --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
