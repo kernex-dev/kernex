@@ -70,13 +70,19 @@ name = "kernex-adapter-core"
 version_group = "kernex"
 
 # --- Workspace-internal crates: not published, not released ---
+#
+# Both `publish = false` (matches each crate's Cargo.toml; release-plz's
+# `release` command validates the two settings are consistent) and
+# `release = false` (don't tag or process at all).
 
 [[package]]
 name = "kernex-presets"
+publish = false
 release = false
 
 [[package]]
 name = "kernex-brain"
+publish = false
 release = false
 
 # `bench/` and the two workspace-internal crates above already declare
