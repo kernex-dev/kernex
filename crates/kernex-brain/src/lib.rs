@@ -73,6 +73,13 @@ pub enum BrainError {
 
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+
+    /// Reserved variant for database errors surfaced by concrete
+    /// `BrainStore` implementations. Carries a stringified diagnostic so the
+    /// public surface stays stable when the first impl chooses a backend
+    /// (the `Db(String)` shape avoids leaking a concrete error type).
+    #[error("db: {0}")]
+    Db(String),
 }
 
 /// Trait surface for the kernex memory brain. Stub-only scaffold; method

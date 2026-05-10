@@ -51,7 +51,7 @@ pub fn load_preset(name: &str) -> Result<Preset, PresetError> {
 
     let has_data = raw
         .lines()
-        .map(|line| line.split('#').next().unwrap_or("").trim())
+        .map(|line| line.split_once('#').map_or(line, |(pre, _)| pre).trim())
         .any(|stripped| !stripped.is_empty());
     if !has_data {
         return Err(PresetError::Empty(name.to_string()));
