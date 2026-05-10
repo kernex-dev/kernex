@@ -2,12 +2,14 @@
 
 #[test]
 fn preset_roundtrips_serde() {
-    let preset = kernex_presets::Preset {
-        adapters: vec![kernex_adapter_core::AdapterId::ClaudeCode],
-        components: vec!["skills".to_string()],
-    };
+    let preset = kernex_presets::Preset::new(
+        vec![kernex_adapter_core::AdapterId::ClaudeCode],
+        vec!["skills".to_string()],
+    );
     let s = toml::to_string(&preset).expect("serialize");
-    let _back: kernex_presets::Preset = toml::from_str(&s).expect("deserialize");
+    let back: kernex_presets::Preset = toml::from_str(&s).expect("deserialize");
+    assert_eq!(back.adapters, preset.adapters);
+    assert_eq!(back.components, preset.components);
 }
 
 #[test]

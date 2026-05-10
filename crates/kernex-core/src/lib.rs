@@ -1,5 +1,6 @@
-//! kernex-core: Foundation types, traits, and error handling for the Kernex runtime.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+//! kernex-core: Foundation types, traits, and error handling for the Kernex runtime.
 
 pub mod config;
 pub mod context;

@@ -1,5 +1,6 @@
-//! Topology-driven multi-agent execution engine.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+//! Topology-driven multi-agent execution engine.
 //!
 //! Provides TOML-defined topology configuration for sequential and parallel
 //! agent chains with file-mediated handoffs, bounded corrective loops,
