@@ -1037,9 +1037,19 @@ dependencies = [
 
 [[package]]
 name = "kernex"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "kernex-runtime",
+]
+
+[[package]]
+name = "kernex-adapter-core"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -1057,8 +1067,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernex-brain"
+version = "0.6.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "kernex-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1074,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-memory"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1090,7 +1111,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-pipelines"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "kernex-core",
  "serde",
@@ -1100,8 +1121,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernex-presets"
+version = "0.6.0"
+dependencies = [
+ "kernex-adapter-core",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+]
+
+[[package]]
 name = "kernex-providers"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1125,10 +1156,11 @@ dependencies = [
 
 [[package]]
 name = "kernex-runtime"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "kernex-adapter-core",
  "kernex-core",
  "kernex-memory",
  "kernex-pipelines",
@@ -1145,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-sandbox"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "landlock",
@@ -1155,7 +1187,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-skills"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "kernex-core",
  "serde",

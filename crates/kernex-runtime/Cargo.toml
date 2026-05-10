@@ -14,6 +14,7 @@ kernex-providers = { workspace = true }
 kernex-memory = { workspace = true, optional = true }
 kernex-skills = { workspace = true }
 kernex-pipelines = { workspace = true }
+kernex-adapter-core = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "fs"] }
 tracing = { workspace = true }
 anyhow = { workspace = true }
