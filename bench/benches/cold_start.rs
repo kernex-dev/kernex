@@ -9,11 +9,9 @@
 ///
 /// 2. `cold_start::memory_search_cold_start` measures the library-level
 ///    cold-start search path: opening a pre-populated SQLite store via
-///    `Store::new` and issuing one FTS5 search query. This is the
-///    proxy-of-record for the eventual `kx mem search` CLI cold start
-///    (which lives in the sister repo). Target: p95 <= 50 ms on
-///    macOS aarch64 release builds. Informational this sprint;
-///    promoted to a hard CI gate after three stable runs.
+///    `Store::new` and issuing one FTS5 search query. Target: p95
+///    <= 50 ms on macOS aarch64 release builds. Recorded as an
+///    informational measurement, not a hard CI gate.
 ///
 /// Run:
 ///   cargo bench --bench cold_start

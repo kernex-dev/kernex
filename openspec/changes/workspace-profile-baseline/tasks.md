@@ -1,13 +1,9 @@
 # Tasks: workspace profile + dependency hygiene baseline
 
 > **Reference:** [proposal.md](proposal.md).
-> Each task ≤ 2 focused hours. Sprint tag: `[s1]`.
+> Each task ≤ 2 focused hours. Change tag: `[s1]`.
 
-## Coordination
-
-This change is single-repo only. The sister repo (`kx`) will follow with its own feature-flag SDD that depends on `[workspace.dependencies]` being expanded here.
-
-## Phase 0: pre-execution audit (gates Phase 1)
+## Step 0: pre-execution audit (gates Step 1)
 
 ### P0-1. Audit `catch_unwind` and `#[should_panic]` `[s1]`
 
@@ -19,7 +15,7 @@ grep -rn "catch_unwind\|should_panic\|panic::set_hook\|panic::take_hook\|resume_
 - If there are NO production callers of `catch_unwind` and `#[should_panic]` is only in test code, proceed with `panic = "abort"` in P1-1.
 - If production callers exist, document them in [proposal.md](proposal.md) "Risks", keep `panic = "unwind"`, and proceed.
 
-## Phase 1: profile config
+## Step 1: profile config
 
 ### P1-1. Add `[profile.release]` block to workspace `Cargo.toml` `[s1]`
 
@@ -57,7 +53,7 @@ cargo fmt --check
 
 All four must pass before proceeding.
 
-## Phase 2: workspace dependencies
+## Step 2: workspace dependencies
 
 ### P2-1. Audit consumers, then expand `[workspace.dependencies]` `[s1]`
 
@@ -88,7 +84,7 @@ chrono = { version = "0.4", default-features = false, features = ["serde"] }
 async-trait = "0.1"
 ```
 
-**Do not** add `clap` to `[workspace.dependencies]` unless an `examples/` crate or test fixture in this workspace consumes it (none do at time of writing; the binary lives in the sister repo).
+**Do not** add `clap` to `[workspace.dependencies]` unless an `examples/` crate or test fixture in this workspace consumes it (none do at time of writing; the binary lives in `kernex-agent`).
 
 Adjust versions to match what member crates currently pin. **Never silently downgrade.**
 
@@ -121,7 +117,7 @@ For each unused dep flagged: remove from the crate's `Cargo.toml`, OR add to `[p
 
 Same gate as P1-3. Expected outcome: same green status, smaller compile times due to dedup.
 
-## Phase 3: bloat baseline
+## Step 3: bloat baseline
 
 ### P3-1. Capture `cargo bloat --crates` baseline `[s1]`
 
@@ -132,24 +128,24 @@ cargo bloat --release --crates -n 30 > docs/bloat-baseline-$(date +%Y-%m-%d)-cra
 cargo bloat --release -n 30 > docs/bloat-baseline-$(date +%Y-%m-%d)-functions.txt
 ```
 
-Commit both files. They are the reference for future bloat-diff CI gates.
+Commit both files. They are the reference for the bloat-diff CI gate.
 
 ### P3-2. Compare against pre-profile baseline (optional, info only) `[s1]`
 
 If a snapshot of the pre-profile binary exists, diff the bloat outputs to confirm the expected 35-55% reduction. If no pre-snapshot exists, skip.
 
-## Phase 4: CI gates
+## Step 4: CI gates
 
 ### P4-1. Author `.github/workflows/size-gate.yml` `[s1]`
 
 Four jobs:
 
-1. `binary-size` — runs on `macos-latest`, builds the default release binary, fails > 15 MB. **Gated `if: false` in this repo** (no binary here). Activates when copied to the sister repo.
-2. `feature-matrix` — runs on `ubuntu-latest`, builds 3 variants (minimal / default / full). **Gated `if: false` in this repo** for the same reason.
-3. `bloat` — runs `cargo bloat --release --crates`, diffs against `docs/bloat-baseline-*.txt`, soft-warns on > 10% per-crate growth. **Active.**
-4. `unused-deps` — runs `cargo machete`. **Active.**
+1. `binary-size` — runs on `macos-latest`, builds the default release binary, fails > 15 MB. Guarded with `if: contains(github.repository, 'kernex-agent')`; only runs when the workflow file is consumed from a binary-shipping repo.
+2. `feature-matrix` — runs on `ubuntu-latest`, builds 3 variants (minimal / default / full). Same guard.
+3. `bloat` — runs `cargo bloat --release --crates`, diffs against `docs/bloat-baseline-*.txt`, soft-warns on > 10% per-crate growth. **Active in this repo.**
+4. `unused-deps` — runs `cargo machete`. **Active in this repo.**
 
-The two gated-off jobs ship as scaffolding so the sister repo can copy the workflow and flip them on by removing the `if: false` line.
+The two guarded jobs ship as templated steps; they activate automatically when the workflow file runs in `kernex-agent`.
 
 ### P4-2. Author `scripts/check-size.sh` helper `[s1]`
 
@@ -171,7 +167,7 @@ Make it cross-platform (`stat -c%s` Linux, `stat -f%z` macOS).
 
 Python 3, no external deps.
 
-## Phase 5: library cold-start benchmark
+## Step 5: library cold-start benchmark
 
 ### P5-1. Add `criterion` to `bench/Cargo.toml` (if not already present) `[s1]`
 
@@ -184,7 +180,7 @@ Reuse the existing `bench` member crate.
 
 ### P5-2. Author `bench/benches/cold_start.rs` `[s1]`
 
-This bench measures `kernex-memory`'s library-level search call as a proxy for the eventual `kx mem search` CLI cold-start (which lives in the sister repo).
+This bench measures `kernex-memory`'s library-level search call as a proxy for the `kx mem search` CLI cold-start (which lives in `kernex-agent`).
 
 - Sets up a `tempfile::TempDir` for the store path; each benchmark iteration starts with a fresh process state where possible.
 - Seeds the store with a representative observation count (e.g. 1000 observations).
@@ -192,7 +188,7 @@ This bench measures `kernex-memory`'s library-level search call as a proxy for t
 - Records p50, p95, p99 latency.
 - Asserts on p95 informationally: target ≤ 50 ms on macOS aarch64 release builds.
 
-For this sprint, the benchmark MEASURES; the CI assertion is informational only (does not block merges) until promoted to a hard gate after three stable runs.
+The benchmark MEASURES; the CI assertion is informational only (does not block merges).
 
 ### P5-3. Capture benchmark baseline `[s1]`
 
@@ -202,7 +198,7 @@ cargo bench --bench cold_start > docs/bench-baseline-$(date +%Y-%m-%d)-cold-star
 
 Commit.
 
-## Phase 6: verify
+## Step 6: verify
 
 ### V-1. Full pre-commit gate `[s1]`
 
@@ -233,5 +229,5 @@ Add merge date and commit SHA to each file's header.
 
 - Any new crate.
 - Any trait change in `kernex-memory`.
-- Any work in the sister repo (the `kx` binary, feature flags, adapter implementations).
-- Per-variant binary-size enforcement (deferred to the sister repo's CI when its feature flags land; this sprint ships the YAML scaffold but the binary-size and feature-matrix jobs are gated off here).
+- Any work in `kernex-agent` (the `kx` binary).
+- Per-variant binary-size enforcement (lives in `kernex-agent`'s CI; this workflow templates the `binary-size` and `feature-matrix` jobs but guards them with `if: contains(github.repository, 'kernex-agent')`).

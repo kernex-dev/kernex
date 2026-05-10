@@ -2,8 +2,8 @@
 
 > **Change ID:** `workspace-profile-baseline`
 > **Author:** Jose Hurtado
-> **Status:** Draft v0.1
-> **Sprint window:** Sprint 1 (~5 working days)
+> **Status:** Landed
+> **Estimated effort:** ~5 working days
 > **Repo:** `kernex-dev/kernex` (this repo)
 
 ## Operator friction
@@ -15,9 +15,9 @@
 3. **No `cargo bloat` baseline.** Without a recorded baseline, regressions per crate are invisible.
 4. **No `cargo machete` audit.** Unused declared deps may be inflating compile time and binary size silently.
 5. **No CI size gates.** A PR that adds a 2 MB dep merges with no warning.
-6. **No benchmark suite for `kernex-memory` cold-start search.** This proposal sets a 50 ms threshold for the library-level search call as a proxy for the eventual `kx mem search` CLI cold-start; the measurement infrastructure does not exist yet.
+6. **No benchmark suite for `kernex-memory` cold-start search.** This proposal sets a 50 ms threshold for the library-level search call; the measurement infrastructure does not exist yet.
 
-This is the foundation. Without it, every subsequent sprint operates blind to size and performance.
+This is the foundation. Without it, future regressions to size and performance are invisible.
 
 ## Solution overview
 
@@ -26,14 +26,14 @@ Apply the following engineering disciplines as pure config and audit work:
 - **Profile**: a `[profile.release]` block tuned for binary size on macOS aarch64.
 - **Dependency hygiene**: shared `[workspace.dependencies]` pins, feature tightening, `cargo machete` cleanup, `cargo bloat` baseline.
 - **Workspace deduplication**: member crates use `{ workspace = true }` for shared deps.
-- **CI gates**: a `size-gate.yml` workflow that runs `cargo bloat` diffing and `cargo machete` on every PR. Binary-size and per-feature-matrix size jobs are scaffolded but disabled here; they activate in the sister repo (`kernex-agent`) where the `kx` binary lives.
-- **Library cold-start benchmark**: a `criterion` bench measuring `kernex-memory`'s search call as a proxy for `kx mem search` cold-start. Threshold 50 ms on macOS aarch64 release builds; informational only this sprint, promoted to a hard gate after three stable runs.
+- **CI gates**: a `size-gate.yml` workflow that runs `cargo bloat` diffing and `cargo machete` on every PR. The workflow also templates two additional jobs (binary-size, feature-matrix) that are guarded with `if: contains(github.repository, 'kernex-agent')` so they only activate when the workflow runs from `kernex-agent`.
+- **Library cold-start benchmark**: a `criterion` bench measuring `kernex-memory`'s search call. Threshold 50 ms on macOS aarch64 release builds; recorded as an informational measurement, not a hard gate.
 
 This is **pure config and audit work.** No new code. No new crates. No API changes. No behavior change to consumers.
 
 ## Scope
 
-### In scope (this sprint)
+### In scope
 
 1. Add `[profile.release]` block to workspace root `Cargo.toml`:
    - `lto = "fat"`
@@ -57,8 +57,8 @@ This is **pure config and audit work.** No new code. No new crates. No API chang
 6. Run `cargo machete` and remove unused declared deps.
 7. Audit dep features per the inventory above; tighten where bloat reports show wins.
 8. Add CI workflow `.github/workflows/size-gate.yml` with four jobs:
-   - `binary-size` job (kx default ≤ 15 MB hard, ≤ 13 MB soft warn). **Gated `if: false` in this repo**; the `kx` binary lives in the sister repo. Activated when copied to that repo.
-   - `feature-matrix` job (3 variants: minimal, default, full). **Gated `if: false` in this repo** for the same reason.
+   - `binary-size` job (kx default ≤ 15 MB hard, ≤ 13 MB soft warn). Guarded with `if: contains(github.repository, 'kernex-agent')`; only runs when the workflow file is consumed from a binary-shipping repo.
+   - `feature-matrix` job (3 variants: minimal, default, full). Same guard.
    - `bloat` job (per-crate diff against the committed baseline, soft warn at >10% growth). **Active in this repo.**
    - `unused-deps` job (`cargo machete`). **Active in this repo.**
 9. Author benchmark suite in the existing `bench/` member crate, measuring `kernex-memory`'s library-level search call:
@@ -66,27 +66,23 @@ This is **pure config and audit work.** No new code. No new crates. No API chang
    - Seeds an in-memory store with a representative observation count (e.g. 1000 entries).
    - Measures cold-start latency of `kernex-memory`'s search API directly (no CLI wrapping).
    - Records p50, p95, p99.
-   - Threshold: p95 ≤ 50 ms on macOS aarch64 release builds. **Informational only this sprint.** Promotion to hard gate after three stable runs.
+   - Threshold: p95 ≤ 50 ms on macOS aarch64 release builds. **Recorded as an informational measurement, not a hard gate.**
 
-### Out of scope (deferred)
+### Out of scope
 
 - Any change to public API of any crate.
 - Any new crate.
 - Trait promotion in `kernex-memory`.
-- Any work targeting the `kx` binary in the sister repo.
-- Provider feature audits beyond removing unused features (full audit deferred).
-- Per-variant binary-size gates (live in the sister repo's CI).
+- Any work targeting the `kx` binary in `kernex-agent`.
+- Provider feature audits beyond removing unused features (full audit out of scope).
+- Per-variant binary-size enforcement (lives in `kernex-agent`'s CI).
 
-### Cross-repo coordination
+## Why this scope
 
-This change is single-repo only. The sister repo (`kx`) will reuse the size-gate workflow pattern when its feature flags land; this SDD ships the YAML scaffold for that to copy.
-
-## Why this sprint, why this scope
-
-- **Foundation, not feature.** Every subsequent sprint trusts the size budget and measurement infrastructure. Skipping this means flying blind.
+- **Foundation, not feature.** The size budget and measurement infrastructure are load-bearing for every change downstream. Skipping this means flying blind.
 - **No new code = low risk.** Pure config changes are easy to review and easy to revert.
-- **Compounded savings.** Profile changes alone are estimated to yield 35-55% binary size reduction. This sprint may land the default workspace builds well under the 15 MB ceiling immediately, before any feature work in the sister repo.
-- **CI gates buy peace of mind.** Once CI fails on regressions, the team can iterate on features without manual size policing.
+- **Compounded savings.** Profile changes alone are estimated to yield 35-55% binary size reduction. The default workspace builds may land well under the 15 MB ceiling immediately.
+- **CI gates buy peace of mind.** Once CI fails on regressions, contributors can iterate on features without manual size policing.
 
 ## Success criteria
 
@@ -109,4 +105,4 @@ The change ships when:
 - **`opt-level = "z"` hurts hot-path performance > 50 ms cold-start.** Mitigation: the `release-fast` profile is the already-declared fallback; pivot if benchmark exceeds threshold.
 - **Tightening `[workspace.dependencies]` features breaks a consumer.** Mitigation: P2-1 audits consumers BEFORE tightening; deps with active feature dependents stay at their current feature set.
 - **`cargo machete` flags a dep that is conditionally used.** Mitigation: add `[package.metadata.cargo-machete] ignored = [...]` for false positives with a comment.
-- **CI size-gate too strict, false-positives PRs.** Mitigation: `bloat` job is soft-warn only (advisory); `binary-size` and `feature-matrix` jobs are gated off in this repo and only activate in the sister repo.
+- **CI size-gate too strict, false-positives PRs.** Mitigation: `bloat` job is soft-warn only (advisory); `binary-size` and `feature-matrix` jobs are guarded with `if: contains(github.repository, 'kernex-agent')` and only activate when the workflow file is consumed from `kernex-agent`.
