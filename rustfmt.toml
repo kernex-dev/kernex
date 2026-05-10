@@ -1,0 +1,11 @@
+# Rustfmt configuration for the kernex workspace.
+#
+# Set both `edition` and `style_edition` explicitly so direct `rustfmt`
+# invocations match `cargo fmt`'s behaviour. See
+# https://rust-lang.github.io/rustfmt/ for the full options reference.
+#
+# Stable options only — nightly options (imports_granularity,
+# group_imports, etc.) require `cargo +nightly fmt` and would fail
+# CI's `cargo fmt --check` job.
+edition = "2021"
+style_edition = "2021"
