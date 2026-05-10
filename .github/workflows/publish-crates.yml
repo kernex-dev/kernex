@@ -66,7 +66,12 @@ jobs:
 
       # Publish chain. Order matches `RELEASE_CHECKLIST.md` Step 3:
       #   kernex-core -> kernex-sandbox -> kernex-memory -> kernex-pipelines ->
-      #   kernex-skills -> kernex-providers -> kernex-runtime -> kernex
+      #   kernex-skills -> kernex-providers -> kernex-adapter-core ->
+      #   kernex-runtime -> kernex
+      #
+      # `kernex-adapter-core` ships before `kernex-runtime` because the
+      # runtime crate's published Cargo.toml requires resolving it from
+      # crates.io (the workspace path-dep is dev-only).
       #
       # Each publish is followed by a 30s wait to let crates.io's index
       # propagate before the next dependency resolution runs.
@@ -96,6 +101,10 @@ jobs:
 
       - name: Publish kernex-providers
         run: cargo publish -p kernex-providers --locked
+      - run: sleep 30
+
+      - name: Publish kernex-adapter-core
+        run: cargo publish -p kernex-adapter-core --locked
       - run: sleep 30
 
       - name: Publish kernex-runtime
