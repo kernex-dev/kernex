@@ -5,7 +5,7 @@
 /// Runtime instances in parallel and records peak process RSS before
 /// dropping them, giving a per-agent memory baseline.
 ///
-/// This is NOT a Criterion throughput benchmark — it's a point-in-time
+/// This is NOT a Criterion throughput benchmark; it is a point-in-time
 /// RSS snapshot. Criterion is used only for structure and reporting.
 ///
 /// Run:
