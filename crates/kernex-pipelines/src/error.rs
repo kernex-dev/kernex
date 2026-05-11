@@ -2,7 +2,7 @@
 //!
 //! Replaces the old `kernex_core::KernexError::Pipeline(String)` shape so
 //! callers can pattern-match on the actual cause. Foreign errors
-//! (`toml::de::Error`, `std::io::Error`) are preserved as `#[source]` so
+//! (`basic_toml::Error`, `std::io::Error`) are preserved as `#[source]` so
 //! the chain stays intact.
 
 /// Errors produced by topology loading and pipeline execution.
@@ -15,7 +15,7 @@ pub enum PipelineError {
         context: String,
         /// The underlying toml deserialization error.
         #[source]
-        source: toml::de::Error,
+        source: basic_toml::Error,
     },
 
     /// A filesystem operation failed (read TOPOLOGY.toml, list agents/, etc).
@@ -35,8 +35,8 @@ pub enum PipelineError {
 }
 
 impl PipelineError {
-    /// Wrap a `toml::de::Error` with operation context.
-    pub fn toml(context: impl Into<String>, source: toml::de::Error) -> Self {
+    /// Wrap a `basic_toml::Error` with operation context.
+    pub fn toml(context: impl Into<String>, source: basic_toml::Error) -> Self {
         Self::Toml {
             context: context.into(),
             source,

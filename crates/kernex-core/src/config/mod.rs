@@ -173,7 +173,7 @@ pub fn load(path: &str) -> Result<KernexConfig, KernexError> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| KernexError::Config(format!("failed to read {}: {}", path.display(), e)))?;
 
-    let config: KernexConfig = toml::from_str(&content)
+    let config: KernexConfig = basic_toml::from_str(&content)
         .map_err(|e| KernexError::Config(format!("failed to parse config: {e}")))?;
 
     Ok(config)
@@ -276,7 +276,7 @@ channel = "api"
 project = "acme"
 system_prompt = "You are a coding assistant."
 "#;
-        let config: KernexConfig = toml::from_str(toml_src).unwrap();
+        let config: KernexConfig = basic_toml::from_str(toml_src).unwrap();
         assert_eq!(config.runtime.name, "my-agent");
         assert_eq!(config.runtime.channel, "api");
         assert_eq!(config.runtime.project, Some("acme".to_string()));

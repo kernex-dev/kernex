@@ -11,7 +11,7 @@ readme = "README.md"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml_ng = { workspace = true, optional = true }
-toml = { workspace = true }
+basic-toml = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }

@@ -43,7 +43,7 @@ fn parse_project_frontmatter(content: &str) -> (ProjectFrontmatter, &str) {
     let body = body.strip_prefix('\n').unwrap_or(body);
 
     // Try TOML first.
-    if let Ok(fm) = toml::from_str::<ProjectFrontmatter>(block) {
+    if let Ok(fm) = basic_toml::from_str::<ProjectFrontmatter>(block) {
         return (fm, body);
     }
 
