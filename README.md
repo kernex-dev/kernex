@@ -65,7 +65,7 @@ For running examples:
 
 ## Architecture
 
-Kernex is a Cargo workspace with 7 composable crates:
+Kernex is a Cargo workspace with 9 composable crates published to crates.io:
 
 ```mermaid
 graph TD
@@ -73,21 +73,26 @@ graph TD
     classDef core fill:#4A5568,stroke:#2D3748,stroke-width:2px,color:#fff
     classDef impl fill:#319795,stroke:#285E61,stroke-width:2px,color:#fff
 
+    U[kernex]:::facade
     R[kernex-runtime]:::facade
     C[kernex-core]:::core
+    AC[kernex-adapter-core]:::core
     S[kernex-sandbox]:::impl
     P[kernex-providers]:::impl
     M[kernex-memory]:::impl
     K[kernex-skills]:::impl
     PL[kernex-pipelines]:::impl
 
+    U --> R
     R --> C
+    R --> AC
     R --> S
     R --> P
     R --> M
     R --> K
     R --> PL
 
+    AC --> C
     P --> C
     M --> C
     K --> C
@@ -98,10 +103,12 @@ graph TD
 
 | Crate | crates.io | Description |
 |-------|-----------|-------------|
+| [`kernex`](crates/kernex) | [![](https://img.shields.io/crates/v/kernex?style=flat-square)](https://crates.io/crates/kernex) | Umbrella crate; re-exports `kernex-runtime` |
 | [`kernex-core`](crates/kernex-core) | [![](https://img.shields.io/crates/v/kernex-core?style=flat-square)](https://crates.io/crates/kernex-core) | Shared types, traits, config, sanitization |
+| [`kernex-adapter-core`](crates/kernex-adapter-core) | [![](https://img.shields.io/crates/v/kernex-adapter-core?style=flat-square)](https://crates.io/crates/kernex-adapter-core) | `Adapter` trait + `AdapterId`, `Capability`, `AdapterRegistry` |
 | [`kernex-sandbox`](crates/kernex-sandbox) | [![](https://img.shields.io/crates/v/kernex-sandbox?style=flat-square)](https://crates.io/crates/kernex-sandbox) | OS-level sandbox (Seatbelt + Landlock) |
 | [`kernex-providers`](crates/kernex-providers) | [![](https://img.shields.io/crates/v/kernex-providers?style=flat-square)](https://crates.io/crates/kernex-providers) | 11 AI providers (+ Bedrock optional), tool executor, MCP client |
-| [`kernex-memory`](crates/kernex-memory) | [![](https://img.shields.io/crates/v/kernex-memory?style=flat-square)](https://crates.io/crates/kernex-memory) | SQLite memory, FTS5 search, reward learning |
+| [`kernex-memory`](crates/kernex-memory) | [![](https://img.shields.io/crates/v/kernex-memory?style=flat-square)](https://crates.io/crates/kernex-memory) | SQLite memory, FTS5 search, reward learning, `MemoryStore` trait, soft-delete |
 | [`kernex-skills`](crates/kernex-skills) | [![](https://img.shields.io/crates/v/kernex-skills?style=flat-square)](https://crates.io/crates/kernex-skills) | Skill/project loader, trigger matching |
 | [`kernex-pipelines`](crates/kernex-pipelines) | [![](https://img.shields.io/crates/v/kernex-pipelines?style=flat-square)](https://crates.io/crates/kernex-pipelines) | TOML topology, multi-agent orchestration |
 | [`kernex-runtime`](crates/kernex-runtime) | [![](https://img.shields.io/crates/v/kernex-runtime?style=flat-square)](https://crates.io/crates/kernex-runtime) | Facade crate with `RuntimeBuilder` |
@@ -112,9 +119,9 @@ Add Kernex to your project:
 
 ```toml
 [dependencies]
-kernex-runtime = "0.4"
-kernex-core = "0.4"
-kernex-providers = "0.4"
+kernex-runtime = "0.6.1"
+kernex-core = "0.6.1"
+kernex-providers = "0.6.1"
 tokio = { version = "1", features = ["full"] }
 ```
 
