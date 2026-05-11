@@ -13,6 +13,7 @@ pub mod consolidator;
 pub mod error;
 pub mod memory_store;
 pub mod store;
+pub mod types;
 
 pub use audit::AuditLogger;
 pub use consolidator::{ConsolidationResult, Consolidator, ConsolidatorConfig};
@@ -23,3 +24,4 @@ pub use store::DueTask;
 pub use store::PhaseCheckpoint;
 pub use store::Store;
 pub use store::{UsageBreakdown, UsageSummary};
+pub use types::{HistoryRow, MessageRow};

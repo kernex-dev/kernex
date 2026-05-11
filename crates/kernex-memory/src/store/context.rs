@@ -88,7 +88,7 @@ impl Store {
 
         let recall_fut = async {
             if needs.recall {
-                self.search_messages(&incoming.text, &conv_id, &incoming.sender_id, 5)
+                self.search_messages(&incoming.text, &conv_id, &incoming.sender_id, 5, None)
                     .await
                     .unwrap_or_default()
             } else {

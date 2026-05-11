@@ -15,11 +15,13 @@
 //! opening a second SQLite connection against the same database file.
 
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use async_trait::async_trait;
 
 use crate::error::MemoryError;
 use crate::store::{DueTask, Store, UsageSummary};
+use crate::types::{HistoryRow, MessageRow};
 
 /// Public trait surface over [`Store`].
 ///
@@ -56,17 +58,24 @@ pub trait MemoryStore: Send + Sync {
         channel: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String)>, MemoryError>;
+    ) -> Result<Vec<HistoryRow>, MemoryError>;
 
     /// FTS5 full-text search over user messages, excluding the live
-    /// conversation. Returns up to `limit` `(channel, role, content)` rows.
+    /// conversation. When `since` is `Some`, only rows with
+    /// `timestamp >= since` are returned and `limit` applies after the
+    /// recency filter.
     async fn search_messages(
         &self,
         query: &str,
         exclude_conversation_id: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String, String)>, MemoryError>;
+        since: Option<SystemTime>,
+    ) -> Result<Vec<MessageRow>, MemoryError>;
+
+    /// Fetch a single message row by its UUID. Returns `None` when the
+    /// id is missing.
+    async fn get_message_by_id(&self, id: &str) -> Result<Option<MessageRow>, MemoryError>;
 
     // --- facts (write paths plus soft-only delete on the trait) ---
 
@@ -174,7 +183,7 @@ impl MemoryStore for Store {
         channel: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String)>, MemoryError> {
+    ) -> Result<Vec<HistoryRow>, MemoryError> {
         Store::get_history(self, channel, sender_id, limit).await
     }
 
@@ -184,8 +193,21 @@ impl MemoryStore for Store {
         exclude_conversation_id: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String, String)>, MemoryError> {
-        Store::search_messages(self, query, exclude_conversation_id, sender_id, limit).await
+        since: Option<SystemTime>,
+    ) -> Result<Vec<MessageRow>, MemoryError> {
+        Store::search_messages(
+            self,
+            query,
+            exclude_conversation_id,
+            sender_id,
+            limit,
+            since,
+        )
+        .await
+    }
+
+    async fn get_message_by_id(&self, id: &str) -> Result<Option<MessageRow>, MemoryError> {
+        Store::get_message_by_id(self, id).await
     }
 
     async fn store_fact(&self, sender_id: &str, key: &str, value: &str) -> Result<(), MemoryError> {

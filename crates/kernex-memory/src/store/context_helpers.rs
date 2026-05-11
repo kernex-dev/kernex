@@ -72,7 +72,7 @@ pub(super) struct SystemPromptContext<'a> {
     pub base_rules: &'a str,
     pub facts: &'a [(String, String)],
     pub summaries: &'a [(String, String)],
-    pub recall: &'a [(String, String, String)],
+    pub recall: &'a [crate::types::MessageRow],
     pub pending_tasks: &'a [(String, String, String, Option<String>, String, String)],
     pub outcomes: &'a [(i32, String, String, String)],
     pub lessons: &'a [(String, String, String)],
@@ -99,14 +99,15 @@ pub(super) fn build_system_prompt(ctx: &SystemPromptContext<'_>) -> String {
 
     if !ctx.recall.is_empty() {
         prompt.push_str("\n\nRelated past context:");
-        for (_role, content, timestamp) in ctx.recall {
-            let truncated = if content.len() > 200 {
-                let boundary = kernex_core::utf8::floor_char_boundary(content, 200);
-                format!("{}...", &content[..boundary])
+        for row in ctx.recall {
+            let truncated = if row.content.len() > 200 {
+                let boundary = kernex_core::utf8::floor_char_boundary(&row.content, 200);
+                format!("{}...", &row.content[..boundary])
             } else {
-                content.clone()
+                row.content.clone()
             };
-            prompt.push_str(&format!("\n- [{timestamp}] User: {truncated}"));
+            let ts = crate::types::format_sqlite_timestamp(row.timestamp);
+            prompt.push_str(&format!("\n- [{ts}] User: {truncated}"));
         }
     }
 
