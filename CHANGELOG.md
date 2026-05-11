@@ -7,12 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-05-11
+
+First end-to-end release-plz cycle. Release PR #17 squash-merged at `87b7fa6` triggered the publish chain via the GitHub App identity wired in v0.6.1; all 9 publishable crates shipped automatically.
+
+### Performance
+
+- **`kernex-memory`**: migrations fast-path in `Store::run_migrations`. The per-migration `SELECT name FROM _migrations WHERE name = ?` round-trip loop (17 migrations at time of writing) is replaced by one `SELECT name FROM _migrations` plus an in-memory `HashSet<String>` membership check. Drops the cold-open cost from O(N) network round-trips to O(1).
+
+### Changed
+
+- **Workspace**: `toml = "0.8"` swapped for `basic-toml = "0.1"` (dtolnay's minimal serde-compatible TOML parser) across `kernex-core`, `kernex-pipelines`, `kernex-presets`, `kernex-skills`. `toml_edit` is now fully absent from the workspace dep graph. Per-feature gating documented in the FU-B-01 research note is no longer needed because `basic-toml` is a drop-in replacement that avoids the architectural restructure.
+
 ### CI / Release tooling
 
 - **GitHub App identity for release-plz** (`actions/create-github-app-token@v3.1.1`) replaces the workflow's default `GITHUB_TOKEN`. The App (owned by `kernex-dev`, installed on `kernex-dev/kernex` with Contents + Pull requests read+write) mints a short-lived installation token at job time. Because GitHub Actions blocks recursive workflow triggers for refs pushed by `GITHUB_TOKEN`, this is the only way release-plz's Release PR branch can fire CI on the PR, and its tag push can auto-fire `publish-crates.yml`. Without this, every cycle required a manual `git push --delete origin v* && git push origin v*` from a developer machine to fire the publish chain.
 - **`workflow_dispatch` trigger** added to `publish-crates.yml` as an escape hatch (`gh workflow run publish-crates.yml --ref v<version>`). Used for emergency republishes, yank recovery, or when the App token mint fails.
 - **release-plz workspace-level `publish = false`** added to `release-plz.toml` so release-plz only tags and never tries to `cargo publish`. Publishing is delegated entirely to `publish-crates.yml` (which uses OIDC).
 - **release-plz workflow defaults** restored: dropped the `command: release-pr` override so the action runs both `release-pr` (open Release PR) and `release` (create tag on Cargo.toml > last-tag drift) in sequence.
+- **Cold-start CI gate** promoted from informational to hard-fail at p95 ≤ 50 ms. New `cold_start_gate` job in `.github/workflows/ci.yml` runs `cargo bench -p kernex-bench --bench cold_start -- memory_search_cold_start` and parses the criterion `time:` line via `scripts/check-cold-start.sh`.
 
 ## [0.6.1] - 2026-05-10
 

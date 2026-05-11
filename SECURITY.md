@@ -16,11 +16,14 @@ We will acknowledge receipt within 48 hours and aim to provide a fix within 7 da
 
 ## Supported Versions
 
-| Version | Supported |
-|---------|-----------|
-| 0.4.x   | Yes       |
-| 0.3.x   | No        |
-| < 0.3   | No        |
+Security fixes land on the current minor and the immediately previous minor.
+
+| Version | Supported           |
+|---------|---------------------|
+| 0.6.x   | Yes (current)       |
+| 0.5.x   | Yes (previous)      |
+| 0.4.x   | No                  |
+| < 0.4   | No                  |
 
 ## Security Design
 
