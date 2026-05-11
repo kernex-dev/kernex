@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/kernex-dev/kernex/compare/v0.6.1...v0.6.2) - 2026-05-11
+
+### Performance
+
+- Fast-path migration check in `Store::new`: replace the per-migration `SELECT name FROM _migrations WHERE name = ?` round-trip loop with one `SELECT name FROM _migrations` plus an in-memory `HashSet` lookup. O(N²) network IO becomes O(N); saves ~10 ms per cold open on warm cache.
+
+### Documentation
+
+- Add `openspec/changes/memory-typed-row-shape/` (proposal + tasks) that locks the two-slice plan for typed row shapes on the trait surface. Slice A (this release) ships the perf fast-path. Slice B (deferred to 0.7.0) types `updated_at` as `SystemTime`, pushes `since: Option<SystemTime>` server-side into `search_messages`, and surfaces `MessageRow` / `HistoryRow` from the trait return.
+
 ## [0.6.1](https://github.com/kernex-dev/kernex/compare/v0.6.0...v0.6.1) - 2026-05-10
 
 ### Other
