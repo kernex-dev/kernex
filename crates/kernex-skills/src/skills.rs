@@ -562,7 +562,7 @@ fn parse_skill_file(content: &str) -> Option<SkillFrontmatter> {
     let block = &rest[..end];
 
     // Try TOML first.
-    if let Ok(fm) = toml::from_str::<SkillFrontmatter>(block) {
+    if let Ok(fm) = basic_toml::from_str::<SkillFrontmatter>(block) {
         return Some(fm);
     }
 

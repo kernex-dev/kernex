@@ -234,7 +234,7 @@ pub fn load_topology(data_dir: &str, name: &str) -> Result<LoadedTopology, Kerne
     let toml_content = std::fs::read_to_string(&toml_path).map_err(|e| -> KernexError {
         PipelineError::Logic(format!("failed to read TOPOLOGY.toml: {e}")).into()
     })?;
-    let topology: Topology = toml::from_str(&toml_content).map_err(|e| -> KernexError {
+    let topology: Topology = basic_toml::from_str(&toml_content).map_err(|e| -> KernexError {
         PipelineError::Logic(format!("failed to parse TOPOLOGY.toml: {e}")).into()
     })?;
 
@@ -371,7 +371,7 @@ version = 1
 name = "analyst"
 agent = "build-analyst"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         assert_eq!(topo.topology.name, "test");
         assert_eq!(topo.phases.len(), 1);
         assert_eq!(topo.phases[0].name, "analyst");
@@ -389,7 +389,7 @@ version = 1
 name = "basic"
 agent = "build-basic"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let phase = &topo.phases[0];
         assert_eq!(phase.model_tier, PhaseTier::Complex);
         assert_eq!(phase.phase_type, PhaseType::Standard);
@@ -427,7 +427,7 @@ name = "d"
 agent = "build-d"
 phase_type = "parse-summary"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         assert_eq!(topo.phases[0].phase_type, PhaseType::Standard);
         assert_eq!(topo.phases[1].phase_type, PhaseType::ParseBrief);
         assert_eq!(topo.phases[2].phase_type, PhaseType::CorrectiveLoop);
@@ -452,7 +452,7 @@ name = "complex-phase"
 agent = "build-complex"
 model_tier = "complex"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         assert_eq!(topo.phases[0].model_tier, PhaseTier::Fast);
         assert_eq!(topo.phases[1].model_tier, PhaseTier::Complex);
     }
@@ -474,7 +474,7 @@ phase_type = "corrective-loop"
 max = 3
 fix_agent = "build-developer"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let retry = topo.phases[0].retry.as_ref().unwrap();
         assert_eq!(retry.max, 3);
         assert_eq!(retry.fix_agent, "build-developer");
@@ -496,7 +496,7 @@ agent = "build-test-writer"
 type = "file_exists"
 paths = ["specs/architecture.md"]
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let validation = topo.phases[0].pre_validation.as_ref().unwrap();
         assert_eq!(validation.validation_type, ValidationType::FileExists);
         assert_eq!(validation.paths, vec!["specs/architecture.md"]);
@@ -518,7 +518,7 @@ agent = "build-developer"
 type = "file_patterns"
 patterns = ["test", "spec", "_test."]
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let validation = topo.phases[0].pre_validation.as_ref().unwrap();
         assert_eq!(validation.validation_type, ValidationType::FilePatterns);
         assert_eq!(validation.patterns, vec!["test", "spec", "_test."]);
@@ -537,7 +537,7 @@ name = "architect"
 agent = "build-architect"
 post_validation = ["specs/architecture.md"]
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let post = topo.phases[0].post_validation.as_ref().unwrap();
         assert_eq!(post, &vec!["specs/architecture.md".to_string()]);
     }
@@ -555,13 +555,13 @@ name = "analyst"
 agent = "build-analyst"
 max_turns = 25
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         assert_eq!(topo.phases[0].max_turns, Some(25));
     }
 
     #[test]
     fn test_topology_deserialize_invalid_toml_returns_err() {
-        let result: Result<Topology, _> = toml::from_str("this is not valid TOML {{{");
+        let result: Result<Topology, _> = basic_toml::from_str("this is not valid TOML {{{");
         assert!(result.is_err());
     }
 
@@ -572,7 +572,7 @@ max_turns = 25
 name = "analyst"
 agent = "build-analyst"
 "#;
-        let result: Result<Topology, _> = toml::from_str(toml_str);
+        let result: Result<Topology, _> = basic_toml::from_str(toml_str);
         assert!(result.is_err());
     }
 
@@ -588,7 +588,7 @@ version = "not-a-number"
 name = "analyst"
 agent = "build-analyst"
 "#;
-        let result: Result<Topology, _> = toml::from_str(toml_str);
+        let result: Result<Topology, _> = basic_toml::from_str(toml_str);
         assert!(result.is_err());
     }
 
@@ -605,7 +605,7 @@ name = "custom"
 agent = "build-custom"
 phase_type = "nonexistent-type"
 "#;
-        let result: Result<Topology, _> = toml::from_str(toml_str);
+        let result: Result<Topology, _> = basic_toml::from_str(toml_str);
         assert!(result.is_err());
     }
 
@@ -678,7 +678,7 @@ agent = "build-delivery"
 model_tier = "complex"
 phase_type = "parse-summary"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         assert_eq!(topo.topology.name, "development");
         assert_eq!(topo.phases.len(), 7);
 
@@ -866,7 +866,7 @@ agent = "build-a"
 name = "b"
 agent = "build-b"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let loaded = LoadedTopology {
             topology: topo,
             agents: Default::default(),
@@ -897,7 +897,7 @@ name = "b"
 agent = "build-b"
 parallel_group = "stage-1"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let loaded = LoadedTopology {
             topology: topo,
             agents: Default::default(),
@@ -936,7 +936,7 @@ parallel_group = "research"
 name = "deliver"
 agent = "build-deliver"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let loaded = LoadedTopology {
             topology: topo,
             agents: Default::default(),
@@ -971,7 +971,7 @@ name = "c"
 agent = "build-c"
 parallel_group = "g1"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let loaded = LoadedTopology {
             topology: topo,
             agents: Default::default(),
@@ -1007,7 +1007,7 @@ name = "z"
 agent = "build-z"
 parallel_group = "batch"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         let loaded = LoadedTopology {
             topology: topo,
             agents: Default::default(),
@@ -1035,7 +1035,7 @@ parallel_group = "my-group"
 name = "b"
 agent = "build-b"
 "#;
-        let topo: Topology = toml::from_str(toml_str).unwrap();
+        let topo: Topology = basic_toml::from_str(toml_str).unwrap();
         assert_eq!(topo.phases[0].parallel_group, Some("my-group".to_string()));
         assert!(topo.phases[1].parallel_group.is_none());
     }

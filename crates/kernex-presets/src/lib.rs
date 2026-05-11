@@ -34,7 +34,7 @@ pub enum PresetError {
     Empty(String),
 
     #[error("preset {0:?} parse error: {1}")]
-    Parse(String, toml::de::Error),
+    Parse(String, basic_toml::Error),
 }
 
 /// Load a preset by name. Bodies ship empty in this scaffold, so any known
@@ -57,5 +57,5 @@ pub fn load_preset(name: &str) -> Result<Preset, PresetError> {
         return Err(PresetError::Empty(name.to_string()));
     }
 
-    toml::from_str(raw).map_err(|e| PresetError::Parse(name.to_string(), e))
+    basic_toml::from_str(raw).map_err(|e| PresetError::Parse(name.to_string(), e))
 }
