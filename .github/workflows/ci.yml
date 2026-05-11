@@ -105,6 +105,33 @@ jobs:
       - name: Compile benches (no run)
         run: cargo bench --workspace --no-run --locked
 
+  cold_start_gate:
+    # Hard CI gate on `cold_start/memory_search_cold_start` from
+    # bench/benches/cold_start.rs. Threshold = 50 ms median per
+    # V2-EXECUTION-PLAN decision 1.4 (the size-vs-perf locking value
+    # that flips the release profile to `release-fast` if exceeded).
+    # Local macOS aarch64 baseline at Phase A close: 1.87-1.94 ms
+    # (~25x headroom). CI runs on Linux ubuntu-latest, which is noisier
+    # than dedicated hardware, but the headroom is wide enough that
+    # criterion variance never approaches the gate.
+    #
+    # Closes FU-A-03 (kernex-studio orchestration register).
+    name: Cold-start CI gate (50 ms threshold)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          prefix-key: ${{ env.CACHE_NAMESPACE }}
+      - name: Run cold_start/memory_search_cold_start
+        run: |
+          set -o pipefail
+          cargo bench -p kernex-bench --bench cold_start --locked -- \
+            memory_search_cold_start 2>&1 | tee /tmp/cold_start.log
+      - name: Enforce 50 ms median threshold
+        run: bash scripts/check-cold-start.sh /tmp/cold_start.log 50
+
   lint-workflows:
     name: Lint Workflows
     runs-on: ubuntu-latest
