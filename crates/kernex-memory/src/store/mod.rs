@@ -288,17 +288,21 @@ impl Store {
             ),
         ];
 
-        for (name, sql) in migrations {
-            let applied: Option<(String,)> =
-                sqlx::query_as("SELECT name FROM _migrations WHERE name = ?")
-                    .bind(name)
-                    .fetch_optional(pool)
-                    .await
-                    .map_err(|e| {
-                        MemoryError::sqlite(format!("failed to check migration {name}"), e)
-                    })?;
+        // Fast-path: fetch the applied-migrations set in a single SELECT
+        // and check membership in memory. The previous shape issued one
+        // `SELECT name FROM _migrations WHERE name = ?` round-trip per
+        // migration (17 of them at time of writing), which dominated the
+        // cold-open cost of `Store::new` on warm caches. One SELECT is
+        // O(N) network IO instead of O(N²); the in-memory check is free.
+        let applied_rows: Vec<(String,)> = sqlx::query_as("SELECT name FROM _migrations")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| MemoryError::sqlite("failed to load applied migrations", e))?;
+        let applied: std::collections::HashSet<String> =
+            applied_rows.into_iter().map(|(name,)| name).collect();
 
-            if applied.is_some() {
+        for (name, sql) in migrations {
+            if applied.contains(*name) {
                 continue;
             }
 
