@@ -39,9 +39,9 @@ Eleven providers ship today: Claude Code CLI, Anthropic, OpenAI, Ollama, Gemini,
 
 ### Composable Crates, Not a Monolith
 
-Kernex ships as seven independent crates. Use what you need.
+Kernex ships as nine independent crates published to crates.io. Use what you need.
 
-Running local agents with Ollama and no persistent memory? Pull `kernex-providers` and `kernex-core`. Building a production pipeline with compliance hooks? Add `kernex-memory` and wire `HookRunner`. Deploying the sandbox in an existing application? `kernex-sandbox` is publishable standalone.
+Running local agents with Ollama and no persistent memory? Pull `kernex-providers` and `kernex-core`. Building a production pipeline with compliance hooks? Add `kernex-memory` and wire `HookRunner`. Deploying the sandbox in an existing application? `kernex-sandbox` is publishable standalone. Writing your own agent integration? `kernex-adapter-core` exposes the `Adapter` trait without pulling the full runtime.
 
 The monolith forces you to accept the whole framework's opinions. Composable crates let you audit and own every dependency.
 
@@ -90,9 +90,9 @@ You want to build an agent product or internal tool, not orchestrate Python pack
 
 ```toml
 [dependencies]
-kernex-runtime = "0.4"
-kernex-core = "0.4"
-kernex-providers = "0.4"
+kernex-runtime = "0.6.1"
+kernex-core = "0.6.1"
+kernex-providers = "0.6.1"
 ```
 
 ### Platform and Security Teams
