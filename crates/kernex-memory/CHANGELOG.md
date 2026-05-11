@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/kernex-dev/kernex/compare/v0.6.2...v0.7.0) - 2026-05-11
+
+### Added
+
+- *(memory)* [**breaking**] typed MessageRow/HistoryRow + get_message_by_id + server-side since ([#19](https://github.com/kernex-dev/kernex/pull/19))
+
 ### Added
 
 - *(memory)* introduce typed `MessageRow` and `HistoryRow` shapes; add `MemoryStore::get_message_by_id`; add `since: Option<SystemTime>` parameter to `MemoryStore::search_messages` (server-side recency filter, applies before `LIMIT`)
