@@ -1,7 +1,10 @@
 //! Message storage and full-text search.
 
+use std::time::SystemTime;
+
 use super::Store;
 use crate::error::MemoryError;
+use crate::types::{format_sqlite_timestamp, parse_sqlite_timestamp, MessageRow};
 use kernex_core::message::{Request, Response};
 use uuid::Uuid;
 
@@ -52,14 +55,44 @@ impl Store {
         Ok(())
     }
 
+    /// Fetch a single message row by its UUID. Returns `None` when the
+    /// id is missing. The `MemoryStore` trait method
+    /// `get_message_by_id` delegates here.
+    pub async fn get_message_by_id(&self, id: &str) -> Result<Option<MessageRow>, MemoryError> {
+        let row: Option<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT id, conversation_id, role, content, timestamp \
+             FROM messages WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| MemoryError::sqlite("get_message_by_id failed", e))?;
+
+        match row {
+            Some((id, conversation_id, role, content, timestamp)) => Ok(Some(MessageRow {
+                id,
+                conversation_id,
+                role,
+                content,
+                timestamp: parse_sqlite_timestamp(&timestamp)?,
+            })),
+            None => Ok(None),
+        }
+    }
+
     /// Search past messages across all conversations using FTS5 full-text search.
+    /// Honors an optional `since` recency cutoff: when `Some`, only
+    /// messages with `timestamp >= since` are returned, and `limit`
+    /// applies after the filter (resolves the S-search-2 ambiguity
+    /// flagged in the kx-mem-cli-promotion spec).
     pub async fn search_messages(
         &self,
         query: &str,
         exclude_conversation_id: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String, String)>, MemoryError> {
+        since: Option<SystemTime>,
+    ) -> Result<Vec<MessageRow>, MemoryError> {
         if query.len() < 3 {
             return Ok(Vec::new());
         }
@@ -68,25 +101,61 @@ impl Store {
         // injection (AND, OR, NOT, NEAR, *, etc.).
         let sanitized = format!("\"{}\"", query.replace('"', "\"\""));
 
-        let rows: Vec<(String, String, String)> = sqlx::query_as(
-            "SELECT m.role, m.content, m.timestamp \
-             FROM messages_fts fts \
-             JOIN messages m ON m.rowid = fts.rowid \
-             JOIN conversations c ON c.id = m.conversation_id \
-             WHERE messages_fts MATCH ? \
-             AND m.conversation_id != ? \
-             AND c.sender_id = ? \
-             ORDER BY rank \
-             LIMIT ?",
-        )
-        .bind(&sanitized)
-        .bind(exclude_conversation_id)
-        .bind(sender_id)
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await
+        // Build the SQL with an optional `since` predicate. Using a
+        // branch instead of a single conditional SQL string keeps the
+        // prepared statement shape stable for sqlx's cache.
+        let rows: Vec<(String, String, String, String, String)> = if let Some(cutoff) = since {
+            let cutoff_str = format_sqlite_timestamp(cutoff);
+            sqlx::query_as(
+                "SELECT m.id, m.conversation_id, m.role, m.content, m.timestamp \
+                 FROM messages_fts fts \
+                 JOIN messages m ON m.rowid = fts.rowid \
+                 JOIN conversations c ON c.id = m.conversation_id \
+                 WHERE messages_fts MATCH ? \
+                 AND m.conversation_id != ? \
+                 AND c.sender_id = ? \
+                 AND m.timestamp >= ? \
+                 ORDER BY rank \
+                 LIMIT ?",
+            )
+            .bind(&sanitized)
+            .bind(exclude_conversation_id)
+            .bind(sender_id)
+            .bind(&cutoff_str)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+        } else {
+            sqlx::query_as(
+                "SELECT m.id, m.conversation_id, m.role, m.content, m.timestamp \
+                 FROM messages_fts fts \
+                 JOIN messages m ON m.rowid = fts.rowid \
+                 JOIN conversations c ON c.id = m.conversation_id \
+                 WHERE messages_fts MATCH ? \
+                 AND m.conversation_id != ? \
+                 AND c.sender_id = ? \
+                 ORDER BY rank \
+                 LIMIT ?",
+            )
+            .bind(&sanitized)
+            .bind(exclude_conversation_id)
+            .bind(sender_id)
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await
+        }
         .map_err(|e| MemoryError::sqlite("fts search failed", e))?;
 
-        Ok(rows)
+        let mut out = Vec::with_capacity(rows.len());
+        for (id, conversation_id, role, content, timestamp) in rows {
+            out.push(MessageRow {
+                id,
+                conversation_id,
+                role,
+                content,
+                timestamp: parse_sqlite_timestamp(&timestamp)?,
+            });
+        }
+        Ok(out)
     }
 }

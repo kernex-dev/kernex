@@ -184,14 +184,17 @@ impl Store {
     }
 
     /// Get conversation history (summaries with timestamps) for a sender.
+    /// Surfaces `conversation_id` alongside the summary so consumers can
+    /// dispatch follow-up reads (`get_message_by_id`,
+    /// `get_recent_summaries`) by id rather than by string match.
     pub async fn get_history(
         &self,
         channel: &str,
         sender_id: &str,
         limit: i64,
-    ) -> Result<Vec<(String, String)>, MemoryError> {
-        let rows: Vec<(String, String)> = sqlx::query_as(
-            "SELECT COALESCE(summary, '(no summary)'), updated_at FROM conversations \
+    ) -> Result<Vec<crate::types::HistoryRow>, MemoryError> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT id, COALESCE(summary, '(no summary)'), updated_at FROM conversations \
              WHERE channel = ? AND sender_id = ? AND status = 'closed' \
              ORDER BY updated_at DESC LIMIT ?",
         )
@@ -202,7 +205,15 @@ impl Store {
         .await
         .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
-        Ok(rows)
+        let mut out = Vec::with_capacity(rows.len());
+        for (conversation_id, summary, updated_at) in rows {
+            out.push(crate::types::HistoryRow {
+                conversation_id,
+                summary,
+                updated_at: crate::types::parse_sqlite_timestamp(&updated_at)?,
+            });
+        }
+        Ok(out)
     }
 
     /// Get memory statistics for a sender.

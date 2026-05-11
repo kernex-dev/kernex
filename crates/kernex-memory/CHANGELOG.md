@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- *(memory)* introduce typed `MessageRow` and `HistoryRow` shapes; add `MemoryStore::get_message_by_id`; add `since: Option<SystemTime>` parameter to `MemoryStore::search_messages` (server-side recency filter, applies before `LIMIT`)
+
+### Changed
+
+- *(memory)* **BREAKING:** `MemoryStore::search_messages` returns `Vec<MessageRow>` (was `Vec<(String, String, String)>`); `MemoryStore::get_history` returns `Vec<HistoryRow>` (was `Vec<(String, String)>`). Both surfaces now carry `id` / `conversation_id` and parse timestamps to `SystemTime` at fetch time. Closes Slice B of the `memory-typed-row-shape` change (S-search-2 + S-search-3 spec ambiguities in the downstream `kx mem *` CLI).
+
 ## [0.6.2](https://github.com/kernex-dev/kernex/compare/v0.6.1...v0.6.2) - 2026-05-11
 
 ### Performance

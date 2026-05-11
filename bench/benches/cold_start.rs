@@ -135,7 +135,7 @@ fn bench_memory_search_cold_start(c: &mut Criterion) {
                 let store = Store::new(&config).await.expect("open store");
                 let store_handle: Arc<dyn MemoryStore> = Arc::new(store);
                 let _hits = store_handle
-                    .search_messages(SEARCH_QUERY, "no-conv", "user_0", SEARCH_LIMIT)
+                    .search_messages(SEARCH_QUERY, "no-conv", "user_0", SEARCH_LIMIT, None)
                     .await
                     .expect("search");
             });
