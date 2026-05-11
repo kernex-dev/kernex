@@ -2032,11 +2032,14 @@ fn test_build_system_prompt_recall_multibyte_truncation() {
     use super::context::{build_system_prompt, SystemPromptContext};
 
     let long_cjk = "\u{4e2d}".repeat(100);
-    let recall = vec![(
-        "user".to_string(),
-        long_cjk,
-        "2026-01-01 12:00:00".to_string(),
-    )];
+    let recall = vec![crate::types::MessageRow {
+        id: "msg-id".to_string(),
+        conversation_id: "conv-id".to_string(),
+        role: "user".to_string(),
+        content: long_cjk,
+        timestamp: std::time::SystemTime::UNIX_EPOCH
+            + std::time::Duration::from_secs(1_767_268_800),
+    }];
 
     let result = build_system_prompt(&SystemPromptContext {
         base_rules: "base rules",
@@ -2080,7 +2083,7 @@ async fn test_search_messages_with_fts5_operators() {
         .unwrap();
 
     let result = store
-        .search_messages("NOT working", &conv_id, "user1", 5)
+        .search_messages("NOT working", &conv_id, "user1", 5, None)
         .await;
     assert!(
         result.is_ok(),
@@ -2089,7 +2092,7 @@ async fn test_search_messages_with_fts5_operators() {
     );
 
     let result = store
-        .search_messages("error (crash)", &conv_id, "user1", 5)
+        .search_messages("error (crash)", &conv_id, "user1", 5, None)
         .await;
     assert!(
         result.is_ok(),
@@ -2097,7 +2100,9 @@ async fn test_search_messages_with_fts5_operators() {
         result.err()
     );
 
-    let result = store.search_messages("work*", &conv_id, "user1", 5).await;
+    let result = store
+        .search_messages("work*", &conv_id, "user1", 5, None)
+        .await;
     assert!(
         result.is_ok(),
         "FTS5 asterisk in query should not cause an error: {:?}",
@@ -2105,11 +2110,192 @@ async fn test_search_messages_with_fts5_operators() {
     );
 
     let result = store
-        .search_messages(r#"say "hello world""#, &conv_id, "user1", 5)
+        .search_messages(r#"say "hello world""#, &conv_id, "user1", 5, None)
         .await;
     assert!(
         result.is_ok(),
         "FTS5 quotes in query should not cause an error: {:?}",
         result.err()
+    );
+}
+
+// --- Slice B typed-row surface tests ---
+
+#[tokio::test]
+async fn test_search_messages_returns_typed_rows() {
+    let store = test_store().await;
+    let _conv_id = store
+        .get_or_create_conversation("api", "user1", "default")
+        .await
+        .unwrap();
+    let incoming = Request::text("user1", "the database is broken today");
+    let response = kernex_core::message::Response {
+        text: "Looking into it".to_string(),
+        metadata: kernex_core::message::CompletionMeta {
+            provider_used: "test".to_string(),
+            tokens_used: None,
+            processing_time_ms: 0,
+            model: None,
+            session_id: None,
+            ..Default::default()
+        },
+    };
+    store
+        .store_exchange("api", &incoming, &response, "default")
+        .await
+        .unwrap();
+
+    let rows = store
+        .search_messages("database", "no-conv", "user1", 5, None)
+        .await
+        .unwrap();
+    assert!(!rows.is_empty(), "search should return at least one row");
+    let row = &rows[0];
+    assert!(!row.id.is_empty(), "id must be a stable identifier");
+    assert!(
+        !row.conversation_id.is_empty(),
+        "conversation_id must be surfaced for follow-up lookups"
+    );
+    assert_eq!(row.role, "user");
+    assert!(row.content.contains("database"));
+    // `timestamp` is SystemTime; confirm it parsed from the SQLite TIMESTAMP
+    // shape rather than left as a string.
+    assert!(
+        row.timestamp >= std::time::UNIX_EPOCH,
+        "timestamp must be a valid SystemTime"
+    );
+}
+
+#[tokio::test]
+async fn test_search_messages_since_filters_out_older_rows() {
+    let store = test_store().await;
+    let _conv_id = store
+        .get_or_create_conversation("api", "user1", "default")
+        .await
+        .unwrap();
+    let incoming = Request::text("user1", "a unique-marker-phrase appears here");
+    let response = kernex_core::message::Response {
+        text: "ack".to_string(),
+        metadata: kernex_core::message::CompletionMeta {
+            provider_used: "test".to_string(),
+            tokens_used: None,
+            processing_time_ms: 0,
+            model: None,
+            session_id: None,
+            ..Default::default()
+        },
+    };
+    store
+        .store_exchange("api", &incoming, &response, "default")
+        .await
+        .unwrap();
+
+    // Cutoff one hour into the future: no row can satisfy timestamp >= future.
+    let future = std::time::SystemTime::now() + std::time::Duration::from_secs(3_600);
+    let rows = store
+        .search_messages("unique-marker-phrase", "no-conv", "user1", 10, Some(future))
+        .await
+        .unwrap();
+    assert!(
+        rows.is_empty(),
+        "since=future should filter out the row that was just stored"
+    );
+
+    // Cutoff one hour into the past: the row should still be visible.
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3_600);
+    let rows = store
+        .search_messages("unique-marker-phrase", "no-conv", "user1", 10, Some(past))
+        .await
+        .unwrap();
+    assert!(
+        !rows.is_empty(),
+        "since=one-hour-ago should still return today's row"
+    );
+}
+
+#[tokio::test]
+async fn test_get_message_by_id_returns_typed_row() {
+    let store = test_store().await;
+    let _conv_id = store
+        .get_or_create_conversation("api", "user1", "default")
+        .await
+        .unwrap();
+    let incoming = Request::text("user1", "store this and look it up by id");
+    let response = kernex_core::message::Response {
+        text: "ack".to_string(),
+        metadata: kernex_core::message::CompletionMeta {
+            provider_used: "test".to_string(),
+            tokens_used: None,
+            processing_time_ms: 0,
+            model: None,
+            session_id: None,
+            ..Default::default()
+        },
+    };
+    store
+        .store_exchange("api", &incoming, &response, "default")
+        .await
+        .unwrap();
+
+    let rows = store
+        .search_messages("store this and look it up", "no-conv", "user1", 5, None)
+        .await
+        .unwrap();
+    let target = &rows[0];
+
+    let by_id = store.get_message_by_id(&target.id).await.unwrap();
+    let by_id = by_id.expect("row should be found by its UUID");
+    assert_eq!(by_id.id, target.id);
+    assert_eq!(by_id.conversation_id, target.conversation_id);
+    assert_eq!(by_id.role, target.role);
+    assert_eq!(by_id.content, target.content);
+    assert_eq!(by_id.timestamp, target.timestamp);
+}
+
+#[tokio::test]
+async fn test_get_message_by_id_missing_returns_none() {
+    let store = test_store().await;
+    let missing = store
+        .get_message_by_id("00000000-0000-0000-0000-000000000000")
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+}
+
+#[tokio::test]
+async fn test_get_history_returns_typed_rows_with_conversation_id() {
+    let store = test_store().await;
+    let conv_id = store
+        .get_or_create_conversation("api", "user1", "default")
+        .await
+        .unwrap();
+    let incoming = Request::text("user1", "first exchange");
+    let response = kernex_core::message::Response {
+        text: "ack".to_string(),
+        metadata: kernex_core::message::CompletionMeta {
+            provider_used: "test".to_string(),
+            tokens_used: None,
+            processing_time_ms: 0,
+            model: None,
+            session_id: None,
+            ..Default::default()
+        },
+    };
+    store
+        .store_exchange("api", &incoming, &response, "default")
+        .await
+        .unwrap();
+    store
+        .close_current_conversation("api", "user1", "default")
+        .await
+        .unwrap();
+
+    let history = store.get_history("api", "user1", 10).await.unwrap();
+    assert!(!history.is_empty());
+    let row = &history[0];
+    assert_eq!(row.conversation_id, conv_id);
+    assert!(
+        row.updated_at >= std::time::UNIX_EPOCH,
+        "updated_at must be a valid SystemTime"
     );
 }
