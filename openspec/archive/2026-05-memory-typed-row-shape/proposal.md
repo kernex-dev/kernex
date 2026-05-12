@@ -1,11 +1,9 @@
 # Proposal: Memory typed row shape
 
-- **Status:** Pending
+- **Status:** LANDED — both stages shipped 2026-05-11. The non-breaking perf fast-path landed at `kernex-dev/kernex@efd1118` and published as `kernex-memory 0.6.2`. The breaking typed-row surface (typed `MessageRow` + `HistoryRow`, `MemoryStore::get_message_by_id`, server-side `since: Option<SystemTime>` on `search_messages`) landed at `kernex-dev/kernex@84435aa` and published as `kernex-memory 0.7.0` via PR #20 (release-plz squash) + publish workflow run 25697191537. The paired-agent migration landed at `kernex-dev/kernex-agent@382756c` (PR #23 squash) bumping `kernex-* 0.6.2 → 0.7.0` and wiring `kx mem get` against the new typed surface.
 - **Author:** Jose Hurtado
-- **Estimated effort:** ~5 working days, split across two slices (A + B)
 - **Repo:** `kernex-dev/kernex`
 - **Change ID:** `memory-typed-row-shape`
-- **Change tag:** `[s5-d]` (Sprint 5, kernex-memory)
 
 ## Operator friction
 

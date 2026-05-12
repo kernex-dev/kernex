@@ -35,8 +35,8 @@ pub struct HistoryRow {
     /// Identifier of the conversation.
     pub conversation_id: String,
     /// Conversation summary text; `"(no summary)"` when the column is
-    /// NULL, matching the inherent-method fallback shipped before
-    /// Slice B.
+    /// NULL, matching the inherent-method fallback shipped before the
+    /// typed-row trait surface landed.
     pub summary: String,
     /// Wall-clock time the conversation was last updated, in UTC.
     pub updated_at: SystemTime,

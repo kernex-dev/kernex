@@ -2119,7 +2119,7 @@ async fn test_search_messages_with_fts5_operators() {
     );
 }
 
-// --- Slice B typed-row surface tests ---
+// --- Typed-row trait-surface tests ---
 
 #[tokio::test]
 async fn test_search_messages_returns_typed_rows() {
@@ -2652,7 +2652,7 @@ async fn get_memory_stats_excludes_soft_deleted_observations() {
 async fn migration_018_applies_idempotently() {
     // Construct two pools against the same in-memory DB and run
     // migrations twice; the fast-path must short-circuit the second
-    // run (Slice A discipline) and not error.
+    // run (idempotency invariant) and not error.
     let opts = SqliteConnectOptions::from_str("sqlite::memory:")
         .unwrap()
         .create_if_missing(true);
