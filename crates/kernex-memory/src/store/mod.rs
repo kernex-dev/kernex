@@ -14,6 +14,7 @@ mod context_helpers;
 mod conversations;
 mod facts;
 mod messages;
+mod observations;
 mod outcomes;
 mod sessions;
 mod tasks;
@@ -285,6 +286,10 @@ impl Store {
             (
                 "017_soft_delete",
                 include_str!("../../migrations/017_soft_delete.sql"),
+            ),
+            (
+                "018_observations",
+                include_str!("../../migrations/018_observations.sql"),
             ),
         ];
 

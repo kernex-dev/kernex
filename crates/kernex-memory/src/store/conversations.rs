@@ -216,8 +216,23 @@ impl Store {
         Ok(out)
     }
 
-    /// Get memory statistics for a sender.
-    pub async fn get_memory_stats(&self, sender_id: &str) -> Result<(i64, i64, i64), MemoryError> {
+    /// Get memory statistics for a sender. Tuple shape:
+    /// `(conversations, messages, observations, facts)`.
+    ///
+    /// All four counts filter `WHERE deleted_at IS NULL` where the
+    /// underlying table supports soft-delete (`facts`, `observations`).
+    /// `conversations` and `messages` do not (today) carry soft-delete
+    /// columns; their counts include every row.
+    ///
+    /// **Breaking change (kernex-memory 0.8.0):** prior versions
+    /// returned a 3-tuple `(conversations, messages, facts)`.
+    /// Consumers must destructure four elements after the bump. The
+    /// agent-side `StatsRecord::observations` field now reflects the
+    /// true observation count instead of aliasing message count.
+    pub async fn get_memory_stats(
+        &self,
+        sender_id: &str,
+    ) -> Result<(i64, i64, i64, i64), MemoryError> {
         let (conv_count,): (i64,) =
             sqlx::query_as("SELECT COUNT(*) FROM conversations WHERE sender_id = ?")
                 .bind(sender_id)
@@ -235,6 +250,8 @@ impl Store {
         .await
         .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
+        let obs_count = self.count_observations(sender_id).await?;
+
         let (fact_count,): (i64,) = sqlx::query_as(
             "SELECT COUNT(*) FROM facts \
              WHERE sender_id = ? AND deleted_at IS NULL",
@@ -244,6 +261,6 @@ impl Store {
         .await
         .map_err(|e| MemoryError::sqlite("query failed", e))?;
 
-        Ok((conv_count, msg_count, fact_count))
+        Ok((conv_count, msg_count, obs_count, fact_count))
     }
 }

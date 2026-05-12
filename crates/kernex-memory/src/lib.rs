@@ -12,6 +12,7 @@ pub mod audit;
 pub mod consolidator;
 pub mod error;
 pub mod memory_store;
+pub mod observation;
 pub mod store;
 pub mod types;
 
@@ -19,6 +20,7 @@ pub use audit::AuditLogger;
 pub use consolidator::{ConsolidationResult, Consolidator, ConsolidatorConfig};
 pub use error::MemoryError;
 pub use memory_store::{into_handle, MemoryStore};
+pub use observation::{Observation, ObservationType, SaveEntry};
 pub use store::detect_language;
 pub use store::DueTask;
 pub use store::PhaseCheckpoint;
