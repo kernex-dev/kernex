@@ -1,4 +1,4 @@
-//! Typed observation log (Phase D-agent Step 2.11 backbone).
+//! Typed observation log.
 //!
 //! Read / write paths over the `observations` table introduced by
 //! migration 018. Mirrors the soft-delete discipline established in

@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- *(memory)* **BREAKING:** `MemoryStore::search_messages` returns `Vec<MessageRow>` (was `Vec<(String, String, String)>`); `MemoryStore::get_history` returns `Vec<HistoryRow>` (was `Vec<(String, String)>`). Both surfaces now carry `id` / `conversation_id` and parse timestamps to `SystemTime` at fetch time. Closes Slice B of the `memory-typed-row-shape` change (S-search-2 + S-search-3 spec ambiguities in the downstream `kx mem *` CLI).
+- *(memory)* **BREAKING:** `MemoryStore::search_messages` returns `Vec<MessageRow>` (was `Vec<(String, String, String)>`); `MemoryStore::get_history` returns `Vec<HistoryRow>` (was `Vec<(String, String)>`). Both surfaces now carry `id` / `conversation_id` and parse timestamps to `SystemTime` at fetch time. Closes the breaking half of the typed-row migration (resolves the `search_messages` recency-cutoff and result-shape ambiguities visible in the downstream `kx mem *` CLI).
 
 ## [0.6.2](https://github.com/kernex-dev/kernex/compare/v0.6.1...v0.6.2) - 2026-05-11
 
@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Documentation
 
-- Add `openspec/changes/memory-typed-row-shape/` (proposal + tasks) that locks the two-slice plan for typed row shapes on the trait surface. Slice A (this release) ships the perf fast-path. Slice B (deferred to 0.7.0) types `updated_at` as `SystemTime`, pushes `since: Option<SystemTime>` server-side into `search_messages`, and surfaces `MessageRow` / `HistoryRow` from the trait return.
+- Add `openspec/changes/memory-typed-row-shape/` (proposal + tasks) that locks the two-stage plan for typed row shapes on the trait surface. This release ships the perf fast-path; the breaking stage (deferred to 0.7.0) types `updated_at` as `SystemTime`, pushes `since: Option<SystemTime>` server-side into `search_messages`, and surfaces `MessageRow` / `HistoryRow` from the trait return.
 
 ## [0.6.1](https://github.com/kernex-dev/kernex/compare/v0.6.0...v0.6.1) - 2026-05-10
 
