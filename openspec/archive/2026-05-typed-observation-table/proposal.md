@@ -1,8 +1,8 @@
 # Proposal: Typed observation table
 
 > **Change ID:** `typed-observation-table`
-> **Status:** Landed (target: `kernex-memory 0.8.0`)
-> **Companion change:** `kernex-dev/kernex-agent/openspec/changes/kx-mem-cli-promotion/` — Step 2.11 (`kx mem save`) consumes this surface.
+> **Status:** LANDED — `kernex-memory 0.8.0` published to crates.io 2026-05-12 (merged at `kernex-dev/kernex@03bebb6`, released via PR #22 squash at `cd20fca`, publish workflow run 25728229119). Workspace bumped 0.7.0 → 0.8.0 in lockstep across all 9 publishable crates.
+> **Companion change:** `kernex-dev/kernex-agent/openspec/changes/kx-mem-cli-promotion/` — Step 2.11 (`kx mem save`) consumed this surface at `kernex-dev/kernex-agent@11bdf54` (PR #24 squash).
 
 ## What this change ships
 
