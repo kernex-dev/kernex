@@ -35,34 +35,61 @@ git_release_enable = false
 publish = false
 
 # --- Publishable crates: pin to the same workspace version ---
+#
+# Workspace `git_tag_name = "v{{ version }}"` produces ONE shared tag per
+# release (e.g. `v0.8.0`). release-plz iterates `[[package]]` entries and
+# attempts the tag creation per crate; with 9 publishable members sharing
+# the same tag name, the first crate creates `v{version}` successfully
+# and the rest receive `422 Reference already exists` from the GitHub
+# API, surfacing as exit 1 in the `release-plz Release PR` workflow job.
+# The actual publish chain still fires (the tag was already pushed by the
+# first crate), but the workflow shows red.
+#
+# Fix: set `git_tag_enable = false` on 8 of the 9 publishable crates,
+# leaving only the `kernex` umbrella as the single tag source. The
+# umbrella's Cargo.toml changes on every workspace release (its dep
+# declarations bump to match the workspace version), so release-plz
+# always processes it and the tag always lands. The 7 leaf crates plus
+# kernex-adapter-core still bump and publish; they just no longer try
+# to create the shared tag.
 
 [[package]]
 name = "kernex-core"
 version_group = "kernex"
+git_tag_enable = false
 
 [[package]]
 name = "kernex-sandbox"
 version_group = "kernex"
+git_tag_enable = false
 
 [[package]]
 name = "kernex-memory"
 version_group = "kernex"
+git_tag_enable = false
 
 [[package]]
 name = "kernex-pipelines"
 version_group = "kernex"
+git_tag_enable = false
 
 [[package]]
 name = "kernex-skills"
 version_group = "kernex"
+git_tag_enable = false
 
 [[package]]
 name = "kernex-providers"
 version_group = "kernex"
+git_tag_enable = false
 
 [[package]]
 name = "kernex-runtime"
 version_group = "kernex"
+git_tag_enable = false
+
+# Single tag source for the workspace release. Inherits the workspace
+# default `git_tag_enable = true`.
 
 [[package]]
 name = "kernex"
@@ -74,6 +101,7 @@ version_group = "kernex"
 [[package]]
 name = "kernex-adapter-core"
 version_group = "kernex"
+git_tag_enable = false
 
 # --- Workspace-internal crates: not published, not released ---
 #
