@@ -20,6 +20,7 @@ use std::time::SystemTime;
 use async_trait::async_trait;
 
 use crate::error::MemoryError;
+use crate::observation::{Observation, ObservationType, SaveEntry};
 use crate::store::{DueTask, Store, UsageSummary};
 use crate::types::{HistoryRow, MessageRow};
 
@@ -42,8 +43,16 @@ pub trait MemoryStore: Send + Sync {
         project: &str,
     ) -> Result<bool, MemoryError>;
 
-    /// Aggregate counters: `(conversation_count, message_count, fact_count)`.
-    async fn get_memory_stats(&self, sender_id: &str) -> Result<(i64, i64, i64), MemoryError>;
+    /// Aggregate counters:
+    /// `(conversation_count, message_count, observation_count, fact_count)`.
+    ///
+    /// **Breaking change (kernex-memory 0.8.0):** prior versions returned
+    /// a 3-tuple `(conversation, message, fact)`. The observation count
+    /// joins the tuple at position 2; consumers must destructure four
+    /// elements after the bump. Soft-deleted observations and facts are
+    /// excluded; conversations and messages have no soft-delete column
+    /// today and are counted whole.
+    async fn get_memory_stats(&self, sender_id: &str) -> Result<(i64, i64, i64, i64), MemoryError>;
 
     /// On-disk byte size of the SQLite database file.
     async fn db_size(&self) -> Result<u64, MemoryError>;
@@ -113,6 +122,45 @@ pub trait MemoryStore: Send + Sync {
         sender_id: &str,
     ) -> Result<Vec<(String, String, String)>, MemoryError>;
 
+    // --- observations (typed write surface introduced in 0.8.0) ---
+
+    /// Persist a typed observation and return the saved row. Generates
+    /// a fresh UUIDv4 id; sets `created_at == updated_at == now`. The
+    /// DB enforces `length(title) > 0` and the seven-value `type` CHECK
+    /// constraint; violations surface as `MemoryError::Sqlite`.
+    async fn save_observation(&self, entry: SaveEntry) -> Result<Observation, MemoryError>;
+
+    /// Fetch an active observation by id. Returns `None` when the id is
+    /// missing OR the row is soft-deleted (CC-9 invariant). Mirrors the
+    /// `get_message_by_id` shape introduced in 0.7.0.
+    async fn get_observation_by_id(&self, id: &str) -> Result<Option<Observation>, MemoryError>;
+
+    /// FTS5 search across observation title + structured fields.
+    /// Optional `since` filters by `created_at >=`; optional `kind`
+    /// narrows to a single type. Soft-deleted rows never appear.
+    async fn search_observations(
+        &self,
+        query: &str,
+        sender_id: &str,
+        limit: i64,
+        since: Option<SystemTime>,
+        kind: Option<ObservationType>,
+    ) -> Result<Vec<Observation>, MemoryError>;
+
+    /// Soft-delete an observation by id. Returns `Ok(true)` on
+    /// transition from active to deleted; `Ok(false)` when the row was
+    /// already deleted, missing, or never existed (matches the
+    /// `soft_delete_fact` contract).
+    async fn soft_delete_observation(&self, id: &str) -> Result<bool, MemoryError>;
+
+    /// Read soft-deleted observations for a sender. Recovery helper;
+    /// surfaced on the trait so future tooling can offer an "undelete"
+    /// command without dropping back to the inherent `Store`.
+    async fn list_soft_deleted_observations(
+        &self,
+        sender_id: &str,
+    ) -> Result<Vec<Observation>, MemoryError>;
+
     // --- scheduled tasks ---
 
     /// Insert a new scheduled task. Returns the new task id.
@@ -166,7 +214,7 @@ impl MemoryStore for Store {
         Store::close_current_conversation(self, channel, sender_id, project).await
     }
 
-    async fn get_memory_stats(&self, sender_id: &str) -> Result<(i64, i64, i64), MemoryError> {
+    async fn get_memory_stats(&self, sender_id: &str) -> Result<(i64, i64, i64, i64), MemoryError> {
         Store::get_memory_stats(self, sender_id).await
     }
 
@@ -239,6 +287,36 @@ impl MemoryStore for Store {
         sender_id: &str,
     ) -> Result<Vec<(String, String, String)>, MemoryError> {
         Store::list_soft_deleted_facts(self, sender_id).await
+    }
+
+    async fn save_observation(&self, entry: SaveEntry) -> Result<Observation, MemoryError> {
+        Store::save_observation(self, entry).await
+    }
+
+    async fn get_observation_by_id(&self, id: &str) -> Result<Option<Observation>, MemoryError> {
+        Store::get_observation_by_id(self, id).await
+    }
+
+    async fn search_observations(
+        &self,
+        query: &str,
+        sender_id: &str,
+        limit: i64,
+        since: Option<SystemTime>,
+        kind: Option<ObservationType>,
+    ) -> Result<Vec<Observation>, MemoryError> {
+        Store::search_observations(self, query, sender_id, limit, since, kind).await
+    }
+
+    async fn soft_delete_observation(&self, id: &str) -> Result<bool, MemoryError> {
+        Store::soft_delete_observation(self, id).await
+    }
+
+    async fn list_soft_deleted_observations(
+        &self,
+        sender_id: &str,
+    ) -> Result<Vec<Observation>, MemoryError> {
+        Store::list_soft_deleted_observations(self, sender_id).await
     }
 
     async fn create_task(

@@ -273,13 +273,15 @@ async fn main() -> anyhow::Result<()> {
     println!();
 
     // Final memory state.
-    let (conv_count, msg_count, fact_count) = runtime.store.get_memory_stats(user).await?;
+    let (conv_count, msg_count, obs_count, fact_count) =
+        runtime.store.get_memory_stats(user).await?;
     let total_tokens =
         resp1.metadata.tokens_used.unwrap_or(0) + resp2.metadata.tokens_used.unwrap_or(0);
 
     println!("=== Pipeline complete ===");
     println!("  Conversations in memory: {conv_count}");
     println!("  Messages stored:         {msg_count}  (2 user + 2 assistant)");
+    println!("  Observations:            {obs_count}");
     println!("  Facts stored:            {fact_count}");
     println!("  Tokens (mock):           {total_tokens}");
     println!();

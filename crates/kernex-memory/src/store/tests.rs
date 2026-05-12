@@ -470,11 +470,11 @@ async fn test_memory_stats_excludes_soft_deleted_facts() {
 
     store.store_fact("user1", "color", "blue").await.unwrap();
     store.store_fact("user1", "size", "large").await.unwrap();
-    let (_, _, fact_count_before) = store.get_memory_stats("user1").await.unwrap();
+    let (_, _, _, fact_count_before) = store.get_memory_stats("user1").await.unwrap();
     assert_eq!(fact_count_before, 2);
 
     store.soft_delete_fact("user1", "color").await.unwrap();
-    let (_, _, fact_count_after) = store.get_memory_stats("user1").await.unwrap();
+    let (_, _, _, fact_count_after) = store.get_memory_stats("user1").await.unwrap();
     assert_eq!(
         fact_count_after, 1,
         "get_memory_stats must not count soft-deleted facts"
@@ -2298,4 +2298,376 @@ async fn test_get_history_returns_typed_rows_with_conversation_id() {
         row.updated_at >= std::time::UNIX_EPOCH,
         "updated_at must be a valid SystemTime"
     );
+}
+
+// --- typed observation tests (kernex-memory 0.8.0) ------------------
+
+use crate::observation::{ObservationType, SaveEntry};
+
+fn obs_entry(sender_id: &str, kind: ObservationType, title: &str) -> SaveEntry {
+    SaveEntry {
+        sender_id: sender_id.to_string(),
+        kind,
+        title: title.to_string(),
+        what: None,
+        why: None,
+        where_field: None,
+        learned: None,
+    }
+}
+
+#[tokio::test]
+async fn save_round_trip() {
+    let store = test_store().await;
+    let entry = SaveEntry {
+        sender_id: "user".to_string(),
+        kind: ObservationType::Bugfix,
+        title: "Fixed N+1 query".to_string(),
+        what: Some("added eager loading".to_string()),
+        why: Some("12s pages on 5k users".to_string()),
+        where_field: Some("src/users/list.rs".to_string()),
+        learned: Some("FTS5 rewriter cannot fix N+1".to_string()),
+    };
+    let saved = store.save_observation(entry.clone()).await.unwrap();
+    assert!(!saved.id.is_empty(), "id must be generated");
+    assert_eq!(saved.sender_id, entry.sender_id);
+    assert_eq!(saved.kind, entry.kind);
+    assert_eq!(saved.title, entry.title);
+    assert_eq!(saved.what, entry.what);
+    assert_eq!(saved.why, entry.why);
+    assert_eq!(saved.where_field, entry.where_field);
+    assert_eq!(saved.learned, entry.learned);
+    assert_eq!(saved.created_at, saved.updated_at);
+}
+
+#[tokio::test]
+async fn save_then_search_finds() {
+    let store = test_store().await;
+    let saved = store
+        .save_observation(obs_entry("user", ObservationType::Bugfix, "N+1 query"))
+        .await
+        .unwrap();
+    let hits = store
+        .search_observations("query", "user", 10, None, None)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].id, saved.id);
+}
+
+#[tokio::test]
+async fn save_then_get_by_id() {
+    let store = test_store().await;
+    let saved = store
+        .save_observation(obs_entry(
+            "user",
+            ObservationType::Decision,
+            "Adopt rusqlite",
+        ))
+        .await
+        .unwrap();
+    let got = store.get_observation_by_id(&saved.id).await.unwrap();
+    assert!(got.is_some());
+    let obs = got.unwrap();
+    assert_eq!(obs.id, saved.id);
+    assert_eq!(obs.title, "Adopt rusqlite");
+}
+
+#[tokio::test]
+async fn save_with_none_optionals() {
+    let store = test_store().await;
+    let saved = store
+        .save_observation(obs_entry("user", ObservationType::Config, "tokio runtime"))
+        .await
+        .unwrap();
+    assert!(saved.what.is_none());
+    assert!(saved.why.is_none());
+    assert!(saved.where_field.is_none());
+    assert!(saved.learned.is_none());
+    // Findable by title via FTS.
+    let hits = store
+        .search_observations("runtime", "user", 10, None, None)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+}
+
+#[tokio::test]
+async fn save_rejects_empty_title() {
+    let store = test_store().await;
+    let entry = SaveEntry {
+        sender_id: "user".to_string(),
+        kind: ObservationType::Bugfix,
+        title: "".to_string(), // CHECK (length(title) > 0) should reject
+        what: None,
+        why: None,
+        where_field: None,
+        learned: None,
+    };
+    let err = store.save_observation(entry).await.unwrap_err();
+    assert!(
+        matches!(err, crate::error::MemoryError::Sqlite { .. }),
+        "expected Sqlite error from CHECK constraint, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn save_rejects_unknown_type_at_db() {
+    // The Rust enum cannot represent an unknown variant by construction,
+    // so we bypass the typed surface and write a raw bogus type string
+    // to verify the SQL CHECK fires.
+    let store = test_store().await;
+    let now = crate::types::format_sqlite_timestamp(std::time::SystemTime::now());
+    let result = sqlx::query(
+        "INSERT INTO observations \
+            (id, sender_id, type, title, what, why, where_field, learned, created_at, updated_at) \
+         VALUES ('id-bogus', 'user', 'bogus', 'title', NULL, NULL, NULL, NULL, ?, ?)",
+    )
+    .bind(&now)
+    .bind(&now)
+    .execute(&store.pool)
+    .await;
+    assert!(result.is_err(), "DB CHECK must reject unknown type");
+}
+
+#[tokio::test]
+async fn search_kind_filter_narrows() {
+    let store = test_store().await;
+    store
+        .save_observation(obs_entry("user", ObservationType::Bugfix, "marker bugfix"))
+        .await
+        .unwrap();
+    store
+        .save_observation(obs_entry(
+            "user",
+            ObservationType::Decision,
+            "marker decision",
+        ))
+        .await
+        .unwrap();
+
+    let all = store
+        .search_observations("marker", "user", 10, None, None)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2);
+
+    let bugfix_only = store
+        .search_observations("marker", "user", 10, None, Some(ObservationType::Bugfix))
+        .await
+        .unwrap();
+    assert_eq!(bugfix_only.len(), 1);
+    assert_eq!(bugfix_only[0].kind, ObservationType::Bugfix);
+}
+
+#[tokio::test]
+async fn search_since_filters_by_recency() {
+    let store = test_store().await;
+    let saved = store
+        .save_observation(obs_entry(
+            "user",
+            ObservationType::Bugfix,
+            "recent observation",
+        ))
+        .await
+        .unwrap();
+
+    // since in the past returns the row.
+    let past = saved.created_at - std::time::Duration::from_secs(3_600);
+    let hits = store
+        .search_observations("observation", "user", 10, Some(past), None)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 1);
+
+    // since in the future filters it out.
+    let future = saved.created_at + std::time::Duration::from_secs(3_600);
+    let hits = store
+        .search_observations("observation", "user", 10, Some(future), None)
+        .await
+        .unwrap();
+    assert_eq!(hits.len(), 0);
+}
+
+#[tokio::test]
+async fn search_sender_scope_is_hard() {
+    let store = test_store().await;
+    store
+        .save_observation(obs_entry("alice", ObservationType::Bugfix, "shared marker"))
+        .await
+        .unwrap();
+    store
+        .save_observation(obs_entry("bob", ObservationType::Bugfix, "shared marker"))
+        .await
+        .unwrap();
+
+    let alice_hits = store
+        .search_observations("marker", "alice", 10, None, None)
+        .await
+        .unwrap();
+    assert_eq!(alice_hits.len(), 1);
+    assert_eq!(alice_hits[0].sender_id, "alice");
+}
+
+#[tokio::test]
+async fn search_empty_corpus_returns_empty_vec() {
+    let store = test_store().await;
+    let hits = store
+        .search_observations("anything", "user", 10, None, None)
+        .await
+        .unwrap();
+    assert!(hits.is_empty());
+}
+
+#[tokio::test]
+async fn soft_delete_hides_from_default_reads() {
+    let store = test_store().await;
+    let saved = store
+        .save_observation(obs_entry("user", ObservationType::Bugfix, "to be deleted"))
+        .await
+        .unwrap();
+
+    let ok = store.soft_delete_observation(&saved.id).await.unwrap();
+    assert!(ok, "first soft-delete must transition active to deleted");
+
+    // get returns None.
+    assert!(store
+        .get_observation_by_id(&saved.id)
+        .await
+        .unwrap()
+        .is_none());
+
+    // search misses it.
+    let hits = store
+        .search_observations("deleted", "user", 10, None, None)
+        .await
+        .unwrap();
+    assert!(hits.is_empty());
+}
+
+#[tokio::test]
+async fn soft_delete_is_idempotent() {
+    let store = test_store().await;
+    let saved = store
+        .save_observation(obs_entry(
+            "user",
+            ObservationType::Bugfix,
+            "double-delete test",
+        ))
+        .await
+        .unwrap();
+    assert!(store.soft_delete_observation(&saved.id).await.unwrap());
+    assert!(
+        !store.soft_delete_observation(&saved.id).await.unwrap(),
+        "second soft-delete must return false (no transition)"
+    );
+}
+
+#[tokio::test]
+async fn soft_delete_missing_id_returns_false() {
+    let store = test_store().await;
+    assert!(!store
+        .soft_delete_observation("not-a-real-id")
+        .await
+        .unwrap());
+}
+
+#[tokio::test]
+async fn list_soft_deleted_returns_only_deleted() {
+    let store = test_store().await;
+    let active = store
+        .save_observation(obs_entry("user", ObservationType::Bugfix, "active row"))
+        .await
+        .unwrap();
+    let to_delete = store
+        .save_observation(obs_entry("user", ObservationType::Decision, "deleted row"))
+        .await
+        .unwrap();
+    store.soft_delete_observation(&to_delete.id).await.unwrap();
+
+    let deleted = store.list_soft_deleted_observations("user").await.unwrap();
+    assert_eq!(deleted.len(), 1);
+    assert_eq!(deleted[0].id, to_delete.id);
+    assert_ne!(deleted[0].id, active.id);
+}
+
+#[tokio::test]
+async fn list_soft_deleted_respects_sender_scope() {
+    let store = test_store().await;
+    let alice = store
+        .save_observation(obs_entry("alice", ObservationType::Bugfix, "alice row"))
+        .await
+        .unwrap();
+    let bob = store
+        .save_observation(obs_entry("bob", ObservationType::Bugfix, "bob row"))
+        .await
+        .unwrap();
+    store.soft_delete_observation(&alice.id).await.unwrap();
+    store.soft_delete_observation(&bob.id).await.unwrap();
+
+    let alice_deleted = store.list_soft_deleted_observations("alice").await.unwrap();
+    assert_eq!(alice_deleted.len(), 1);
+    assert_eq!(alice_deleted[0].sender_id, "alice");
+}
+
+#[tokio::test]
+async fn get_memory_stats_returns_four_tuple() {
+    let store = test_store().await;
+    store
+        .save_observation(obs_entry("user", ObservationType::Bugfix, "obs one"))
+        .await
+        .unwrap();
+    store
+        .save_observation(obs_entry("user", ObservationType::Decision, "obs two"))
+        .await
+        .unwrap();
+    store.store_fact("user", "k", "v").await.unwrap();
+
+    let (conv, msg, obs, facts) = store.get_memory_stats("user").await.unwrap();
+    assert_eq!(conv, 0);
+    assert_eq!(msg, 0);
+    assert_eq!(obs, 2);
+    assert_eq!(facts, 1);
+}
+
+#[tokio::test]
+async fn get_memory_stats_excludes_soft_deleted_observations() {
+    let store = test_store().await;
+    let a = store
+        .save_observation(obs_entry("user", ObservationType::Bugfix, "active"))
+        .await
+        .unwrap();
+    let b = store
+        .save_observation(obs_entry("user", ObservationType::Bugfix, "to delete"))
+        .await
+        .unwrap();
+    store.soft_delete_observation(&b.id).await.unwrap();
+
+    let (_, _, obs_count, _) = store.get_memory_stats("user").await.unwrap();
+    assert_eq!(obs_count, 1, "soft-deleted row must not be counted");
+    let _ = a; // suppress unused warning
+}
+
+#[tokio::test]
+async fn migration_018_applies_idempotently() {
+    // Construct two pools against the same in-memory DB and run
+    // migrations twice; the fast-path must short-circuit the second
+    // run (Slice A discipline) and not error.
+    let opts = SqliteConnectOptions::from_str("sqlite::memory:")
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap();
+    Store::run_migrations(&pool).await.unwrap();
+    Store::run_migrations(&pool).await.unwrap(); // second call must be a no-op
+
+    // Verify the observations table exists by querying it.
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM observations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count.0, 0);
 }
