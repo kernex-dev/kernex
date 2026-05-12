@@ -107,15 +107,13 @@ jobs:
 
   cold_start_gate:
     # Hard CI gate on `cold_start/memory_search_cold_start` from
-    # bench/benches/cold_start.rs. Threshold = 50 ms median per
-    # V2-EXECUTION-PLAN decision 1.4 (the size-vs-perf locking value
-    # that flips the release profile to `release-fast` if exceeded).
-    # Local macOS aarch64 baseline at Phase A close: 1.87-1.94 ms
-    # (~25x headroom). CI runs on Linux ubuntu-latest, which is noisier
-    # than dedicated hardware, but the headroom is wide enough that
-    # criterion variance never approaches the gate.
-    #
-    # Closes FU-A-03 (kernex-studio orchestration register).
+    # bench/benches/cold_start.rs. Threshold = 50 ms median (the
+    # size-vs-perf locking value that flips the release profile to
+    # `release-fast` if exceeded). Local macOS aarch64 baseline at the
+    # initial profile-baseline cut: 1.87-1.94 ms (~25x headroom). CI
+    # runs on Linux ubuntu-latest, which is noisier than dedicated
+    # hardware, but the headroom is wide enough that criterion variance
+    # never approaches the gate.
     name: Cold-start CI gate (50 ms threshold)
     runs-on: ubuntu-latest
     steps:
