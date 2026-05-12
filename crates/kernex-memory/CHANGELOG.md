@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0](https://github.com/kernex-dev/kernex/compare/v0.7.0...v0.8.0) - 2026-05-12
+
+### Added
+
+- *(memory)* [**breaking**] typed observations table + save_observation trait surface ([#21](https://github.com/kernex-dev/kernex/pull/21))
+
 ## [0.7.0](https://github.com/kernex-dev/kernex/compare/v0.6.2...v0.7.0) - 2026-05-11
 
 ### Added
