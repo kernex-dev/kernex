@@ -33,16 +33,29 @@ pub enum Capability {
 }
 
 /// Lightweight detection result surfaced by [`Adapter::detect`].
+///
+/// `config_root` is the adapter's home-rooted configuration directory
+/// (e.g., `~/.claude` for Claude Code, `~/.codex` for Codex CLI).
+/// `project_root` is the project-local allowlisted root for adapters that
+/// also write files in the current working directory (e.g., Codex's
+/// `<cwd>/AGENTS.md`, Cursor's `.cursorrules`). The Stage 5 APPLY sandbox
+/// check accepts writes inside EITHER `config_root` OR `project_root`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 pub struct Detection {
     pub installed: bool,
     pub config_root: Option<std::path::PathBuf>,
+    #[serde(default)]
+    pub project_root: Option<std::path::PathBuf>,
     pub version: Option<String>,
 }
 
 impl Detection {
-    /// Construct a `Detection` value without routing through `serde_json`.
+    /// Construct a `Detection` for an adapter with no project-local writes.
+    ///
+    /// `project_root` is set to `None`. Adapters that write project-local
+    /// files (e.g., Codex `<cwd>/AGENTS.md`, Cursor `.cursorrules`) should
+    /// use [`Detection::with_project_root`] instead.
     ///
     /// The type is `#[non_exhaustive]`, so external crates cannot use a
     /// struct literal. This constructor is the additive public surface that
@@ -55,6 +68,29 @@ impl Detection {
         Self {
             installed,
             config_root,
+            project_root: None,
+            version,
+        }
+    }
+
+    /// Construct a `Detection` for an adapter that writes both home-rooted
+    /// and project-local files.
+    ///
+    /// Example: Codex writes `~/.codex/config.toml` (home) plus
+    /// `<cwd>/AGENTS.md` (project); Cursor writes `~/.cursor/mcp.json`
+    /// (home) plus `<cwd>/.cursorrules` (project). The Stage 5 APPLY
+    /// sandbox check accepts writes inside EITHER `config_root` OR
+    /// `project_root` per Phase F SDD ADR-001 (RESOLVED 2026-05-19).
+    pub fn with_project_root(
+        installed: bool,
+        config_root: Option<std::path::PathBuf>,
+        project_root: Option<std::path::PathBuf>,
+        version: Option<String>,
+    ) -> Self {
+        Self {
+            installed,
+            config_root,
+            project_root,
             version,
         }
     }
