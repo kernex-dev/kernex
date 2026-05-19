@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-05-19
+
+Additive `kernex-adapter-core` release introducing a project-local write surface so adapters that target files outside the home-rooted `config_root` (Codex `<cwd>/AGENTS.md`, Cursor `.cursorrules`, etc.) can declare a separate project root without bypassing the adapter sandbox. Wire format remains back-compatible with 0.8.2 via `#[serde(default)]`. Tag: [v0.8.3](https://github.com/kernex-dev/kernex/releases/tag/v0.8.3).
+
+### Added
+
+- **`kernex-adapter-core`**: new `Detection::project_root: Option<PathBuf>` field on the `#[non_exhaustive]` `Detection` struct. Additive; `#[serde(default)]` keeps the wire format back-compatible with 0.8.2 callers.
+- **`kernex-adapter-core`**: new `Detection::with_project_root(installed, config_root, project_root, version)` constructor for adapters that write project-local files. `Detection::new(installed, config_root, version)` is retained source-compatibly and sets `project_root: None`.
+- **`kernex-adapter-core`**: `detection_with_project_root_roundtrips` and `detection_deserializes_legacy_wire_shape_without_project_root` smoke tests pin the new field and the back-compat path.
+
+### CI / Release tooling
+
+- Workspace release cut by release-plz with the per-crate shared-tag fix from 0.8.1 (only the `kernex` umbrella creates the `v{version}` tag; 8 other publishable members keep `git_tag_enable = false`).
+
+## [0.8.2] - 2026-05-19
+
+Additive `kernex-adapter-core` release. Adds a plain public constructor so downstream consumers can build `Detection` without routing through `serde_json::from_value` while the struct remains `#[non_exhaustive]`. Tag: [v0.8.2](https://github.com/kernex-dev/kernex/releases/tag/v0.8.2).
+
+### Added
+
+- **`kernex-adapter-core`**: `Detection::new(installed, config_root, version)` public constructor (FU-E-01). Removes the `serde_json::from_value(json!({...}))` workaround pattern that `kernex-agent`'s adapter `detect` paths had to use against the `#[non_exhaustive]` struct. Wire format unchanged; pinned by the new `detection_new_roundtrips` smoke test.
+
+### CI / Release tooling
+
+- **`actions/create-github-app-token`** bumped 3.1.1 -> 3.2.0 in `.github/workflows/release-plz.yml` and `.github/workflows/publish-crates.yml`.
+- **`release-plz/action`** bumped to the latest minor.
+
+## [0.8.1] - 2026-05-14
+
+Process-only release. No public API change. Tag: [v0.8.1](https://github.com/kernex-dev/kernex/releases/tag/v0.8.1).
+
+### CI / Release tooling
+
+- **release-plz shared-tag 422 fix**: `git_tag_enable = false` set on 8 of the 9 publishable packages in `release-plz.toml`, leaving only the `kernex` umbrella crate as the single tag source for the workspace's shared `v{version}` tag. Resolves the 422 `Reference already exists` loop observed on the v0.8.0 publish, where the first crate created the tag and the next 8 received a duplicate-ref error (the publish chain still fired on the tag push, but the release-plz workflow itself exited 1). The 7 leaf crates plus `kernex-adapter-core` still bump and publish to crates.io; they just no longer try to create the shared tag.
+- **`actions/checkout`** bumped 4.3.1 -> 6.0.2.
+
+### Documentation
+
+- Internal-planning identifier leaks (FU-B-02, FU-A-03, planning-doc cross-refs, sprint tags, slice names, and a stray internal phase + step identifier in the `kernex-memory` `observations.rs` module doc) scrubbed from source comments, the workspace and `kernex-memory` CHANGELOGs, one workflow file, and `Cargo.toml`. Runtime behavior unaffected; the .crate tarballs already on crates.io for the 0.6.x / 0.7.x / 0.8.0 release lines still ship the original wording, but GitHub readers from this release forward see the scrubbed text.
+
+## [0.8.0] - 2026-05-12
+
+Breaking `kernex-memory` release. Introduces a typed observation log alongside the existing conversation, fact, and scheduled-task surfaces, and renormalizes `MemoryStore::get_memory_stats` to a 4-tuple to surface the new dimension. Tag: [v0.8.0](https://github.com/kernex-dev/kernex/releases/tag/v0.8.0).
+
+### Added
+
+- **`kernex-memory`**: migration `018_observations.sql` creates the `observations` base table plus an FTS5 mirror with three sync triggers. UUIDv4 ids, soft-delete via `deleted_at`, `sender_id` is the intra-DB scope (the on-disk DB is the project scope).
+- **`kernex-memory`**: five new `MemoryStore` trait methods: `save_observation`, `get_observation_by_id`, `search_observations`, `soft_delete_observation`, `list_soft_deleted_observations`. Soft-deleted rows are invisible to `get` / `search` / `stats` and visible only via `list_soft_deleted_observations`.
+- **`kernex-memory`**: public `ObservationType` enum (7 variants, snake_case serde, `#[non_exhaustive]`), `SaveEntry` input shape (optional structured fields `what` / `why` / `where_field` / `learned`), and `Observation` output row (`id` plus timestamps). All three types are `#[non_exhaustive]` for forward-compat.
+
+### BREAKING
+
+- **`kernex-memory`**: `MemoryStore::get_memory_stats` now returns `Result<(i64, i64, i64, i64), MemoryError>` (was a 3-tuple). New shape is `(conversations, messages, observations, facts)`; `observations` slots in at position 2. Downstream consumers must destructure four elements. Bundled with the trait additions so one breaking release covers the full migration.
+
+### Tests
+
+- `kernex-memory`: +18 in-tree store tests + 3 type unit tests (21 new). Existing `test_memory_stats_excludes_soft_deleted_facts` updated for the 4-tuple. `kernex-runtime/examples/full_stack.rs` updated likewise.
+
+## [0.7.0] - 2026-05-11
+
+Breaking `kernex-memory` release. Replaces the untyped tuple return shapes on `MemoryStore::search_messages` and `MemoryStore::get_history` with typed row structs, and pushes recency filtering server-side via a new `since` parameter on `search_messages`. Tag: [v0.7.0](https://github.com/kernex-dev/kernex/releases/tag/v0.7.0).
+
+### Added
+
+- **`kernex-memory`**: public `MessageRow { id, conversation_id, role, content, timestamp: SystemTime }` and `HistoryRow { conversation_id, summary, updated_at: SystemTime }` in `crates/kernex-memory/src/types.rs`. Timestamps parse from the SQLite `TIMESTAMP` column at fetch time via `chrono::NaiveDateTime` -> `DateTime<Utc>` -> `SystemTime`; consumers never see raw timestamp strings.
+- **`kernex-memory`**: `MemoryStore::get_message_by_id(id: &str) -> Result<Option<MessageRow>>` trait method. Unblocks the downstream `kx mem get <id>` wire that had been returning `CliError::NotImplemented`.
+- **`kernex-memory`**: `since: Option<SystemTime>` parameter on `MemoryStore::search_messages` pushes recency filtering server-side via `WHERE m.timestamp >= ?` so `LIMIT` applies post-filter (resolves the recency-cutoff ambiguity flagged in the typed-row design notes).
+
+### BREAKING
+
+- **`kernex-memory`**: `MemoryStore::search_messages` return type `Vec<(String, String, String)>` -> `Vec<MessageRow>`. SQL now selects `id` + `conversation_id` alongside `role` / `content` / `timestamp`.
+- **`kernex-memory`**: `MemoryStore::get_history` return type `Vec<(String, String)>` -> `Vec<HistoryRow>`. SQL now selects `conversations.id` alongside the existing `summary` + `updated_at`.
+
+### Documentation
+
+- Repo docs aligned with the 0.6.2 ship state ahead of this cut.
+
 ## [0.6.2] - 2026-05-11
 
 First end-to-end release-plz cycle. Release PR #17 squash-merged at `87b7fa6` triggered the publish chain via the GitHub App identity wired in v0.6.1; all 9 publishable crates shipped automatically.
