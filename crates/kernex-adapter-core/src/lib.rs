@@ -41,6 +41,25 @@ pub struct Detection {
     pub version: Option<String>,
 }
 
+impl Detection {
+    /// Construct a `Detection` value without routing through `serde_json`.
+    ///
+    /// The type is `#[non_exhaustive]`, so external crates cannot use a
+    /// struct literal. This constructor is the additive public surface that
+    /// lets downstream consumers build the value with a single call.
+    pub fn new(
+        installed: bool,
+        config_root: Option<std::path::PathBuf>,
+        version: Option<String>,
+    ) -> Self {
+        Self {
+            installed,
+            config_root,
+            version,
+        }
+    }
+}
+
 /// Adapter error type. `#[non_exhaustive]` so future variants are non-breaking.
 #[derive(Debug, Error)]
 #[non_exhaustive]
