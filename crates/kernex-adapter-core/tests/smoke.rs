@@ -21,3 +21,20 @@ fn default_registry_is_empty_in_scaffold() {
         .get(kernex_adapter_core::AdapterId::ClaudeCode)
         .is_none());
 }
+
+#[test]
+fn detection_new_roundtrips() {
+    use kernex_adapter_core::Detection;
+    use std::path::{Path, PathBuf};
+
+    let d = Detection::new(true, Some(PathBuf::from("/x")), Some("1.2.3".into()));
+    assert!(d.installed);
+    assert_eq!(d.config_root.as_deref(), Some(Path::new("/x")));
+    assert_eq!(d.version.as_deref(), Some("1.2.3"));
+
+    let json = serde_json::to_value(&d).expect("serialize");
+    let back: Detection = serde_json::from_value(json).expect("roundtrip");
+    assert_eq!(back.installed, d.installed);
+    assert_eq!(back.config_root, d.config_root);
+    assert_eq!(back.version, d.version);
+}
