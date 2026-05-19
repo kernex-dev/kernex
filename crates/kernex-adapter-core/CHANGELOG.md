@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3](https://github.com/kernex-dev/kernex/compare/v0.8.2...v0.8.3) - 2026-05-19
+
+### Added
+
+- *(adapter-core)* add Detection::project_root for project-local adapter writes (FU-F-01) ([#30](https://github.com/kernex-dev/kernex/pull/30))
+
 ### Added
 
 - `Detection::project_root: Option<PathBuf>` field for adapters that write project-local files (e.g., Codex `<cwd>/AGENTS.md`, Cursor `.cursorrules`). Additive on the `#[non_exhaustive]` struct; `#[serde(default)]` keeps the wire format back-compatible with 0.8.2 callers. Resolves Phase F SDD ADR-001.
