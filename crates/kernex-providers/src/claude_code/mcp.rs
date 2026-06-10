@@ -1,27 +1,24 @@
-//! MCP server settings management for Claude Code CLI.
+//! MCP server config for the Claude Code CLI.
 //!
-//! Handles writing and cleaning up `.claude/settings.local.json` files
-//! that configure MCP servers for the CLI subprocess.
+//! Writes the declared MCP servers to a throwaway temp file and passes it to
+//! the CLI via `--mcp-config <file>`. This is Claude Code's own mechanism for
+//! loading MCP servers from an arbitrary JSON file, so kernex never writes to
+//! (or deletes) the user's `.claude/settings.local.json` — which Claude Code
+//! does not read for MCP and which holds the user's own permissions/hooks.
 
 use crate::error::ProviderError;
 use kernex_core::{context::McpServer, error::KernexError};
 use std::path::{Path, PathBuf};
-use tracing::{debug, info, warn};
+use std::sync::atomic::{AtomicU64, Ordering};
+use tracing::{debug, warn};
 
-/// Write `.claude/settings.local.json` with MCP server configuration.
-///
-/// Claude Code reads this file from `current_dir` on startup.
-pub(super) async fn write_mcp_settings(
-    workspace: &Path,
+/// Serialize the declared MCP servers to a throwaway temp file (the
+/// `{"mcpServers": {...}}` shape Claude Code's `--mcp-config` expects) and
+/// return its path. The caller passes it via `--mcp-config` and removes it
+/// with [`cleanup_mcp_config`] once the CLI calls finish.
+pub(super) async fn write_mcp_config_tempfile(
     servers: &[McpServer],
 ) -> Result<PathBuf, KernexError> {
-    let claude_dir = workspace.join(".claude");
-    tokio::fs::create_dir_all(&claude_dir)
-        .await
-        .map_err(|e| ProviderError::Logic(format!("failed to create .claude dir: {e}")))?;
-
-    let path = claude_dir.join("settings.local.json");
-
     let mut mcp_servers = serde_json::Map::new();
     for srv in servers {
         let mut entry = serde_json::Map::new();
@@ -56,18 +53,24 @@ pub(super) async fn write_mcp_settings(
     );
 
     let json = serde_json::to_string_pretty(&root)
-        .map_err(|e| ProviderError::Logic(format!("failed to serialize MCP settings: {e}")))?;
+        .map_err(|e| ProviderError::Logic(format!("failed to serialize MCP config: {e}")))?;
 
-    tokio::fs::write(&path, json)
+    // A uniquely-named file in the system temp dir (pid + a per-process
+    // counter), outside the user's config tree. The CLI subprocess reads it via
+    // `--mcp-config`; we delete it ourselves in `cleanup_mcp_config`.
+    static MCP_CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = MCP_CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("kernex-mcp-{}-{seq}.json", std::process::id()));
+    tokio::fs::write(&path, json.as_bytes())
         .await
-        .map_err(|e| ProviderError::Logic(format!("failed to write MCP settings: {e}")))?;
+        .map_err(|e| ProviderError::Logic(format!("failed to write MCP config: {e}")))?;
 
-    info!("mcp: wrote settings to {}", path.display());
+    debug!("mcp: wrote config to {}", path.display());
     Ok(path)
 }
 
-/// Remove the temporary MCP settings file.
-pub(super) async fn cleanup_mcp_settings(path: &Path) {
+/// Remove the temporary MCP config file written by [`write_mcp_config_tempfile`].
+pub(super) async fn cleanup_mcp_config(path: &Path) {
     if path.exists() {
         if let Err(e) = tokio::fs::remove_file(path).await {
             warn!("mcp: failed to cleanup {}: {e}", path.display());
