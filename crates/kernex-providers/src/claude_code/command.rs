@@ -3,6 +3,7 @@
 use super::ClaudeCodeProvider;
 use crate::error::ProviderError;
 use kernex_core::error::KernexError;
+use std::path::Path;
 use tokio::process::Command;
 use tracing::debug;
 
@@ -122,10 +123,11 @@ impl ClaudeCodeProvider {
         context_disabled_tools: bool,
         session_id: Option<&str>,
         agent_name: Option<&str>,
+        mcp_config_path: Option<&Path>,
     ) -> Result<std::process::Output, KernexError> {
         let mut cmd = self.base_command();
 
-        let args = Self::build_run_cli_args(
+        let mut args = Self::build_run_cli_args(
             prompt,
             extra_allowed_tools,
             max_turns,
@@ -135,6 +137,12 @@ impl ClaudeCodeProvider {
             session_id,
             agent_name,
         );
+        // Load kernex's declared MCP servers from a temp file via Claude Code's
+        // own `--mcp-config` mechanism (never the user's .claude/ config).
+        if let Some(p) = mcp_config_path {
+            args.push("--mcp-config".to_string());
+            args.push(p.to_string_lossy().into_owned());
+        }
         cmd.args(&args);
 
         debug!(
@@ -149,6 +157,7 @@ impl ClaudeCodeProvider {
     }
 
     /// Run the claude CLI subprocess with a specific session ID (for auto-resume).
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn run_cli_with_session(
         &self,
         prompt: &str,
@@ -157,6 +166,7 @@ impl ClaudeCodeProvider {
         max_turns: u32,
         allowed_tools: &[String],
         model: &str,
+        mcp_config_path: Option<&Path>,
     ) -> Result<std::process::Output, KernexError> {
         let mut cmd = self.base_command();
 
@@ -168,6 +178,11 @@ impl ClaudeCodeProvider {
             .arg(max_turns.to_string())
             .arg("--resume")
             .arg(session_id);
+
+        // Same MCP config as the first call so resumes keep kernex's servers.
+        if let Some(p) = mcp_config_path {
+            cmd.arg("--mcp-config").arg(p);
+        }
 
         // Model override.
         if !model.is_empty() {

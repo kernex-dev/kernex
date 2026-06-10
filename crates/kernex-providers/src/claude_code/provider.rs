@@ -7,6 +7,7 @@ use kernex_core::{
     message::{CompletionMeta, Response},
     traits::Provider,
 };
+use std::path::Path;
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
@@ -27,21 +28,18 @@ impl Provider for ClaudeCodeProvider {
         let prompt = context.to_prompt_string();
         let start = Instant::now();
 
-        // Write MCP settings if any servers are declared.
-        let mcp_settings_path = if !context.mcp_servers.is_empty() {
-            if let Some(ref dir) = self.working_dir {
-                match mcp::write_mcp_settings(dir, &context.mcp_servers).await {
-                    Ok(path) => Some(path),
-                    Err(e) => {
-                        warn!("failed to write MCP settings: {e}");
-                        None
-                    }
-                }
-            } else {
-                None
-            }
-        } else {
+        // Write the declared MCP servers to a throwaway temp file passed via
+        // `--mcp-config`. Never touches the user's `.claude/settings.local.json`.
+        let mcp_config_path = if context.mcp_servers.is_empty() {
             None
+        } else {
+            match mcp::write_mcp_config_tempfile(&context.mcp_servers).await {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    warn!("failed to write MCP config: {e}");
+                    None
+                }
+            }
         };
 
         let extra_tools = mcp::mcp_tool_patterns(&context.mcp_servers);
@@ -66,15 +64,21 @@ impl Provider for ClaudeCodeProvider {
                 tools_disabled,
                 context.session_id.as_deref(),
                 context.agent_name.as_deref(),
+                mcp_config_path.as_deref(),
             )
             .await;
 
-        // Always cleanup MCP settings, regardless of success or failure.
-        if let Some(ref path) = mcp_settings_path {
-            mcp::cleanup_mcp_settings(path).await;
-        }
-
-        let output = result?;
+        // The temp MCP config must outlive auto-resume (resumes reuse it), so
+        // clean it up at the end. On an error here, clean up before returning.
+        let output = match result {
+            Ok(o) => o,
+            Err(e) => {
+                if let Some(ref path) = mcp_config_path {
+                    mcp::cleanup_mcp_config(path).await;
+                }
+                return Err(e);
+            }
+        };
         let stdout = String::from_utf8_lossy(&output.stdout);
         let (mut text, mut model) = self.parse_response(&stdout, effective_max_turns);
         // CLI doesn't always echo the model back — fall back to what we requested.
@@ -98,11 +102,17 @@ impl Provider for ClaudeCodeProvider {
                             effective_max_turns,
                             &effective_tools,
                             effective_model,
+                            mcp_config_path.as_deref(),
                             &mut model,
                         )
                         .await;
                 }
             }
+        }
+
+        // All CLI calls (first + any resumes) are done; remove the temp config.
+        if let Some(ref path) = mcp_config_path {
+            mcp::cleanup_mcp_config(path).await;
         }
 
         let elapsed_ms = start.elapsed().as_millis() as u64;
@@ -141,6 +151,7 @@ impl ClaudeCodeProvider {
         effective_max_turns: u32,
         effective_tools: &[String],
         effective_model: &str,
+        mcp_config_path: Option<&Path>,
         model: &mut Option<String>,
     ) -> String {
         let mut accumulated = initial_text;
@@ -166,6 +177,7 @@ impl ClaudeCodeProvider {
                     effective_max_turns,
                     effective_tools,
                     effective_model,
+                    mcp_config_path,
                 )
                 .await;
 
