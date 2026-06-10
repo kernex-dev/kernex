@@ -607,18 +607,9 @@ impl Runtime {
             raw_response
         };
 
-        // Fire on_stop hook.
-        self.hook_runner.on_stop(&response.text).await;
-
-        // Persist exchange.
-        #[allow(unused_variables)]
-        let project_key = project_ref.unwrap_or("default");
-        #[cfg(feature = "sqlite-store")]
-        self.store
-            .store_exchange(&self.channel, request, &response, project_key)
-            .await?;
-
-        // Record token usage if the provider reported a count.
+        // Record token usage if the provider reported a count. Tokens are
+        // billed even when the run exhausts its turn budget, so this runs
+        // before the max-turns branch below.
         #[cfg(feature = "sqlite-store")]
         if let Some(tokens) = response.metadata.tokens_used {
             let model = response.metadata.model.as_deref().unwrap_or("unknown");
@@ -637,6 +628,24 @@ impl Runtime {
                 tracing::warn!("failed to record token usage: {e}");
             }
         }
+
+        // Turn-budget exhaustion: the provider hit `max_turns` without a final
+        // answer. Surface it as `RunOutcome::MaxTurns` rather than persisting an
+        // empty/synthetic exchange or firing `on_stop` with a non-answer.
+        if response.metadata.stop_reason.as_deref() == Some("max_turns") {
+            return Ok(RunOutcome::MaxTurns);
+        }
+
+        // Fire on_stop hook.
+        self.hook_runner.on_stop(&response.text).await;
+
+        // Persist exchange.
+        #[allow(unused_variables)]
+        let project_key = project_ref.unwrap_or("default");
+        #[cfg(feature = "sqlite-store")]
+        self.store
+            .store_exchange(&self.channel, request, &response, project_key)
+            .await?;
 
         Ok(RunOutcome::EndTurn(response))
     }
@@ -1070,5 +1079,65 @@ db_path = "{escaped}/memory.db"
         assert_eq!(runtime.channel, "api");
         assert_eq!(runtime.project, Some("file-proj".to_string()));
         assert_eq!(runtime.system_prompt, "From file.");
+    }
+
+    /// Mock provider returning a `Response` with a fixed `stop_reason`, to test
+    /// how `Runtime::run` maps the provider's stop reason to a `RunOutcome`.
+    struct StopReasonProvider(Option<&'static str>);
+
+    #[async_trait::async_trait]
+    impl Provider for StopReasonProvider {
+        fn name(&self) -> &str {
+            "mock"
+        }
+        fn requires_api_key(&self) -> bool {
+            false
+        }
+        async fn complete(&self, _ctx: &Context) -> Result<Response, KernexError> {
+            Ok(Response {
+                text: "partial".to_string(),
+                metadata: CompletionMeta {
+                    stop_reason: self.0.map(|s| s.to_string()),
+                    ..Default::default()
+                },
+            })
+        }
+        async fn is_available(&self) -> bool {
+            true
+        }
+    }
+
+    async fn run_with_stop_reason(stop: Option<&'static str>) -> RunOutcome {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let runtime = RuntimeBuilder::new()
+            .data_dir(tmp_dir.path().to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        runtime
+            .run(
+                &StopReasonProvider(stop),
+                &Request::text("user-1", "hi"),
+                &RunConfig::default(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn run_maps_max_turns_stop_reason_to_max_turns_outcome() {
+        let outcome = run_with_stop_reason(Some("max_turns")).await;
+        assert!(
+            matches!(outcome, RunOutcome::MaxTurns),
+            "max_turns stop_reason should yield RunOutcome::MaxTurns, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_returns_end_turn_for_normal_stop_reason() {
+        match run_with_stop_reason(Some("end_turn")).await {
+            RunOutcome::EndTurn(resp) => assert_eq!(resp.text, "partial"),
+            other => panic!("expected EndTurn, got {other:?}"),
+        }
     }
 }

@@ -64,6 +64,12 @@ pub struct CompletionMeta {
     pub processing_time_ms: u64,
     #[serde(default)]
     pub model: Option<String>,
+    /// The provider's stop reason for this completion, when reported
+    /// (`end_turn`, `tool_use`, `max_tokens`, `refusal`, ...). The agentic
+    /// loop sets it to `max_turns` when it exhausts the turn budget without a
+    /// final answer; `Runtime::run` maps that to [`crate::run::RunOutcome::MaxTurns`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     /// Input tokens that were *not* served from the prompt cache. When the

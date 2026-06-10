@@ -1068,6 +1068,7 @@ pub(crate) fn build_response_with_usage(
             },
             processing_time_ms: elapsed_ms,
             model,
+            stop_reason: None,
             session_id: None,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
