@@ -70,13 +70,13 @@ fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
         ("openai", ModelTier::Standard) => "gpt-4o-mini",
         ("openai", ModelTier::Flagship) => "gpt-4o",
         ("anthropic", ModelTier::Standard) => "claude-sonnet-4-6",
-        ("anthropic", ModelTier::Flagship) => "claude-opus-4-6",
+        ("anthropic", ModelTier::Flagship) => "claude-opus-4-8",
         ("gemini", ModelTier::Standard) => "gemini-2.0-flash",
         ("gemini", ModelTier::Flagship) => "gemini-2.5-pro",
         ("ollama", ModelTier::Standard) => "llama3.2",
         ("ollama", ModelTier::Flagship) => "llama3.1:70b",
         ("openrouter", ModelTier::Standard) => "anthropic/claude-sonnet-4-6",
-        ("openrouter", ModelTier::Flagship) => "anthropic/claude-opus-4-6",
+        ("openrouter", ModelTier::Flagship) => "anthropic/claude-opus-4-8",
         ("groq", ModelTier::Standard) => "llama-3.3-70b-versatile",
         ("groq", ModelTier::Flagship) => "deepseek-r1-distill-llama-70b",
         ("mistral", ModelTier::Standard) => "mistral-small-latest",
@@ -122,7 +122,7 @@ impl ProviderFactory {
             }
             "anthropic" => {
                 let model = resolve_model("anthropic", config.model, config.tier)
-                    .unwrap_or_else(|| "claude-3-7-sonnet-20250219".to_string());
+                    .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
                 let p = crate::anthropic::AnthropicProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
@@ -161,7 +161,7 @@ impl ProviderFactory {
             }
             "openrouter" => {
                 let model = resolve_model("openrouter", config.model, config.tier)
-                    .unwrap_or_else(|| "anthropic/claude-3.5-sonnet".to_string());
+                    .unwrap_or_else(|| "anthropic/claude-sonnet-4-6".to_string());
                 let p = crate::openrouter::OpenRouterProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
@@ -546,7 +546,7 @@ mod tests {
     fn model_from_tier_flagship() {
         assert_eq!(
             model_from_tier("anthropic", ModelTier::Flagship),
-            "claude-opus-4-6"
+            "claude-opus-4-8"
         );
         assert_eq!(model_from_tier("openai", ModelTier::Flagship), "gpt-4o");
         assert_eq!(
@@ -559,7 +559,7 @@ mod tests {
         );
         assert_eq!(
             model_from_tier("openrouter", ModelTier::Flagship),
-            "anthropic/claude-opus-4-6"
+            "anthropic/claude-opus-4-8"
         );
     }
 

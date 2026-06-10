@@ -20,7 +20,7 @@ pub fn default_allowed_tools() -> Vec<String> {
     vec![]
 }
 pub fn default_anthropic_model() -> String {
-    "claude-sonnet-4-20250514".to_string()
+    "claude-sonnet-4-6".to_string()
 }
 pub fn default_openai_model() -> String {
     "gpt-4o".to_string()
@@ -62,7 +62,7 @@ pub fn default_model() -> String {
     "claude-sonnet-4-6".to_string()
 }
 pub fn default_model_complex() -> String {
-    "claude-opus-4-6".to_string()
+    "claude-opus-4-8".to_string()
 }
 pub fn default_channel() -> String {
     "cli".to_string()

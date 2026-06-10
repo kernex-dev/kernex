@@ -462,10 +462,12 @@ impl AnthropicProvider {
             let resp = {
                 let client = &self.client;
                 let api_key = &self.api_key;
-                // Build combined beta flags: token-efficient-tools is always
-                // active in the agentic loop; prompt-caching and extended
-                // thinking are added when enabled.
-                let mut betas = vec!["token-efficient-tools-2026-03-28"];
+                // Build beta flags. prompt-caching and interleaved-thinking are
+                // added only when enabled, and forwarded via the conditional
+                // anthropic-beta header below. The token-efficient-tools beta was
+                // removed: the 4.x model family applies that optimization natively,
+                // and the unverified beta string risked 400-ing every tool request.
+                let mut betas: Vec<&str> = Vec::new();
                 if use_cache {
                     betas.push("prompt-caching-2024-07-31");
                 }
@@ -474,13 +476,15 @@ impl AnthropicProvider {
                 }
                 let beta_header = betas.join(",");
                 send_with_retry("anthropic", || {
-                    let req = client
+                    let mut req = client
                         .post(ANTHROPIC_API_URL)
                         .header("x-api-key", api_key.expose_secret().as_str())
                         .header("anthropic-version", ANTHROPIC_VERSION)
-                        .header("content-type", "application/json")
-                        .header("anthropic-beta", &beta_header)
-                        .body(body_json.clone());
+                        .header("content-type", "application/json");
+                    if !beta_header.is_empty() {
+                        req = req.header("anthropic-beta", &beta_header);
+                    }
+                    let req = req.body(body_json.clone());
                     async move { req.send().await }
                 })
                 .await?
@@ -1075,17 +1079,18 @@ mod tests {
     }
 
     #[test]
-    fn test_beta_header_includes_token_efficient_tools() {
-        // Verify that the token-efficient-tools flag is always present and
-        // caching flag is appended when use_cache is true.
-        let beta_no_cache = "token-efficient-tools-2026-03-28".to_string();
-        let beta_with_cache =
-            "token-efficient-tools-2026-03-28,prompt-caching-2024-07-31".to_string();
+    fn test_agentic_beta_header_omits_token_efficient_tools() {
+        // The token-efficient-tools beta was removed (the 4.x family applies the
+        // optimization natively; the unverified string risked 400-ing every tool
+        // request). With no caching and no thinking, the agentic loop sends no
+        // anthropic-beta header at all; prompt-caching is appended only when a
+        // cache_control boundary is present.
+        let betas_empty: Vec<&str> = Vec::new();
+        assert!(betas_empty.join(",").is_empty());
 
-        assert!(beta_no_cache.contains("token-efficient-tools-2026-03-28"));
-        assert!(!beta_no_cache.contains("prompt-caching"));
-
-        assert!(beta_with_cache.contains("token-efficient-tools-2026-03-28"));
+        let betas_cache = ["prompt-caching-2024-07-31"];
+        let beta_with_cache = betas_cache.join(",");
+        assert!(!beta_with_cache.contains("token-efficient-tools"));
         assert!(beta_with_cache.contains("prompt-caching-2024-07-31"));
     }
 }

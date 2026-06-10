@@ -20,10 +20,9 @@ Security fixes land on the current minor and the immediately previous minor.
 
 | Version | Supported           |
 |---------|---------------------|
-| 0.6.x   | Yes (current)       |
-| 0.5.x   | Yes (previous)      |
-| 0.4.x   | No                  |
-| < 0.4   | No                  |
+| 0.8.x   | Yes (current)       |
+| 0.7.x   | Yes (previous)      |
+| < 0.7   | No                  |
 
 ## Security Design
 
