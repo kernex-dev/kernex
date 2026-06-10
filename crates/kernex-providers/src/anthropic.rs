@@ -159,6 +159,27 @@ struct AnthropicRequest {
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicToolDef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
+}
+
+/// The `thinking` request parameter. Adaptive thinking is the GA mechanism on
+/// the Claude 4.6+ family: the model decides when and how much to think, and it
+/// enables interleaved thinking (reasoning between tool calls) automatically
+/// with no beta header. It is sent only when the caller opts in via
+/// `Context::extended_thinking`; an absent field means thinking is off, which
+/// is the API default. Manual extended thinking (`type: "enabled"` +
+/// `budget_tokens`) is deprecated on 4.6 and rejected on 4.7+, so it is not
+/// offered here.
+#[derive(Serialize, Clone, Copy)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ThinkingConfig {
+    Adaptive,
+}
+
+/// Build the `thinking` request field from the caller's opt-in flag.
+fn thinking_config(extended_thinking: bool) -> Option<ThinkingConfig> {
+    extended_thinking.then_some(ThinkingConfig::Adaptive)
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -182,6 +203,19 @@ enum AnthropicContent {
 enum AnthropicContentBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    /// A thinking block replayed back to the API. When thinking is enabled and
+    /// the model emits a tool_use, the thinking block(s) that preceded it must
+    /// be sent back verbatim (signature included) on the follow-up request, or
+    /// the API rejects it.
+    #[serde(rename = "thinking")]
+    Thinking {
+        thinking: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        signature: Option<String>,
+    },
+    /// An encrypted thinking block, replayed verbatim like `Thinking`.
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
@@ -218,12 +252,51 @@ struct AnthropicResponse {
 enum AnthropicResponseBlock {
     #[serde(rename = "text")]
     Text { text: String },
+    /// A thinking block. Present whenever thinking is enabled; the `thinking`
+    /// field is empty unless `display: "summarized"` was requested, but the
+    /// block (and its `signature`) must still be preserved for replay. Without
+    /// this variant a real thinking block would fail the whole response parse.
+    #[serde(rename = "thinking")]
+    Thinking {
+        #[serde(default)]
+        thinking: String,
+        #[serde(default)]
+        signature: Option<String>,
+    },
+    /// An encrypted thinking block (safety-redacted reasoning).
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking { data: String },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
         name: String,
         input: serde_json::Value,
     },
+}
+
+/// Map a response content block to the request block that replays the assistant
+/// turn back to the API. The full content (thinking, text, and tool_use blocks)
+/// must be replayed in order after a tool_use turn; thinking blocks carry a
+/// signature that has to survive the round trip unchanged.
+fn assistant_block_from_response(block: &AnthropicResponseBlock) -> AnthropicContentBlock {
+    match block {
+        AnthropicResponseBlock::Text { text } => AnthropicContentBlock::Text { text: text.clone() },
+        AnthropicResponseBlock::Thinking {
+            thinking,
+            signature,
+        } => AnthropicContentBlock::Thinking {
+            thinking: thinking.clone(),
+            signature: signature.clone(),
+        },
+        AnthropicResponseBlock::RedactedThinking { data } => {
+            AnthropicContentBlock::RedactedThinking { data: data.clone() }
+        }
+        AnthropicResponseBlock::ToolUse { id, name, input } => AnthropicContentBlock::ToolUse {
+            id: id.clone(),
+            name: name.clone(),
+            input: input.clone(),
+        },
+    }
 }
 
 #[derive(Deserialize)]
@@ -317,6 +390,7 @@ impl Provider for AnthropicProvider {
             system: system_blocks,
             messages,
             tools: None,
+            thinking: thinking_config(extended_thinking),
         };
 
         debug!("anthropic: POST {ANTHROPIC_API_URL} model={effective_model} (no tools)");
@@ -333,12 +407,11 @@ impl Provider for AnthropicProvider {
                     .header("x-api-key", api_key.expose_secret().as_str())
                     .header("anthropic-version", ANTHROPIC_VERSION)
                     .header("content-type", "application/json");
+                // Adaptive thinking is a request-body param, not a beta header.
+                // prompt-caching is the only beta still forwarded here.
                 let mut betas: Vec<&str> = Vec::new();
                 if use_cache {
                     betas.push("prompt-caching-2024-07-31");
-                }
-                if extended_thinking {
-                    betas.push("interleaved-thinking-2025-05-14");
                 }
                 if !betas.is_empty() {
                     req = req.header("anthropic-beta", betas.join(","));
@@ -452,6 +525,7 @@ impl AnthropicProvider {
                 system: system_blocks.to_vec(),
                 messages: messages.clone(),
                 tools: tools.clone(),
+                thinking: thinking_config(extended_thinking),
             };
 
             debug!("anthropic: POST {ANTHROPIC_API_URL} model={model} turn={turn}");
@@ -462,17 +536,15 @@ impl AnthropicProvider {
             let resp = {
                 let client = &self.client;
                 let api_key = &self.api_key;
-                // Build beta flags. prompt-caching and interleaved-thinking are
-                // added only when enabled, and forwarded via the conditional
-                // anthropic-beta header below. The token-efficient-tools beta was
-                // removed: the 4.x model family applies that optimization natively,
-                // and the unverified beta string risked 400-ing every tool request.
+                // Adaptive thinking is sent as a request-body param (see
+                // `thinking_config`), not a beta header: on the 4.6+ family it is
+                // GA and enables interleaved thinking automatically. The
+                // token-efficient-tools beta was removed earlier (native on 4.x,
+                // and the unverified string risked 400-ing every tool request);
+                // prompt-caching is the only beta still forwarded here.
                 let mut betas: Vec<&str> = Vec::new();
                 if use_cache {
                     betas.push("prompt-caching-2024-07-31");
-                }
-                if extended_thinking {
-                    betas.push("interleaved-thinking-2025-05-14");
                 }
                 let beta_header = betas.join(",");
                 send_with_retry("anthropic", || {
@@ -520,33 +592,24 @@ impl AnthropicProvider {
             let blocks = parsed.content.unwrap_or_default();
 
             if has_tool_use {
-                // Build the assistant message with response blocks.
-                let mut assistant_blocks: Vec<AnthropicContentBlock> = Vec::new();
+                // Replay the full assistant content verbatim (thinking, text, and
+                // tool_use blocks, in order). Thinking blocks that precede a
+                // tool_use must be preserved or the follow-up request is rejected.
+                let assistant_blocks: Vec<AnthropicContentBlock> =
+                    blocks.iter().map(assistant_block_from_response).collect();
                 let mut tool_result_blocks: Vec<AnthropicContentBlock> = Vec::new();
 
                 for block in &blocks {
-                    match block {
-                        AnthropicResponseBlock::Text { text } => {
-                            assistant_blocks
-                                .push(AnthropicContentBlock::Text { text: text.clone() });
-                        }
-                        AnthropicResponseBlock::ToolUse { id, name, input } => {
-                            assistant_blocks.push(AnthropicContentBlock::ToolUse {
-                                id: id.clone(),
-                                name: name.clone(),
-                                input: input.clone(),
-                            });
+                    if let AnthropicResponseBlock::ToolUse { id, name, input } = block {
+                        info!("anthropic: tool call [{turn}] {name} ({id})");
 
-                            info!("anthropic: tool call [{turn}] {name} ({id})");
+                        let result = executor.execute(name, input).await;
 
-                            let result = executor.execute(name, input).await;
-
-                            tool_result_blocks.push(AnthropicContentBlock::ToolResult {
-                                tool_use_id: id.clone(),
-                                content: result.content,
-                                is_error: if result.is_error { Some(true) } else { None },
-                            });
-                        }
+                        tool_result_blocks.push(AnthropicContentBlock::ToolResult {
+                            tool_use_id: id.clone(),
+                            content: result.content,
+                            is_error: if result.is_error { Some(true) } else { None },
+                        });
                     }
                 }
 
@@ -655,6 +718,8 @@ struct AnthropicStreamRequest {
     messages: Vec<AnthropicMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tools: Option<Vec<AnthropicToolDef>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<ThinkingConfig>,
 }
 
 /// Minimal SSE data envelope from Anthropic.
@@ -718,6 +783,7 @@ impl StreamingProvider for AnthropicProvider {
             system: system_blocks,
             messages,
             tools: None,
+            thinking: thinking_config(extended_thinking),
         };
 
         let body_json = serde_json::to_vec(&body)
@@ -733,12 +799,11 @@ impl StreamingProvider for AnthropicProvider {
             .header("x-api-key", self.api_key.expose_secret())
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
+        // Adaptive thinking rides in the request body (see `thinking_config`),
+        // not a beta header; prompt-caching is the only beta forwarded here.
         let mut betas: Vec<&str> = Vec::new();
         if use_cache {
             betas.push("prompt-caching-2024-07-31");
-        }
-        if extended_thinking {
-            betas.push("interleaved-thinking-2025-05-14");
         }
         if !betas.is_empty() {
             req = req.header("anthropic-beta", betas.join(","));
@@ -870,6 +935,7 @@ mod tests {
                 content: AnthropicContent::Text("Hello".into()),
             }],
             tools: None,
+            thinking: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["model"], "claude-sonnet-4-20250514");
@@ -892,6 +958,7 @@ mod tests {
                 content: AnthropicContent::Text("Hello".into()),
             }],
             tools: None,
+            thinking: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert!(json.get("system").is_none());
@@ -1002,6 +1069,7 @@ mod tests {
                 content: AnthropicContent::Text("list files".into()),
             }],
             tools: Some(tools),
+            thinking: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["tools"].as_array().unwrap().len(), 7);
@@ -1025,6 +1093,99 @@ mod tests {
         assert_eq!(blocks[0]["tool_use_id"], "toolu_123");
     }
 
+    #[test]
+    fn test_adaptive_thinking_sent_when_enabled() {
+        let body = AnthropicRequest {
+            model: "claude-opus-4-8".into(),
+            max_tokens: 8192,
+            system: Vec::new(),
+            messages: Vec::new(),
+            tools: None,
+            thinking: thinking_config(true),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert_eq!(json["thinking"]["type"], "adaptive");
+    }
+
+    #[test]
+    fn test_thinking_omitted_when_disabled() {
+        let body = AnthropicRequest {
+            model: "claude-opus-4-8".into(),
+            max_tokens: 8192,
+            system: Vec::new(),
+            messages: Vec::new(),
+            tools: None,
+            thinking: thinking_config(false),
+        };
+        let json = serde_json::to_value(&body).unwrap();
+        assert!(json.get("thinking").is_none());
+    }
+
+    #[test]
+    fn test_response_parses_thinking_block_and_extracts_only_text() {
+        // A real thinking block must not break the whole parse, and its content
+        // must not leak into the user-visible answer.
+        let json = r#"{"content":[{"type":"thinking","thinking":"step one","signature":"sig-abc"},{"type":"text","text":"The answer."}],"model":"claude-opus-4-8","usage":{"input_tokens":3,"output_tokens":4},"stop_reason":"end_turn"}"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(extract_text_from_response(&resp), "The answer.");
+    }
+
+    #[test]
+    fn test_response_parses_thinking_block_with_empty_field() {
+        // display:"omitted" (the default) yields an empty thinking field, but the
+        // block and its signature are still present and must parse.
+        let json = r#"{"content":[{"type":"thinking","thinking":"","signature":"sig"},{"type":"text","text":"Hi"}],"model":"m","usage":{"input_tokens":1,"output_tokens":1},"stop_reason":"end_turn"}"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(extract_text_from_response(&resp), "Hi");
+    }
+
+    #[test]
+    fn test_response_parses_redacted_thinking_block() {
+        let json = r#"{"content":[{"type":"redacted_thinking","data":"ENCRYPTED"},{"type":"text","text":"Done"}],"model":"m","usage":{"input_tokens":1,"output_tokens":1},"stop_reason":"end_turn"}"#;
+        let resp: AnthropicResponse = serde_json::from_str(json).unwrap();
+        assert_eq!(extract_text_from_response(&resp), "Done");
+    }
+
+    #[test]
+    fn test_assistant_replay_preserves_thinking_then_tooluse_in_order() {
+        // After a tool_use turn the full content (thinking + text + tool_use) is
+        // replayed verbatim; the thinking block keeps its signature and stays
+        // first, or the API rejects the follow-up request.
+        let blocks = [
+            AnthropicResponseBlock::Thinking {
+                thinking: "reasoning".into(),
+                signature: Some("sig-1".into()),
+            },
+            AnthropicResponseBlock::Text {
+                text: "Let me check.".into(),
+            },
+            AnthropicResponseBlock::ToolUse {
+                id: "toolu_1".into(),
+                name: "bash".into(),
+                input: serde_json::json!({"command": "ls"}),
+            },
+        ];
+        let replay: Vec<AnthropicContentBlock> =
+            blocks.iter().map(assistant_block_from_response).collect();
+        let json = serde_json::to_value(&replay).unwrap();
+        assert_eq!(json[0]["type"], "thinking");
+        assert_eq!(json[0]["thinking"], "reasoning");
+        assert_eq!(json[0]["signature"], "sig-1");
+        assert_eq!(json[1]["type"], "text");
+        assert_eq!(json[2]["type"], "tool_use");
+        assert_eq!(json[2]["id"], "toolu_1");
+    }
+
+    #[test]
+    fn test_redacted_thinking_replays_with_data() {
+        let blocks = [AnthropicResponseBlock::RedactedThinking { data: "ENC".into() }];
+        let replay: Vec<AnthropicContentBlock> =
+            blocks.iter().map(assistant_block_from_response).collect();
+        let json = serde_json::to_value(&replay).unwrap();
+        assert_eq!(json[0]["type"], "redacted_thinking");
+        assert_eq!(json[0]["data"], "ENC");
+    }
+
     // --- SSE streaming tests ---
 
     #[test]
@@ -1039,6 +1200,7 @@ mod tests {
                 content: AnthropicContent::Text("Hello".into()),
             }],
             tools: None,
+            thinking: None,
         };
         let json = serde_json::to_value(&body).unwrap();
         assert_eq!(json["stream"], true);
