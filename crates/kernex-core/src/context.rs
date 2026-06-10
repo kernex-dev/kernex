@@ -144,8 +144,11 @@ pub struct Context {
     /// Not serialized — set at runtime by the caller.
     #[serde(skip)]
     pub permission_rules: Option<std::sync::Arc<crate::permissions::PermissionRules>>,
-    /// Request extended thinking (chain-of-thought) for Anthropic requests.
-    /// Sends the `interleaved-thinking-2025-05-14` beta header when true.
+    /// Request thinking (chain-of-thought) for Anthropic requests. When true,
+    /// the Anthropic provider sends `thinking: {"type": "adaptive"}` in the
+    /// request body (GA on the Claude 4.6+ family; it also enables interleaved
+    /// thinking between tool calls). When false, the field is omitted and
+    /// thinking is off.
     #[serde(default, skip_serializing_if = "is_false")]
     pub extended_thinking: bool,
 }
