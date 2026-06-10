@@ -30,6 +30,12 @@ impl Default for RunConfig {
 }
 
 /// The terminal outcome of an agentic-loop run.
+// `EndTurn` carries a `Response` (the larger variant) while `MaxTurns` is a
+// unit. Boxing the `Response` would shrink the enum but change the public
+// variant shape (a breaking change for consumers that match `EndTurn(resp)`),
+// so we keep it inline; a `RunOutcome` is produced once per run, not in a hot
+// path.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum RunOutcome {
     /// Provider signaled end-of-turn. Contains the final response.

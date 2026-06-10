@@ -318,13 +318,18 @@ pub(crate) async fn openai_agentic_complete(
 
     // Max turns exhausted.
     let elapsed_ms = start.elapsed().as_millis() as u64;
-    Ok(build_response(
-        format!("{provider_name}: reached max turns ({max_turns}) without final response"),
+    // Turn budget exhausted without a final answer: empty text +
+    // stop_reason="max_turns" so the runtime surfaces RunOutcome::MaxTurns
+    // instead of a synthetic answer.
+    let mut resp = build_response(
+        String::new(),
         provider_name,
         total_tokens,
         elapsed_ms,
         last_model,
-    ))
+    );
+    resp.metadata.stop_reason = Some("max_turns".to_string());
+    Ok(resp)
 }
 
 #[async_trait]
