@@ -99,10 +99,7 @@ fn test_mcp_tool_patterns() {
 }
 
 #[tokio::test]
-async fn test_write_and_cleanup_mcp_settings() {
-    let tmp_dir = tempfile::TempDir::new().unwrap();
-    let tmp = tmp_dir.path();
-
+async fn test_write_and_cleanup_mcp_config() {
     let servers = vec![McpServer {
         name: "playwright".into(),
         command: "npx".into(),
@@ -110,10 +107,15 @@ async fn test_write_and_cleanup_mcp_settings() {
         ..Default::default()
     }];
 
-    let path = mcp::write_mcp_settings(tmp, &servers).await.unwrap();
+    // Writes a throwaway temp file (not under any workspace .claude/ dir).
+    let path = mcp::write_mcp_config_tempfile(&servers).await.unwrap();
     assert!(path.exists());
+    assert!(
+        !path.components().any(|c| c.as_os_str() == ".claude"),
+        "MCP config must not be written under a .claude/ dir; got {path:?}"
+    );
 
-    // Verify JSON structure.
+    // Verify JSON structure (the --mcp-config shape).
     let content = std::fs::read_to_string(&path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     let mcp_val = &parsed["mcpServers"]["playwright"];
@@ -121,15 +123,15 @@ async fn test_write_and_cleanup_mcp_settings() {
     assert_eq!(mcp_val["args"][0], "@playwright/mcp");
     assert_eq!(mcp_val["args"][1], "--headless");
 
-    // Cleanup.
-    mcp::cleanup_mcp_settings(&path).await;
+    // Cleanup removes the temp file.
+    mcp::cleanup_mcp_config(&path).await;
     assert!(!path.exists());
 }
 
 #[tokio::test]
-async fn test_cleanup_mcp_settings_nonexistent() {
+async fn test_cleanup_mcp_config_nonexistent() {
     // Should not panic on missing file.
-    mcp::cleanup_mcp_settings(Path::new("/tmp/__kernex_nonexistent_mcp_settings__")).await;
+    mcp::cleanup_mcp_config(Path::new("/tmp/__kernex_nonexistent_mcp_config__")).await;
 }
 
 // --- CLI argument construction tests ---
