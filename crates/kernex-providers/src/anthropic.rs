@@ -594,14 +594,19 @@ impl AnthropicProvider {
                     None
                 },
             };
-            return Ok(build_response_with_usage(
+            // Surface the provider stop reason (end_turn / max_tokens / ...) so
+            // callers can detect a truncated reply rather than treating it as a
+            // complete answer.
+            let mut resp = build_response_with_usage(
                 text,
                 "anthropic",
                 total_tokens,
                 elapsed_ms,
                 last_model,
                 usage,
-            ));
+            );
+            resp.metadata.stop_reason = parsed.stop_reason.clone();
+            return Ok(resp);
         }
 
         // Max turns exhausted.
@@ -620,14 +625,20 @@ impl AnthropicProvider {
                 None
             },
         };
-        Ok(build_response_with_usage(
-            format!("anthropic: reached max turns ({max_turns}) without final response"),
+        // Turn budget exhausted without a final answer. Return empty text plus
+        // stop_reason="max_turns"; `Runtime::run` maps this to
+        // `RunOutcome::MaxTurns` instead of persisting a synthetic answer, and
+        // single-shot callers can detect it via `metadata.stop_reason`.
+        let mut resp = build_response_with_usage(
+            String::new(),
             "anthropic",
             total_tokens,
             elapsed_ms,
             last_model,
             usage,
-        ))
+        );
+        resp.metadata.stop_reason = Some("max_turns".to_string());
+        Ok(resp)
     }
 }
 

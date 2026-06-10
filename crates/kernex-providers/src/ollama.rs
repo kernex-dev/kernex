@@ -397,13 +397,18 @@ impl OllamaProvider {
 
         // Max turns exhausted.
         let elapsed_ms = start.elapsed().as_millis() as u64;
-        Ok(build_response(
-            format!("ollama: reached max turns ({max_turns}) without final response"),
+        // Turn budget exhausted without a final answer: empty text +
+        // stop_reason="max_turns" so the runtime surfaces RunOutcome::MaxTurns
+        // instead of a synthetic answer.
+        let mut resp = build_response(
+            String::new(),
             "ollama",
             total_tokens,
             elapsed_ms,
             last_model,
-        ))
+        );
+        resp.metadata.stop_reason = Some("max_turns".to_string());
+        Ok(resp)
     }
 }
 
