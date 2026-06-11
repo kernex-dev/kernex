@@ -151,15 +151,25 @@ fn build_ruleset(
     data_dir: &std::path::Path,
     profile: &crate::SandboxProfile,
 ) -> Result<RulesetCreated, anyhow::Error> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let home_dir = PathBuf::from(home);
+    let home_dir = crate::resolved_home();
 
+    // D-13 (b): broad read on `/`, but NOT blanket write on `$HOME`. Writes are
+    // granted only to the workspace/data dir, the system temp dirs, the
+    // toolchain cache/state dirs, and `$KERNEX_DATA_DIR`. Landlock is
+    // most-specific-rule-wins, so the credential refer_only rules and the
+    // data/ + config refer_only rules below override these for their subtrees.
     let mut ruleset = Ruleset::default()
         .handle_access(full_access())?
         .create()?
         .add_rules(path_beneath_rules(&[PathBuf::from("/")], read_access()))?
-        .add_rules(path_beneath_rules(&[home_dir], full_access()))?
         .add_rules(path_beneath_rules(&[PathBuf::from("/tmp")], full_access()))?;
+
+    // The workspace/data dir is writable (its `data/` subdir is refer_only
+    // below). Replaces the prior blanket `$HOME` write grant.
+    if data_dir.exists() {
+        ruleset =
+            ruleset.add_rules(path_beneath_rules(&[data_dir.to_path_buf()], full_access()))?;
+    }
 
     let optional_paths = ["/var/tmp", "/opt", "/srv", "/run", "/media", "/mnt"];
     for path in &optional_paths {
@@ -169,12 +179,34 @@ fn build_ruleset(
         }
     }
 
+    // Toolchain cache/state dirs and $KERNEX_DATA_DIR stay writable so real
+    // tools (cargo/npm/...) keep working under the lockdown.
+    for dir in crate::write_allow_dirs(&home_dir) {
+        if dir.exists() {
+            ruleset = ruleset.add_rules(path_beneath_rules(&[dir], full_access()))?;
+        }
+    }
+    if let Some(kdd) = std::env::var_os("KERNEX_DATA_DIR").map(PathBuf::from) {
+        if kdd.exists() {
+            ruleset = ruleset.add_rules(path_beneath_rules(&[kdd], full_access()))?;
+        }
+    }
+
     for allowed in &profile.allowed_paths {
         if allowed.exists() {
             ruleset = ruleset.add_rules(path_beneath_rules(
                 std::slice::from_ref(allowed),
                 full_access(),
             ))?;
+        }
+    }
+
+    // Credential read-deny list (D-13 (b)): refer_only blocks reads and writes;
+    // most-specific-rule-wins makes this override the broad `/` read for these
+    // subtrees, so SSH keys / cloud creds / tokens are unreadable.
+    for cred in crate::credential_read_deny_dirs(&home_dir) {
+        if cred.exists() {
+            ruleset = ruleset.add_rules(path_beneath_rules(&[cred], refer_only()))?;
         }
     }
 
