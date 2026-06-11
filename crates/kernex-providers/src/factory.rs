@@ -13,7 +13,10 @@ use std::path::PathBuf;
 pub const DEFAULT_MAX_TOKENS: u32 = 16_384;
 
 /// Configuration for dynamically creating a provider.
-#[derive(Clone, Debug)]
+///
+/// `Debug` is implemented manually so `api_key` is redacted: embedders log
+/// configs, and a derived impl would print the key in plaintext.
+#[derive(Clone)]
 pub struct ProviderConfig {
     pub base_url: Option<String>,
     pub api_key: Option<String>,
@@ -40,6 +43,21 @@ impl Default for ProviderConfig {
             tier: None,
             timeout_secs: 120,
         }
+    }
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("base_url", &self.base_url)
+            .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .field("workspace_path", &self.workspace_path)
+            .field("sandbox_profile", &self.sandbox_profile)
+            .field("tier", &self.tier)
+            .field("timeout_secs", &self.timeout_secs)
+            .finish()
     }
 }
 
@@ -402,6 +420,20 @@ mod tests {
         assert!(config.max_tokens.is_none());
         assert!(config.workspace_path.is_none());
         assert_eq!(config.timeout_secs, 120);
+    }
+
+    #[test]
+    fn provider_config_debug_redacts_api_key() {
+        let config = ProviderConfig {
+            api_key: Some("sk-ant-secret-value".to_string()),
+            ..Default::default()
+        };
+        let dbg = format!("{config:?}");
+        assert!(!dbg.contains("sk-ant-secret-value"), "key leaked: {dbg}");
+        assert!(dbg.contains("[REDACTED]"));
+        // None must still read as None, not as a redaction marker.
+        let empty = format!("{:?}", ProviderConfig::default());
+        assert!(empty.contains("api_key: None"));
     }
 
     #[test]
