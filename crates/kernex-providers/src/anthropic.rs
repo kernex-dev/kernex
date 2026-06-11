@@ -473,14 +473,14 @@ impl Provider for AnthropicProvider {
             .unwrap_or_default();
         let elapsed_ms = start.elapsed().as_millis() as u64;
 
-        Ok(build_response_with_usage(
-            text,
-            "anthropic",
-            tokens,
-            elapsed_ms,
-            parsed.model,
-            usage,
-        ))
+        // Surface the upstream stop reason (end_turn / max_tokens / refusal /
+        // ...) on the no-tools path too, so a truncated reply is detectable
+        // here exactly as it is in the agentic loop.
+        let stop_reason = parsed.stop_reason.clone();
+        let mut resp =
+            build_response_with_usage(text, "anthropic", tokens, elapsed_ms, parsed.model, usage);
+        resp.metadata.stop_reason = stop_reason;
+        Ok(resp)
     }
 
     async fn is_available(&self) -> bool {
@@ -916,7 +916,11 @@ impl StreamingProvider for AnthropicProvider {
 
         // Cap any single SSE line at 1 MiB. A misbehaving or hostile endpoint
         // that withholds newlines (or a chunked-encoding stall) would
-        // otherwise grow `buffer` without bound and OOM the worker.
+        // otherwise grow `buffer` without bound and OOM the worker. The
+        // post-drain check below bounds the RESIDUAL buffer at MAX_SSE_LINE;
+        // the pre-append check bounds the transient peak at 2x even for a
+        // single oversized chunk, making the cap hard rather than
+        // cap-plus-one-chunk.
         const MAX_SSE_LINE: usize = 1024 * 1024;
 
         tokio::spawn(async move {
@@ -932,6 +936,15 @@ impl StreamingProvider for AnthropicProvider {
             while let Some(chunk) = byte_stream.next().await {
                 match chunk {
                     Ok(bytes) => {
+                        if buffer.len() + bytes.len() > MAX_SSE_LINE * 2 {
+                            let _ = tx
+                                .send(StreamEvent::Error(format!(
+                                    "anthropic: SSE buffer would exceed {} bytes",
+                                    MAX_SSE_LINE * 2
+                                )))
+                                .await;
+                            return;
+                        }
                         buffer.push_str(&String::from_utf8_lossy(&bytes));
 
                         // Drain complete lines from the front of the buffer.
