@@ -35,7 +35,29 @@ impl ModelPricing {
 pub fn pricing_for(model: &str) -> Option<ModelPricing> {
     let m = model.to_lowercase();
 
-    // Anthropic Claude — check opus before sonnet to avoid substring false-match.
+    // Anthropic Claude. Order matters: match Fable/Mythos and the modern
+    // (4.5+) Opus tiers before the legacy Opus rule, and Opus before Sonnet, to
+    // avoid substring false-matches.
+    //
+    // Fable 5 / Mythos 5: $10 / $50 per MTok.
+    if m.contains("claude-fable-5") || m.contains("claude-mythos") {
+        return Some(ModelPricing {
+            input_per_mtok: 10.0,
+            output_per_mtok: 50.0,
+        });
+    }
+    // Opus 4.5 cut the Opus price to $5 / $25; 4.6, 4.7, and 4.8 hold it.
+    if m.contains("claude-opus-4-5")
+        || m.contains("claude-opus-4-6")
+        || m.contains("claude-opus-4-7")
+        || m.contains("claude-opus-4-8")
+    {
+        return Some(ModelPricing {
+            input_per_mtok: 5.0,
+            output_per_mtok: 25.0,
+        });
+    }
+    // Legacy Opus (4.0, 4.1, Opus 3): the original $15 / $75.
     if m.contains("claude-opus-4") || m.contains("claude-opus-3") {
         return Some(ModelPricing {
             input_per_mtok: 15.0,
@@ -51,10 +73,15 @@ pub fn pricing_for(model: &str) -> Option<ModelPricing> {
             output_per_mtok: 15.0,
         });
     }
-    if m.contains("claude-haiku-4")
-        || m.contains("claude-3-5-haiku")
-        || m.contains("claude-3-haiku")
-    {
+    // Haiku 4.x (4.5): $1 / $5 per MTok.
+    if m.contains("claude-haiku-4") {
+        return Some(ModelPricing {
+            input_per_mtok: 1.0,
+            output_per_mtok: 5.0,
+        });
+    }
+    // Legacy Haiku 3 / 3.5.
+    if m.contains("claude-3-5-haiku") || m.contains("claude-3-haiku") {
         return Some(ModelPricing {
             input_per_mtok: 0.25,
             output_per_mtok: 1.25,
@@ -152,10 +179,49 @@ mod tests {
     }
 
     #[test]
-    fn test_pricing_for_claude_opus() {
-        let p = pricing_for("claude-opus-4-6").unwrap();
-        assert_eq!(p.input_per_mtok, 15.0);
-        assert_eq!(p.output_per_mtok, 75.0);
+    fn test_pricing_for_modern_opus_is_5_25() {
+        // Opus 4.5+ (4.5, 4.6, 4.7, 4.8) all bill at $5 / $25.
+        for model in [
+            "claude-opus-4-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+        ] {
+            let p = pricing_for(model).unwrap();
+            assert_eq!(p.input_per_mtok, 5.0, "{model} input");
+            assert_eq!(p.output_per_mtok, 25.0, "{model} output");
+        }
+    }
+
+    #[test]
+    fn test_pricing_for_legacy_opus_is_15_75() {
+        // Opus 4.0 / 4.1 and Opus 3 keep the original $15 / $75.
+        for model in ["claude-opus-4-0", "claude-opus-4-1", "claude-opus-3"] {
+            let p = pricing_for(model).unwrap();
+            assert_eq!(p.input_per_mtok, 15.0, "{model} input");
+            assert_eq!(p.output_per_mtok, 75.0, "{model} output");
+        }
+    }
+
+    #[test]
+    fn test_pricing_for_haiku_4_5() {
+        let p = pricing_for("claude-haiku-4-5").unwrap();
+        assert_eq!(p.input_per_mtok, 1.0);
+        assert_eq!(p.output_per_mtok, 5.0);
+    }
+
+    #[test]
+    fn test_pricing_for_legacy_haiku_unchanged() {
+        let p = pricing_for("claude-3-5-haiku").unwrap();
+        assert_eq!(p.input_per_mtok, 0.25);
+        assert_eq!(p.output_per_mtok, 1.25);
+    }
+
+    #[test]
+    fn test_pricing_for_fable_5() {
+        let p = pricing_for("claude-fable-5").unwrap();
+        assert_eq!(p.input_per_mtok, 10.0);
+        assert_eq!(p.output_per_mtok, 50.0);
     }
 
     #[test]
