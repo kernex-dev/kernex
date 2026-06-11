@@ -221,13 +221,28 @@ impl ClaudeCodeProvider {
                 c.current_dir(dir);
                 c
             }
-            None => Command::new("claude"),
+            None => {
+                let mut c = Command::new("claude");
+                // No data_dir means no sandbox wrapper; apply the env
+                // isolation directly so this branch matches the wrapped one.
+                kernex_sandbox::hardened_env(&mut c);
+                c
+            }
         };
         // Remove CLAUDECODE env var so the CLI doesn't think it's nested.
+        // (Redundant after env hardening, kept as defense in depth.)
         cmd.env_remove("CLAUDECODE");
-        // Inject OAuth token if configured.
+        // The Claude CLI is the provider subprocess itself: pass its auth
+        // through explicitly. The hardened env cleared it along with
+        // everything else; the CLI accepts either its OAuth token or an
+        // Anthropic API key.
         if let Some(ref token) = self.oauth_token {
             cmd.env("CLAUDE_CODE_OAUTH_TOKEN", token);
+        }
+        if let Ok(key) = std::env::var("ANTHROPIC_API_KEY") {
+            if !key.is_empty() {
+                cmd.env("ANTHROPIC_API_KEY", key);
+            }
         }
         cmd
     }

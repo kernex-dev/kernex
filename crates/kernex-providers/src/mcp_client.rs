@@ -168,6 +168,11 @@ impl McpClient {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
+        // MCP servers run unwrapped (stdio framing), so apply env isolation
+        // directly: clear the inherited environment (provider API keys
+        // included) and re-add the base allowlist. The server's configured
+        // env below is the explicit opt-in.
+        kernex_sandbox::hardened_env(&mut cmd);
         let (safe_env, dropped) = kernex_core::spawn::filter_unsafe_env(env);
         for k in &dropped {
             tracing::warn!(
