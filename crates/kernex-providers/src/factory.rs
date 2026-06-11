@@ -4,6 +4,14 @@ use kernex_core::run::ModelTier;
 use kernex_core::traits::Provider;
 use std::path::PathBuf;
 
+/// Default `max_tokens` ceiling applied when the caller does not set one.
+///
+/// 16 384 matches current guidance for non-streaming requests and stays well
+/// under every current model's output ceiling (Sonnet/Haiku 64K, Opus 128K),
+/// so it is safe as a blanket default. The previous 8 192 truncated longer
+/// answers. Callers streaming very large outputs should raise it explicitly.
+pub const DEFAULT_MAX_TOKENS: u32 = 16_384;
+
 /// Configuration for dynamically creating a provider.
 #[derive(Clone, Debug)]
 pub struct ProviderConfig {
@@ -126,7 +134,7 @@ impl ProviderFactory {
                 let p = crate::anthropic::AnthropicProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
-                    config.max_tokens.unwrap_or(8192),
+                    config.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
                     config.workspace_path,
                 )?
                 .with_timeout(config.timeout_secs)
@@ -286,7 +294,7 @@ impl ProviderFactory {
                     secret_access_key,
                     session_token,
                     model,
-                    config.max_tokens.unwrap_or(8192),
+                    config.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
                     config.workspace_path,
                 )?
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());

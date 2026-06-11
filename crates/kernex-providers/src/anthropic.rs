@@ -327,6 +327,27 @@ fn to_anthropic_tools(defs: &[ToolDef]) -> Vec<AnthropicToolDef> {
         .collect()
 }
 
+/// Reject a request whose message sequence ends with an assistant turn.
+///
+/// The Claude 4.6+ family no longer supports assistant prefill (a trailing
+/// assistant message), and such a request 400s at the API. `Context::
+/// to_api_messages` always appends the current user turn, so this should never
+/// fire in practice; it is a defensive guard that turns a would-be opaque 400
+/// into a clear, actionable error if a future code path or a direct message
+/// construction ever breaks the user-turn-last invariant.
+fn ensure_no_assistant_prefill(messages: &[AnthropicMessage]) -> Result<(), KernexError> {
+    if messages.last().is_some_and(|m| m.role == "assistant") {
+        return Err(ProviderError::Logic(
+            "anthropic: message sequence ends with an assistant turn; the 4.6+ \
+             model family does not support assistant prefill, so the final \
+             message must be a user turn"
+                .to_string(),
+        )
+        .into());
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl Provider for AnthropicProvider {
     fn name(&self) -> &str {
@@ -383,6 +404,7 @@ impl Provider for AnthropicProvider {
                 content: AnthropicContent::Text(m.content.clone()),
             })
             .collect();
+        ensure_no_assistant_prefill(&messages)?;
 
         let body = AnthropicRequest {
             model: effective_model.to_string(),
@@ -500,6 +522,7 @@ impl AnthropicProvider {
                 content: AnthropicContent::Text(m.content.clone()),
             })
             .collect();
+        ensure_no_assistant_prefill(&messages)?;
 
         let all_tool_defs = executor.all_tool_defs();
         let tools = if all_tool_defs.is_empty() {
@@ -775,6 +798,7 @@ impl StreamingProvider for AnthropicProvider {
                 content: AnthropicContent::Text(m.content.clone()),
             })
             .collect();
+        ensure_no_assistant_prefill(&messages)?;
 
         let body = AnthropicStreamRequest {
             model: effective_model,
@@ -1091,6 +1115,35 @@ mod tests {
         let blocks = json["content"].as_array().unwrap();
         assert_eq!(blocks[0]["type"], "tool_result");
         assert_eq!(blocks[0]["tool_use_id"], "toolu_123");
+    }
+
+    #[test]
+    fn test_prefill_guard_rejects_trailing_assistant() {
+        let messages = vec![
+            AnthropicMessage {
+                role: "user".into(),
+                content: AnthropicContent::Text("hi".into()),
+            },
+            AnthropicMessage {
+                role: "assistant".into(),
+                content: AnthropicContent::Text("partial".into()),
+            },
+        ];
+        assert!(ensure_no_assistant_prefill(&messages).is_err());
+    }
+
+    #[test]
+    fn test_prefill_guard_allows_trailing_user() {
+        let messages = vec![AnthropicMessage {
+            role: "user".into(),
+            content: AnthropicContent::Text("hi".into()),
+        }];
+        assert!(ensure_no_assistant_prefill(&messages).is_ok());
+    }
+
+    #[test]
+    fn test_prefill_guard_allows_empty() {
+        assert!(ensure_no_assistant_prefill(&[]).is_ok());
     }
 
     #[test]
