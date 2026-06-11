@@ -802,20 +802,65 @@ impl ToolExecutor {
         // 169.254.169.254, 127.0.0.1:11434 (other agents on the host),
         // 10.x / 192.168.x / fd00::/8 networks. file://, ftp://, gopher://
         // and other schemes are blocked by the https check.
-        if let Err(reason) = is_safe_fetch_url(url) {
-            return ToolResult {
-                content: format!("Error: refusing to fetch '{url}': {reason}"),
-                is_error: true,
-            };
-        }
+        let parsed = match is_safe_fetch_url(url) {
+            Ok(p) => p,
+            Err(reason) => {
+                return ToolResult {
+                    content: format!("Error: refusing to fetch '{url}': {reason}"),
+                    is_error: true,
+                };
+            }
+        };
 
         debug!("tool/web_fetch: {url}");
 
-        let client = match reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-        {
+            .redirect(reqwest::redirect::Policy::none());
+
+        // Resolve-time SSRF pinning: a hostname that passes the syntactic
+        // check can still resolve to a private address (attacker-controlled
+        // DNS, rebinding). Resolve it here, validate EVERY address, then pin
+        // the connection to the validated set so the answer cannot change
+        // between check and connect. Literal-IP hosts were already validated
+        // above; redirects are disabled, so there are no further hops.
+        let host = parsed
+            .host_str()
+            .unwrap_or("")
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .to_string();
+        if host.parse::<std::net::IpAddr>().is_err() {
+            let port = parsed.port().unwrap_or(443);
+            let addrs: Vec<std::net::SocketAddr> =
+                match tokio::net::lookup_host((host.as_str(), port)).await {
+                    Ok(it) => it.collect(),
+                    Err(e) => {
+                        return ToolResult {
+                            content: format!("Error: could not resolve '{host}': {e}"),
+                            is_error: true,
+                        };
+                    }
+                };
+            if addrs.is_empty() {
+                return ToolResult {
+                    content: format!("Error: '{host}' resolved to no addresses"),
+                    is_error: true,
+                };
+            }
+            if let Some(bad) = addrs.iter().find(|a| !is_public_ip(&a.ip())) {
+                return ToolResult {
+                    content: format!(
+                        "Error: refusing to fetch '{url}': host resolves to a non-public address ({})",
+                        bad.ip()
+                    ),
+                    is_error: true,
+                };
+            }
+            builder = builder.resolve_to_addrs(&host, &addrs);
+        }
+
+        let client = match builder.build() {
             Ok(c) => c,
             Err(e) => {
                 return ToolResult {
@@ -859,7 +904,7 @@ impl ToolExecutor {
 /// time to a private IP would still bypass the check; defeating that
 /// requires hooking into reqwest's DNS resolver. Catching the obvious
 /// literal-IP attempts is the realistic high-value layer.
-fn is_safe_fetch_url(url: &str) -> Result<(), &'static str> {
+fn is_safe_fetch_url(url: &str) -> Result<reqwest::Url, &'static str> {
     let parsed = match reqwest::Url::parse(url) {
         Ok(u) => u,
         Err(_) => return Err("not a valid URL"),
@@ -876,7 +921,7 @@ fn is_safe_fetch_url(url: &str) -> Result<(), &'static str> {
             return Err("host is a loopback / private / link-local / metadata IP");
         }
     }
-    Ok(())
+    Ok(parsed)
 }
 
 fn is_public_ip(ip: &std::net::IpAddr) -> bool {
@@ -1192,6 +1237,28 @@ mod tests {
             .await;
         assert!(!result.is_error);
         assert!(result.content.contains("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_web_fetch_rejects_hostname_resolving_private() {
+        // SSRF resolve-time check: "localhost" passes the syntactic guard
+        // (it is a hostname, not a literal IP) but resolves to loopback; the
+        // resolver-level validation must reject it before any request is
+        // sent. Uses the system resolver only - no network egress.
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let result = executor
+            .execute(
+                "web_fetch",
+                &serde_json::json!({"url": "https://localhost/"}),
+            )
+            .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("non-public address")
+                || result.content.contains("could not resolve"),
+            "expected resolver-level rejection, got: {}",
+            result.content
+        );
     }
 
     #[tokio::test]
