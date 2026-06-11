@@ -1192,6 +1192,7 @@ version = "0.8.3"
 dependencies = [
  "anyhow",
  "landlock",
+ "tempfile",
  "tokio",
  "tracing",
 ]

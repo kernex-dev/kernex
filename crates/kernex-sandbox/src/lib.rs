@@ -134,6 +134,78 @@ pub fn hardened_env(cmd: &mut Command) {
     }
 }
 
+/// Credential directories/files under `$HOME` whose READS are denied to
+/// sandboxed subprocesses (D-13 option (b) credential read-deny list).
+///
+/// Reads stay broad everywhere else; only these high-value secret stores are
+/// blocked, so an agent that is prompted (or tricked) into exfiltrating SSH
+/// keys, cloud credentials, or auth tokens is stopped at the OS layer. The
+/// list is relative-suffix joined onto the resolved `home`.
+pub fn credential_read_deny_dirs(home: &Path) -> Vec<PathBuf> {
+    [
+        ".ssh",
+        ".aws",
+        ".gnupg",
+        ".kube",
+        ".docker",
+        ".netrc",
+        ".config/gh",
+        ".config/gcloud",
+        ".config/google-chrome",
+        ".mozilla",
+        // macOS browser/credential stores
+        "Library/Application Support/Google/Chrome",
+        "Library/Application Support/Firefox",
+        "Library/Keychains",
+    ]
+    .iter()
+    .map(|p| home.join(p))
+    .collect()
+}
+
+/// Directories whose WRITES are allowed under the D-13 option (b) posture
+/// (writes are otherwise denied inside `$HOME`).
+///
+/// Covers the per-user state/cache dirs that real toolchains write to during
+/// normal operation (cargo, rustup, npm/yarn/pnpm, deno, bun, the XDG and
+/// macOS cache trees). Writes to the workspace/data dir, `$KERNEX_DATA_DIR`,
+/// and the system temp dirs are allowed separately by the platform modules.
+///
+/// **(a)-fallback tuning point:** if a real toolchain writes somewhere outside
+/// this list and breaks, the fix is to extend this list (or, per D-13, fall
+/// back to a credential-deny-list-only posture). CI cannot exercise every
+/// toolchain, so this is the most likely place to need a follow-up.
+pub fn write_allow_dirs(home: &Path) -> Vec<PathBuf> {
+    [
+        ".cache",
+        ".cargo",
+        ".rustup",
+        ".npm",
+        ".yarn",
+        ".pnpm-store",
+        ".deno",
+        ".bun",
+        ".local/state",
+        ".local/share",
+        ".gradle",
+        ".m2",
+        ".gem",
+        "Library/Caches",
+        "Library/Developer",
+    ]
+    .iter()
+    .map(|p| home.join(p))
+    .collect()
+}
+
+/// Resolve `$HOME`, falling back to `/tmp` (matches the Landlock builder's
+/// prior behaviour for headless/no-HOME environments).
+pub(crate) fn resolved_home() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+}
+
 /// Strict variant of [`protected_command`].
 ///
 /// Returns an [`io::Error`](std::io::Error) of kind [`Unsupported`](std::io::ErrorKind::Unsupported)

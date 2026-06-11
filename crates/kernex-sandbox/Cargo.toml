@@ -15,6 +15,10 @@ anyhow = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = "0.4"
 
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util"] }
+tempfile = { workspace = true }
+
 # Mirrors [workspace.lints] from the root Cargo.toml, except `unsafe_code` is
 # allowed here because this crate hosts the Seatbelt (macOS) / Landlock (Linux)
 # FFI. Each `unsafe { ... }` block in src/ has a `// SAFETY:` comment per
