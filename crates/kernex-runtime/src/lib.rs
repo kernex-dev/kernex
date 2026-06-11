@@ -452,6 +452,8 @@ impl Runtime {
             #[cfg(feature = "sqlite-store")]
             {
                 let elapsed_ms = started.elapsed().as_millis() as u64;
+                let tokens_used = acc.total_tokens();
+                let stop_reason = acc.usage().and_then(|u| u.stop_reason.clone());
                 let accumulated = acc.into_text();
                 let persisted_text = if let Some(gr) = &guardrail_runner {
                     match gr.check_output(&accumulated).await {
@@ -466,10 +468,11 @@ impl Runtime {
                     text: persisted_text,
                     metadata: CompletionMeta {
                         provider_used: provider_name,
-                        tokens_used: None,
+                        tokens_used,
                         processing_time_ms: elapsed_ms,
                         model: None,
                         session_id: None,
+                        stop_reason,
                         ..Default::default()
                     },
                 };

@@ -9,7 +9,7 @@ use kernex_core::{
     context::Context,
     error::KernexError,
     message::Response,
-    stream::StreamEvent,
+    stream::{StreamEvent, StreamUsage},
     traits::{Provider, StreamingProvider},
 };
 use secrecy::{ExposeSecret, SecretString};
@@ -745,35 +745,125 @@ struct AnthropicStreamRequest {
     thinking: Option<ThinkingConfig>,
 }
 
-/// Minimal SSE data envelope from Anthropic.
+/// One SSE `data:` envelope from the Anthropic Messages stream. Only the fields
+/// kernex acts on are modeled; the rest are ignored.
 #[derive(Deserialize)]
 struct SseData {
     #[serde(rename = "type")]
     event_type: String,
+    /// Present on `content_block_delta` and (for `stop_reason`) `message_delta`.
     delta: Option<SseDelta>,
+    /// Present on `message_start` (carries the initial input/cache usage).
+    message: Option<SseMessage>,
+    /// Present on `message_delta` (carries the final output usage).
+    usage: Option<SseUsage>,
+    /// Present on `error` events (e.g. `overloaded_error`).
+    error: Option<SseError>,
 }
 
-/// Delta payload inside a `content_block_delta` event.
+/// Delta payload inside `content_block_delta` (and `stop_reason` on `message_delta`).
 #[derive(Deserialize)]
 struct SseDelta {
     #[serde(rename = "type")]
-    delta_type: String,
+    delta_type: Option<String>,
     text: Option<String>,
+    thinking: Option<String>,
     partial_json: Option<String>,
+    stop_reason: Option<String>,
 }
 
-/// Convert an Anthropic SSE data object into a [`StreamEvent`], if relevant.
-fn sse_data_to_event(data: SseData) -> Option<StreamEvent> {
+/// The `message` object on a `message_start` event.
+#[derive(Deserialize)]
+struct SseMessage {
+    usage: Option<SseUsage>,
+}
+
+/// Usage block as it appears in the stream.
+#[derive(Deserialize)]
+struct SseUsage {
+    #[serde(default)]
+    input_tokens: u64,
+    #[serde(default)]
+    output_tokens: u64,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+}
+
+/// The `error` object on an `error` event.
+#[derive(Deserialize)]
+struct SseError {
+    #[serde(rename = "type")]
+    error_type: Option<String>,
+    message: Option<String>,
+}
+
+/// Convert one parsed SSE envelope into a [`StreamEvent`], threading running
+/// `usage` state across events (the wire reports input/cache usage on
+/// `message_start` and output usage + stop_reason on `message_delta`).
+///
+/// Returns `None` for events kernex does not surface (`ping`,
+/// `content_block_start`, `content_block_stop`, and `message_start`, which only
+/// updates state). `content_block_delta` text/thinking/tool-input deltas,
+/// `message_delta` (-> `Usage`), `error` (-> `Error`), and `message_stop`
+/// (-> `Done`) all produce events.
+fn sse_data_to_event(data: SseData, usage: &mut StreamUsage) -> Option<StreamEvent> {
     match data.event_type.as_str() {
+        "message_start" => {
+            if let Some(u) = data.message.and_then(|m| m.usage) {
+                usage.input_tokens = u.input_tokens;
+                usage.cache_read_tokens = u.cache_read_input_tokens;
+                usage.cache_creation_tokens = u.cache_creation_input_tokens;
+            }
+            None
+        }
         "content_block_delta" => {
             let delta = data.delta?;
-            match delta.delta_type.as_str() {
-                "text_delta" => delta.text.map(StreamEvent::TextDelta),
-                "input_json_delta" => delta.partial_json.map(StreamEvent::InputJsonDelta),
+            match delta.delta_type.as_deref() {
+                Some("text_delta") => delta.text.map(StreamEvent::TextDelta),
+                Some("thinking_delta") => delta.thinking.map(StreamEvent::ThinkingDelta),
+                Some("input_json_delta") => delta.partial_json.map(StreamEvent::InputJsonDelta),
                 _ => None,
             }
         }
+        "message_delta" => {
+            if let Some(u) = data.usage {
+                // message_delta echoes input/cache and carries the final output
+                // count; prefer its non-absent values over the message_start
+                // snapshot.
+                if u.input_tokens > 0 {
+                    usage.input_tokens = u.input_tokens;
+                }
+                usage.output_tokens = u.output_tokens;
+                if u.cache_read_input_tokens.is_some() {
+                    usage.cache_read_tokens = u.cache_read_input_tokens;
+                }
+                if u.cache_creation_input_tokens.is_some() {
+                    usage.cache_creation_tokens = u.cache_creation_input_tokens;
+                }
+            }
+            if let Some(sr) = data.delta.and_then(|d| d.stop_reason) {
+                usage.stop_reason = Some(sr);
+            }
+            Some(StreamEvent::Usage(usage.clone()))
+        }
+        "error" => {
+            let msg = data
+                .error
+                .map(|e| match (e.error_type, e.message) {
+                    (Some(t), Some(m)) => format!("{t}: {m}"),
+                    (None, Some(m)) => m,
+                    (Some(t), None) => t,
+                    (None, None) => "unknown error".to_string(),
+                })
+                .unwrap_or_else(|| "unknown error".to_string());
+            Some(StreamEvent::Error(format!(
+                "anthropic: stream error: {msg}"
+            )))
+        }
         "message_stop" => Some(StreamEvent::Done),
+        // ping, content_block_start, content_block_stop: nothing to surface.
         _ => None,
     }
 }
@@ -860,6 +950,10 @@ impl StreamingProvider for AnthropicProvider {
 
             let mut byte_stream = resp.bytes_stream();
             let mut buffer = String::new();
+            // Running usage, assembled across `message_start` (input/cache) and
+            // `message_delta` (output + stop_reason) and emitted once as a
+            // `Usage` event before `Done`.
+            let mut usage = StreamUsage::default();
 
             while let Some(chunk) = byte_stream.next().await {
                 match chunk {
@@ -875,15 +969,20 @@ impl StreamingProvider for AnthropicProvider {
                             let line = buffer[..pos].trim_end_matches('\r').to_string();
                             buffer.drain(..=pos);
 
+                            // Anthropic does not send a `data: [DONE]` sentinel
+                            // (that is an OpenAI idiom); completion is the
+                            // `message_stop` event, mapped to `Done` below.
                             if let Some(data) = line.strip_prefix("data: ") {
-                                if data == "[DONE]" {
-                                    let _ = tx.send(StreamEvent::Done).await;
-                                    return;
-                                }
                                 if let Ok(sse) = serde_json::from_str::<SseData>(data) {
-                                    if let Some(evt) = sse_data_to_event(sse) {
-                                        if tx.send(evt).await.is_err() {
-                                            return; // Receiver dropped.
+                                    if let Some(evt) = sse_data_to_event(sse, &mut usage) {
+                                        // `Error` and `Done` are terminal: forward
+                                        // then stop reading the stream.
+                                        let terminal = matches!(
+                                            evt,
+                                            StreamEvent::Done | StreamEvent::Error(_)
+                                        );
+                                        if tx.send(evt).await.is_err() || terminal {
+                                            return;
                                         }
                                     }
                                 }
@@ -1244,7 +1343,7 @@ mod tests {
     #[test]
     fn test_sse_stream_request_has_stream_true() {
         let body = AnthropicStreamRequest {
-            model: "claude-sonnet-4-20250514".into(),
+            model: "claude-sonnet-4-6".into(),
             max_tokens: 8192,
             stream: true,
             system: build_system_blocks("Be helpful."),
@@ -1260,23 +1359,35 @@ mod tests {
         assert!(json.get("tools").is_none());
     }
 
+    /// Parse one SSE `data:` line through the real parser with throwaway usage state.
+    fn parse_sse(raw: &str) -> Option<StreamEvent> {
+        let mut usage = StreamUsage::default();
+        let sse: SseData = serde_json::from_str(raw).unwrap();
+        sse_data_to_event(sse, &mut usage)
+    }
+
     #[test]
     fn test_sse_text_delta_parsed() {
         let raw = r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#;
-        let sse: SseData = serde_json::from_str(raw).unwrap();
-        let evt = sse_data_to_event(sse).unwrap();
-        match evt {
+        match parse_sse(raw).unwrap() {
             StreamEvent::TextDelta(t) => assert_eq!(t, "Hello"),
             _ => panic!("expected TextDelta"),
         }
     }
 
     #[test]
+    fn test_sse_thinking_delta_parsed() {
+        let raw = r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"let me reason"}}"#;
+        match parse_sse(raw).unwrap() {
+            StreamEvent::ThinkingDelta(t) => assert_eq!(t, "let me reason"),
+            _ => panic!("expected ThinkingDelta"),
+        }
+    }
+
+    #[test]
     fn test_sse_input_json_delta_parsed() {
         let raw = r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"cmd\":"}}"#;
-        let sse: SseData = serde_json::from_str(raw).unwrap();
-        let evt = sse_data_to_event(sse).unwrap();
-        match evt {
+        match parse_sse(raw).unwrap() {
             StreamEvent::InputJsonDelta(j) => assert_eq!(j, "{\"cmd\":"),
             _ => panic!("expected InputJsonDelta"),
         }
@@ -1285,23 +1396,125 @@ mod tests {
     #[test]
     fn test_sse_message_stop_emits_done() {
         let raw = r#"{"type":"message_stop"}"#;
-        let sse: SseData = serde_json::from_str(raw).unwrap();
-        let evt = sse_data_to_event(sse).unwrap();
-        assert!(matches!(evt, StreamEvent::Done));
+        assert!(matches!(parse_sse(raw).unwrap(), StreamEvent::Done));
     }
 
     #[test]
     fn test_sse_ping_ignored() {
-        let raw = r#"{"type":"ping"}"#;
-        let sse: SseData = serde_json::from_str(raw).unwrap();
-        assert!(sse_data_to_event(sse).is_none());
+        assert!(parse_sse(r#"{"type":"ping"}"#).is_none());
     }
 
     #[test]
-    fn test_sse_message_start_ignored() {
-        let raw = r#"{"type":"message_start","message":{"id":"msg_123","role":"assistant"}}"#;
-        let sse: SseData = serde_json::from_str(raw).unwrap();
-        assert!(sse_data_to_event(sse).is_none());
+    fn test_sse_content_block_boundaries_ignored() {
+        assert!(parse_sse(
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#
+        )
+        .is_none());
+        assert!(parse_sse(r#"{"type":"content_block_stop","index":0}"#).is_none());
+    }
+
+    #[test]
+    fn test_sse_message_delta_emits_usage_with_stop_reason() {
+        // Real message_delta shape: stop_reason in `delta`, output usage top-level.
+        let raw = r#"{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"input_tokens":15,"cache_read_input_tokens":0,"output_tokens":14}}"#;
+        match parse_sse(raw).unwrap() {
+            StreamEvent::Usage(u) => {
+                assert_eq!(u.output_tokens, 14);
+                assert_eq!(u.input_tokens, 15);
+                assert_eq!(u.stop_reason.as_deref(), Some("end_turn"));
+            }
+            _ => panic!("expected Usage"),
+        }
+    }
+
+    #[test]
+    fn test_sse_message_start_then_delta_combine_usage() {
+        // message_start carries input/cache; message_delta carries output +
+        // stop_reason. Threaded usage must combine both.
+        let mut usage = StreamUsage::default();
+        let start: SseData = serde_json::from_str(
+            r#"{"type":"message_start","message":{"usage":{"input_tokens":559,"cache_read_input_tokens":40,"cache_creation_input_tokens":0,"output_tokens":2}}}"#,
+        )
+        .unwrap();
+        assert!(sse_data_to_event(start, &mut usage).is_none());
+        assert_eq!(usage.input_tokens, 559);
+        assert_eq!(usage.cache_read_tokens, Some(40));
+
+        let delta: SseData = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":83}}"#,
+        )
+        .unwrap();
+        match sse_data_to_event(delta, &mut usage).unwrap() {
+            StreamEvent::Usage(u) => {
+                assert_eq!(u.input_tokens, 559); // carried from message_start
+                assert_eq!(u.output_tokens, 83); // from message_delta
+                assert_eq!(u.cache_read_tokens, Some(40)); // carried
+                assert_eq!(u.stop_reason.as_deref(), Some("tool_use"));
+                assert_eq!(u.total_tokens(), 559 + 83 + 40);
+            }
+            _ => panic!("expected Usage"),
+        }
+    }
+
+    #[test]
+    fn test_sse_error_event_surfaced_not_swallowed() {
+        // An overloaded_error must surface as Error, not look like a clean finish.
+        let raw = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#;
+        match parse_sse(raw).unwrap() {
+            StreamEvent::Error(e) => {
+                assert!(e.contains("overloaded_error"));
+                assert!(e.contains("Overloaded"));
+            }
+            _ => panic!("expected Error"),
+        }
+    }
+
+    /// Live end-to-end streaming check against the real Messages API. Ignored by
+    /// default: it makes a real, billable call and needs `ANTHROPIC_API_KEY` in
+    /// the environment. Run with:
+    ///   cargo test -p kernex-providers -- --ignored streaming_live
+    #[tokio::test]
+    #[ignore = "makes a real billable Anthropic API call; needs ANTHROPIC_API_KEY"]
+    async fn streaming_live_emits_text_usage_and_done() {
+        let key = match std::env::var("ANTHROPIC_API_KEY") {
+            Ok(k) if !k.is_empty() => k,
+            _ => {
+                eprintln!("skipping streaming_live: ANTHROPIC_API_KEY not set");
+                return;
+            }
+        };
+        let provider =
+            AnthropicProvider::from_config(key, "claude-sonnet-4-6".into(), 64, None).unwrap();
+        let ctx = Context::new("Say hello in exactly one short sentence.");
+        let mut rx = provider.complete_stream(&ctx).await.expect("stream opens");
+
+        let mut text = String::new();
+        let mut usage: Option<StreamUsage> = None;
+        let mut saw_done = false;
+        let mut saw_error: Option<String> = None;
+        while let Some(evt) = rx.recv().await {
+            match evt {
+                StreamEvent::TextDelta(t) => text.push_str(&t),
+                StreamEvent::Usage(u) => usage = Some(u),
+                StreamEvent::Done => {
+                    saw_done = true;
+                    break;
+                }
+                StreamEvent::Error(e) => {
+                    saw_error = Some(e);
+                    break;
+                }
+                StreamEvent::ThinkingDelta(_) | StreamEvent::InputJsonDelta(_) => {}
+            }
+        }
+
+        assert!(saw_error.is_none(), "stream error: {saw_error:?}");
+        assert!(saw_done, "stream never signaled Done");
+        assert!(!text.trim().is_empty(), "no text streamed");
+        let u = usage.expect("a Usage event must be emitted");
+        assert!(u.output_tokens > 0, "output_tokens should be > 0");
+        assert_eq!(u.stop_reason.as_deref(), Some("end_turn"));
+        eprintln!("LIVE OK: text={text:?} usage={u:?}");
     }
 
     #[test]
