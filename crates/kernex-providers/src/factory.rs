@@ -95,8 +95,12 @@ fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
         ("fireworks", ModelTier::Flagship) => "accounts/fireworks/models/deepseek-r1",
         ("xai", ModelTier::Standard) => "grok-3-mini",
         ("xai", ModelTier::Flagship) => "grok-3",
-        ("bedrock", ModelTier::Standard) => "anthropic.claude-3-5-sonnet-20241022-v2:0",
-        ("bedrock", ModelTier::Flagship) => "anthropic.claude-3-7-sonnet-20250219-v1:0",
+        // Bedrock: US cross-region inference profiles. kernex defaults to the
+        // us-east-1 region, where these models are not available for in-region
+        // on-demand, so the geo profile (`us.` prefix) is required. Non-US
+        // regions must override with the matching prefix (eu./jp./au./global.).
+        ("bedrock", ModelTier::Standard) => "us.anthropic.claude-sonnet-4-6",
+        ("bedrock", ModelTier::Flagship) => "us.anthropic.claude-opus-4-7",
         // claude-code: model is passed as a hint to the CLI; tier does not apply.
         _ => "",
     }
@@ -283,7 +287,7 @@ impl ProviderFactory {
             #[cfg(feature = "bedrock")]
             "bedrock" => {
                 let model = resolve_model("bedrock", config.model, config.tier)
-                    .unwrap_or_else(|| "anthropic.claude-3-5-sonnet-20241022-v2:0".to_string());
+                    .unwrap_or_else(|| "us.anthropic.claude-sonnet-4-6".to_string());
                 let region = config.base_url.unwrap_or_else(|| "us-east-1".to_string());
                 let access_key_id = config.api_key.unwrap_or_default();
                 let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
@@ -684,11 +688,11 @@ mod tests {
     fn model_from_tier_bedrock() {
         assert_eq!(
             model_from_tier("bedrock", ModelTier::Standard),
-            "anthropic.claude-3-5-sonnet-20241022-v2:0"
+            "us.anthropic.claude-sonnet-4-6"
         );
         assert_eq!(
             model_from_tier("bedrock", ModelTier::Flagship),
-            "anthropic.claude-3-7-sonnet-20250219-v1:0"
+            "us.anthropic.claude-opus-4-7"
         );
     }
 

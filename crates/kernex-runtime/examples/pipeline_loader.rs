@@ -61,7 +61,7 @@ fn main() {
             // Demonstrate model resolution.
             println!("\nModel resolution (fast=llama3.2, complex=claude-sonnet):");
             for phase in &loaded.topology.phases {
-                let model = loaded.resolve_model(phase, "llama3.2", "claude-sonnet-4-20250514");
+                let model = loaded.resolve_model(phase, "llama3.2", "claude-sonnet-4-6");
                 println!("  {} -> {model}", phase.name);
             }
         }
