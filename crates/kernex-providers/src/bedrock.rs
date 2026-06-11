@@ -14,10 +14,16 @@
 //!
 //! # Model IDs
 //!
-//! Standard Bedrock model IDs for Claude:
-//! - `anthropic.claude-3-5-sonnet-20241022-v2:0`
-//! - `anthropic.claude-3-7-sonnet-20250219-v1:0`
-//! - `us.anthropic.claude-sonnet-4-20250514-v1:0` (cross-region inference)
+//! kernex defaults to the US cross-region inference profiles, since its default
+//! region is `us-east-1` where current Claude models are not available for
+//! in-region on-demand and must be invoked via a geo inference profile:
+//! - `us.anthropic.claude-sonnet-4-6` (Standard tier default)
+//! - `us.anthropic.claude-opus-4-7` (Flagship tier default)
+//!
+//! In a non-US region, override the model with the matching geo prefix
+//! (`eu.`, `jp.`, `au.`) or `global.`, e.g. `eu.anthropic.claude-sonnet-4-6`.
+//! Newer Bedrock model IDs drop the date / `-v1:0` suffix; older models still
+//! carry it (e.g. `anthropic.claude-3-7-sonnet-20250219-v1:0`).
 
 use crate::error::ProviderError;
 use async_trait::async_trait;
@@ -494,7 +500,8 @@ mod tests {
         assert!(auth.contains("SignedHeaders=content-type;host;x-amz-date"));
         assert!(auth.contains("Signature="));
         assert!(amz_date.ends_with('Z'));
-        assert_eq!(amz_date.len(), 16); // YYYYMMDDTHHMMSSZassert!(token.is_none());
+        assert_eq!(amz_date.len(), 16); // YYYYMMDDTHHMMSSZ
+        assert!(token.is_none());
     }
 
     #[test]
