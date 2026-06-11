@@ -25,6 +25,24 @@ impl ModelPricing {
     }
 }
 
+/// Parse the minor version from a `claude-opus-4-N` model id (lowercased).
+///
+/// Returns `None` for bare `claude-opus-4` and for date-suffixed 4.0 ids like
+/// `claude-opus-4-20250514`: minor versions are 1-2 digits, longer digit runs
+/// are date stamps.
+fn opus_4_minor(m: &str) -> Option<u32> {
+    let rest = &m[m.find("claude-opus-4-")? + "claude-opus-4-".len()..];
+    let digits: &str = &rest[..rest
+        .char_indices()
+        .find(|(_, c)| !c.is_ascii_digit())
+        .map(|(i, _)| i)
+        .unwrap_or(rest.len())];
+    if digits.is_empty() || digits.len() > 2 {
+        return None;
+    }
+    digits.parse().ok()
+}
+
 /// Returns pricing for a known model, or `None` if unrecognized.
 ///
 /// Matches by substring so both `claude-sonnet-4-20250514` and `claude-sonnet-4-6`
@@ -46,18 +64,25 @@ pub fn pricing_for(model: &str) -> Option<ModelPricing> {
             output_per_mtok: 50.0,
         });
     }
-    // Opus 4.5 cut the Opus price to $5 / $25; 4.6, 4.7, and 4.8 hold it.
-    if m.contains("claude-opus-4-5")
-        || m.contains("claude-opus-4-6")
-        || m.contains("claude-opus-4-7")
-        || m.contains("claude-opus-4-8")
-    {
-        return Some(ModelPricing {
-            input_per_mtok: 5.0,
-            output_per_mtok: 25.0,
+    // Opus 4.x by parsed minor version: the 4.5 release cut the price to
+    // $5 / $25 and later minors (4.6, 4.7, 4.8, ...) hold it, so future minors
+    // do not silently fall into the legacy bucket; 4.0/4.1 bill the original
+    // $15 / $75. Date-suffixed 4.0 ids (`claude-opus-4-20250514`) parse as no
+    // minor and fall through to legacy below.
+    if let Some(minor) = opus_4_minor(&m) {
+        return Some(if minor >= 5 {
+            ModelPricing {
+                input_per_mtok: 5.0,
+                output_per_mtok: 25.0,
+            }
+        } else {
+            ModelPricing {
+                input_per_mtok: 15.0,
+                output_per_mtok: 75.0,
+            }
         });
     }
-    // Legacy Opus (4.0, 4.1, Opus 3): the original $15 / $75.
+    // Legacy Opus (bare/date-suffixed 4.0, Opus 3): the original $15 / $75.
     if m.contains("claude-opus-4") || m.contains("claude-opus-3") {
         return Some(ModelPricing {
             input_per_mtok: 15.0,
@@ -201,6 +226,44 @@ mod tests {
             assert_eq!(p.input_per_mtok, 15.0, "{model} input");
             assert_eq!(p.output_per_mtok, 75.0, "{model} output");
         }
+    }
+
+    #[test]
+    fn test_pricing_for_future_opus_minors_stay_modern() {
+        // 4.9 / 4.10 must NOT fall into the legacy $15/$75 bucket (silent 3x
+        // misbilling); the modern price holds until a new entry says otherwise.
+        for model in ["claude-opus-4-9", "claude-opus-4-10"] {
+            let p = pricing_for(model).unwrap();
+            assert_eq!(p.input_per_mtok, 5.0, "{model} input");
+            assert_eq!(p.output_per_mtok, 25.0, "{model} output");
+        }
+    }
+
+    #[test]
+    fn test_pricing_for_date_suffixed_opus_4_is_legacy() {
+        // claude-opus-4-20250514 is Opus 4.0 with a date stamp, not minor
+        // version 20250514; it bills legacy.
+        let p = pricing_for("claude-opus-4-20250514").unwrap();
+        assert_eq!(p.input_per_mtok, 15.0);
+        assert_eq!(p.output_per_mtok, 75.0);
+    }
+
+    #[test]
+    fn test_pricing_for_future_haiku_minor_assumed_current() {
+        // Documented assumption: any Haiku 4.x bills the 4.5 rate until a new
+        // entry says otherwise.
+        let p = pricing_for("claude-haiku-4-6").unwrap();
+        assert_eq!(p.input_per_mtok, 1.0);
+        assert_eq!(p.output_per_mtok, 5.0);
+    }
+
+    #[test]
+    fn test_opus_4_minor_parsing() {
+        assert_eq!(opus_4_minor("claude-opus-4-5"), Some(5));
+        assert_eq!(opus_4_minor("claude-opus-4-10"), Some(10));
+        assert_eq!(opus_4_minor("claude-opus-4-20250514"), None); // date stamp
+        assert_eq!(opus_4_minor("claude-opus-4"), None); // bare
+        assert_eq!(opus_4_minor("claude-opus-3"), None);
     }
 
     #[test]

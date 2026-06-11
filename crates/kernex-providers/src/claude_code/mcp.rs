@@ -71,12 +71,12 @@ pub(super) async fn write_mcp_config_tempfile(
 
 /// Remove the temporary MCP config file written by [`write_mcp_config_tempfile`].
 pub(super) async fn cleanup_mcp_config(path: &Path) {
-    if path.exists() {
-        if let Err(e) = tokio::fs::remove_file(path).await {
-            warn!("mcp: failed to cleanup {}: {e}", path.display());
-        } else {
-            debug!("mcp: cleaned up {}", path.display());
-        }
+    // Unconditional remove: an exists() pre-check races temp cleaners into a
+    // spurious warning. NotFound just means the job is already done.
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => debug!("mcp: cleaned up {}", path.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!("mcp: failed to cleanup {}: {e}", path.display()),
     }
 }
 
