@@ -100,10 +100,68 @@ fn build_profile(data_dir: &Path, profile: &crate::SandboxProfile) -> String {
         }
     }
 
+    // Credential read-deny list (D-13 (b)): block reads of high-value secret
+    // stores under $HOME. Reads stay broad everywhere else.
+    let home = crate::resolved_home();
+    for cred in crate::credential_read_deny_dirs(&home) {
+        if let Some(s) = sanitize_sbpl_path(&cred) {
+            deny_reads.push_str(&format!("  (subpath \"{s}\")\n"));
+        }
+    }
+
+    // $HOME write lockdown (D-13 (b)): deny writes inside $HOME, then re-allow
+    // the workspace/data dir, $KERNEX_DATA_DIR, the system temp dirs, and the
+    // toolchain cache/state dirs. SBPL is last-match-wins, so the re-deny of
+    // `{data_dir}/data` and config below must follow the allow block. Writes
+    // outside $HOME keep allow-default behaviour (minus the system denies).
+    let mut allow_writes = String::new();
+    let mut home_write_deny = String::new();
+    if let Some(h) = sanitize_sbpl_path(&home) {
+        home_write_deny.push_str(&format!("  (subpath \"{h}\")\n"));
+
+        if let Some(s) = sanitize_sbpl_path(data_dir) {
+            allow_writes.push_str(&format!("  (subpath \"{s}\")\n"));
+        }
+        for tmp in ["/tmp", "/private/tmp", "/private/var/tmp", "/var/tmp"] {
+            allow_writes.push_str(&format!("  (subpath \"{tmp}\")\n"));
+        }
+        if let Some(kdd) = std::env::var_os("KERNEX_DATA_DIR")
+            .map(std::path::PathBuf::from)
+            .as_deref()
+            .and_then(sanitize_sbpl_path)
+        {
+            allow_writes.push_str(&format!("  (subpath \"{kdd}\")\n"));
+        }
+        for dir in crate::write_allow_dirs(&home) {
+            if let Some(s) = sanitize_sbpl_path(&dir) {
+                allow_writes.push_str(&format!("  (subpath \"{s}\")\n"));
+            }
+        }
+    }
+
+    let mut redeny_writes = String::new();
+    if let Some(s) = sanitize_sbpl_path(&data_dir.join("data")) {
+        redeny_writes.push_str(&format!("  (subpath \"{s}\")\n"));
+    }
+    if let Some(s) = sanitize_sbpl_path(&data_dir.join("config.toml")) {
+        redeny_writes.push_str(&format!("  (literal \"{s}\")\n"));
+    }
+
+    let home_write_block = if home_write_deny.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "(deny file-write*\n{home_write_deny})\n\
+            (allow file-write*\n{allow_writes})\n\
+            (deny file-write*\n{redeny_writes})\n"
+        )
+    };
+
     format!(
         "(version 1)\n\
         (allow default)\n\
         (deny file-write*\n{deny_writes})\n\
+        {home_write_block}\
         (deny file-read*\n{deny_reads})\n"
     )
 }
@@ -230,6 +288,41 @@ mod tests {
     }
 
     #[test]
+    fn test_profile_denies_credential_reads() {
+        // Uses the same resolved HOME build_profile uses, so the .ssh entry
+        // (exit-signal clause 2) lands in the read-deny section when it
+        // sanitizes cleanly (any plain absolute home does).
+        let home = crate::resolved_home();
+        let data_dir = home.join(".kernex");
+        let profile = build_profile(&data_dir, &crate::SandboxProfile::default());
+        let read_pos = profile.find("(deny file-read*").unwrap();
+        let read_section = &profile[read_pos..];
+        if let Some(ssh) = sanitize_sbpl_path(&home.join(".ssh")) {
+            assert!(
+                read_section.contains(&ssh),
+                "credential read-deny missing .ssh: {read_section}"
+            );
+        }
+        assert!(crate::credential_read_deny_dirs(&home)
+            .iter()
+            .any(|c| c.ends_with(".ssh")));
+    }
+
+    #[test]
+    fn test_profile_locks_down_home_writes() {
+        let home = crate::resolved_home();
+        let data_dir = home.join(".kernex");
+        let profile = build_profile(&data_dir, &crate::SandboxProfile::default());
+        // A $HOME write-deny + re-allow block exists; the data dir and the
+        // toolchain cache dirs are re-allowed so real tools keep working.
+        assert!(profile.contains("(allow file-write*"));
+        if let Some(dd) = sanitize_sbpl_path(&data_dir) {
+            assert!(profile.contains(&dd), "data dir not re-allowed for writes");
+        }
+        assert!(profile.contains(".cargo"));
+    }
+
+    #[test]
     fn test_blocked_path_with_quote_is_dropped() {
         // A path containing a literal `"` would close the SBPL string and
         // inject arbitrary policy code if interpolated. It must be dropped.
@@ -241,9 +334,12 @@ mod tests {
             ..Default::default()
         };
         let profile = build_profile(&data_dir, &profile_obj);
+        // The profile legitimately contains an `(allow file-write*` block now
+        // (the $HOME write lockdown re-allows the workspace/cache dirs); the
+        // injection check is that the malicious path text never made it in.
         assert!(
-            !profile.contains("(allow file-write*"),
-            "injected (allow file-write*) escaped sanitization: {profile}"
+            !profile.contains("/tmp/evil"),
+            "injected blocked_path escaped sanitization: {profile}"
         );
     }
 
