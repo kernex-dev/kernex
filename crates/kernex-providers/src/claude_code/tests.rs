@@ -134,6 +134,24 @@ async fn test_cleanup_mcp_config_nonexistent() {
     mcp::cleanup_mcp_config(Path::new("/tmp/__kernex_nonexistent_mcp_config__")).await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn test_mcp_config_tempfile_is_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+    let servers = vec![McpServer {
+        name: "perm-check".into(),
+        command: "kx".into(),
+        args: vec!["mcp".into()],
+        ..Default::default()
+    }];
+    let path = mcp::write_mcp_config_tempfile(&servers).await.unwrap();
+    // Configured MCP env values can carry credentials; the file must be
+    // owner-readable only, regardless of umask.
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "expected 0600, got {mode:o}");
+    mcp::cleanup_mcp_config(&path).await;
+}
+
 // --- CLI argument construction tests ---
 
 #[test]

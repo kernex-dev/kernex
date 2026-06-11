@@ -58,15 +58,56 @@ pub(super) async fn write_mcp_config_tempfile(
     // A uniquely-named file in the system temp dir (pid + a per-process
     // counter), outside the user's config tree. The CLI subprocess reads it via
     // `--mcp-config`; we delete it ourselves in `cleanup_mcp_config`.
+    //
+    // Created with O_EXCL so a pre-existing path (a planted symlink on a
+    // shared machine, or a stale leftover) is never followed or overwritten -
+    // on collision we skip to the next counter value. Mode 0600 keeps any
+    // configured MCP env values (potential credentials) unreadable by other
+    // users regardless of umask.
     static MCP_CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);
-    let seq = MCP_CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!("kernex-mcp-{}-{seq}.json", std::process::id()));
-    tokio::fs::write(&path, json.as_bytes())
+    let mut last_err: Option<std::io::Error> = None;
+    for _ in 0..8 {
+        let seq = MCP_CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("kernex-mcp-{}-{seq}.json", std::process::id()));
+        let bytes = json.clone();
+        let write_path = path.clone();
+        let res = tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+            use std::io::Write;
+            let mut opts = std::fs::OpenOptions::new();
+            opts.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                opts.mode(0o600);
+            }
+            let mut f = opts.open(&write_path)?;
+            f.write_all(bytes.as_bytes())
+        })
         .await
         .map_err(|e| ProviderError::Logic(format!("failed to write MCP config: {e}")))?;
 
-    debug!("mcp: wrote config to {}", path.display());
-    Ok(path)
+        match res {
+            Ok(()) => {
+                debug!("mcp: wrote config to {}", path.display());
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Never reuse or follow a path we did not create.
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => {
+                return Err(
+                    ProviderError::Logic(format!("failed to write MCP config: {e}")).into(),
+                );
+            }
+        }
+    }
+    Err(ProviderError::Logic(format!(
+        "failed to create a unique MCP config after 8 attempts: {last_err:?}"
+    ))
+    .into())
 }
 
 /// Remove the temporary MCP config file written by [`write_mcp_config_tempfile`].

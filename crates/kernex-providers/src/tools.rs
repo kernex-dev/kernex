@@ -1195,6 +1195,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_bash_subprocess_env_is_isolated() {
+        // Reality gate: a real tool subprocess must not inherit provider keys
+        // from the parent, while still receiving the base allowlist.
+        std::env::set_var("ANTHROPIC_API_KEY", "kernex-test-sentinel-not-a-real-key");
+        let executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let result = executor
+            .exec_bash(&serde_json::json!({"command": "env"}))
+            .await;
+        std::env::remove_var("ANTHROPIC_API_KEY");
+
+        assert!(!result.is_error, "env probe failed: {}", result.content);
+        assert!(
+            !result
+                .content
+                .contains("kernex-test-sentinel-not-a-real-key"),
+            "provider key leaked into the subprocess environment"
+        );
+        assert!(result.content.contains("PATH="), "base allowlist lost PATH");
+        assert!(result.content.contains("HOME="), "base allowlist lost HOME");
+    }
+
+    #[tokio::test]
     async fn test_exec_read_nonexistent() {
         let executor = ToolExecutor::new(PathBuf::from("/tmp"));
         let result = executor
