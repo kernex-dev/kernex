@@ -43,7 +43,9 @@ type HmacSha256 = Hmac<Sha256>;
 
 const BEDROCK_SERVICE: &str = "bedrock";
 const ANTHROPIC_VERSION_BEDROCK: &str = "bedrock-2023-05-31";
-const DEFAULT_MAX_TOKENS: u32 = 8192;
+// Single-sourced from the factory so the env-construction path (`new`) and the
+// factory path apply the same default.
+use crate::factory::DEFAULT_MAX_TOKENS;
 
 /// AWS Bedrock provider - Claude models via the Anthropic Bedrock API.
 pub struct BedrockProvider {
