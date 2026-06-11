@@ -76,7 +76,62 @@ mod landlock_sandbox;
 /// `{data_dir}/data/` are blocked (protects memory.db). All other paths
 /// under `data_dir` (workspace, skills, projects) remain writable.
 pub fn protected_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
-    platform_command(program, data_dir, profile)
+    let mut cmd = platform_command(program, data_dir, profile);
+    hardened_env(&mut cmd);
+    cmd
+}
+
+/// Environment variables preserved when hardening a spawned subprocess.
+///
+/// Everything else from the parent environment is cleared - in particular
+/// provider API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...) and cloud
+/// credentials, which subprocesses must never inherit implicitly. A
+/// subprocess that legitimately needs more receives it via an explicit
+/// `Command::env` opt-in at its call site (configured toolbox/MCP env maps,
+/// the Claude CLI auth pass-through).
+///
+/// The `LC_*` locale family is additionally preserved by prefix in
+/// [`hardened_env`]. Proxy and TLS-trust variables are preserved because they
+/// are configuration, not secrets, and clearing them would silently break
+/// corporate networks.
+pub const BASE_ENV_ALLOWLIST: &[&str] = &[
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "TERM",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TZ",
+    "LANG",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+];
+
+/// Clear the inherited environment on `cmd` and re-apply only the minimal
+/// base allowlist ([`BASE_ENV_ALLOWLIST`] plus the `LC_*` family) from the
+/// parent process.
+///
+/// Applied automatically by [`protected_command`] / [`try_protected_command`];
+/// exposed for spawn sites that cannot route through the sandbox wrappers
+/// (e.g. MCP server processes that must stay unwrapped for stdio framing).
+pub fn hardened_env(cmd: &mut Command) {
+    cmd.env_clear();
+    for (k, v) in std::env::vars_os() {
+        let Some(key) = k.to_str() else { continue };
+        let allowed = BASE_ENV_ALLOWLIST.contains(&key) || key.starts_with("LC_");
+        if allowed {
+            cmd.env(&k, &v);
+        }
+    }
 }
 
 /// Strict variant of [`protected_command`].
@@ -97,7 +152,9 @@ pub fn try_protected_command(
             "OS-level sandbox enforcement is required but unavailable on this host",
         ));
     }
-    Ok(platform_command(program, data_dir, profile))
+    let mut cmd = platform_command(program, data_dir, profile);
+    hardened_env(&mut cmd);
+    Ok(cmd)
 }
 
 /// Returns `true` when the current host can apply OS-level sandbox
@@ -275,6 +332,41 @@ mod tests {
         let cmd = protected_command("claude", &data_dir, &profile);
         let program = cmd.as_std().get_program().to_string_lossy().to_string();
         assert!(!program.is_empty());
+    }
+
+    #[test]
+    fn test_protected_command_hardens_env() {
+        // A parent var outside the allowlist must not survive; the base
+        // allowlist (PATH) and the LC_* family must.
+        std::env::set_var("KERNEX_TEST_SENTINEL_DO_NOT_PASS", "1");
+        std::env::set_var("LC_KERNEX_TEST", "es_ES.UTF-8");
+
+        let data_dir = PathBuf::from("/tmp/ws");
+        let profile = SandboxProfile::default();
+        let cmd = protected_command("echo", &data_dir, &profile);
+        let explicit: Vec<String> = cmd
+            .as_std()
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|_| k.to_string_lossy().to_string()))
+            .collect();
+
+        std::env::remove_var("KERNEX_TEST_SENTINEL_DO_NOT_PASS");
+        std::env::remove_var("LC_KERNEX_TEST");
+
+        assert!(
+            !explicit
+                .iter()
+                .any(|k| k == "KERNEX_TEST_SENTINEL_DO_NOT_PASS"),
+            "non-allowlisted parent var re-applied after env_clear"
+        );
+        assert!(
+            explicit.iter().any(|k| k == "LC_KERNEX_TEST"),
+            "LC_* family not preserved"
+        );
+        assert!(
+            explicit.iter().any(|k| k == "PATH"),
+            "PATH not preserved from the base allowlist"
+        );
     }
 
     #[test]
