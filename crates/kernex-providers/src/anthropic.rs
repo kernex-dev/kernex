@@ -364,7 +364,6 @@ impl Provider for AnthropicProvider {
         let max_turns = context.max_turns.unwrap_or(DEFAULT_MAX_TURNS);
 
         let system_blocks = build_system_blocks(&system);
-        let use_cache = system_blocks.iter().any(|b| b.cache_control.is_some());
 
         let has_tools = tools_enabled(context);
 
@@ -381,7 +380,6 @@ impl Provider for AnthropicProvider {
                     .agentic_loop(
                         effective_model,
                         &system_blocks,
-                        use_cache,
                         context.extended_thinking,
                         &api_messages,
                         &mut executor,
@@ -424,21 +422,15 @@ impl Provider for AnthropicProvider {
             let client = &self.client;
             let api_key = &self.api_key;
             send_with_retry("anthropic", || {
-                let mut req = client
+                // No anthropic-beta header: adaptive thinking rides in the
+                // request body, and prompt caching is GA (cache_control on the
+                // system blocks needs no beta header).
+                let req = client
                     .post(ANTHROPIC_API_URL)
                     .header("x-api-key", api_key.expose_secret().as_str())
                     .header("anthropic-version", ANTHROPIC_VERSION)
-                    .header("content-type", "application/json");
-                // Adaptive thinking is a request-body param, not a beta header.
-                // prompt-caching is the only beta still forwarded here.
-                let mut betas: Vec<&str> = Vec::new();
-                if use_cache {
-                    betas.push("prompt-caching-2024-07-31");
-                }
-                if !betas.is_empty() {
-                    req = req.header("anthropic-beta", betas.join(","));
-                }
-                let req = req.body(body_json.clone());
+                    .header("content-type", "application/json")
+                    .body(body_json.clone());
                 async move { req.send().await }
             })
             .await?
@@ -507,7 +499,6 @@ impl AnthropicProvider {
         &self,
         model: &str,
         system_blocks: &[SystemBlock],
-        use_cache: bool,
         extended_thinking: bool,
         api_messages: &[kernex_core::context::ApiMessage],
         executor: &mut ToolExecutor,
@@ -559,27 +550,18 @@ impl AnthropicProvider {
             let resp = {
                 let client = &self.client;
                 let api_key = &self.api_key;
-                // Adaptive thinking is sent as a request-body param (see
-                // `thinking_config`), not a beta header: on the 4.6+ family it is
-                // GA and enables interleaved thinking automatically. The
-                // token-efficient-tools beta was removed earlier (native on 4.x,
-                // and the unverified string risked 400-ing every tool request);
-                // prompt-caching is the only beta still forwarded here.
-                let mut betas: Vec<&str> = Vec::new();
-                if use_cache {
-                    betas.push("prompt-caching-2024-07-31");
-                }
-                let beta_header = betas.join(",");
+                // No anthropic-beta header: adaptive thinking rides in the
+                // request body, prompt caching is GA (cache_control needs no
+                // header), and the token-efficient-tools beta was removed earlier
+                // (native on 4.x; the unverified string risked 400-ing tool
+                // requests).
                 send_with_retry("anthropic", || {
-                    let mut req = client
+                    let req = client
                         .post(ANTHROPIC_API_URL)
                         .header("x-api-key", api_key.expose_secret().as_str())
                         .header("anthropic-version", ANTHROPIC_VERSION)
-                        .header("content-type", "application/json");
-                    if !beta_header.is_empty() {
-                        req = req.header("anthropic-beta", &beta_header);
-                    }
-                    let req = req.body(body_json.clone());
+                        .header("content-type", "application/json")
+                        .body(body_json.clone());
                     async move { req.send().await }
                 })
                 .await?
@@ -878,7 +860,6 @@ impl StreamingProvider for AnthropicProvider {
         let effective_model = context.model.as_deref().unwrap_or(&self.model).to_string();
 
         let system_blocks = build_system_blocks(&system);
-        let use_cache = system_blocks.iter().any(|b| b.cache_control.is_some());
         let extended_thinking = context.extended_thinking;
 
         let messages: Vec<AnthropicMessage> = api_messages
@@ -907,21 +888,14 @@ impl StreamingProvider for AnthropicProvider {
         // error which would consume the stream before we can iterate it.
         // Pass the SecretString slice directly into the header builder so the
         // key never lives as an unzeroized owned String on the heap.
-        let mut req = self
+        // No anthropic-beta header: adaptive thinking is a body param and
+        // prompt caching is GA (cache_control needs no header).
+        let req = self
             .client
             .post(ANTHROPIC_API_URL)
             .header("x-api-key", self.api_key.expose_secret())
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json");
-        // Adaptive thinking rides in the request body (see `thinking_config`),
-        // not a beta header; prompt-caching is the only beta forwarded here.
-        let mut betas: Vec<&str> = Vec::new();
-        if use_cache {
-            betas.push("prompt-caching-2024-07-31");
-        }
-        if !betas.is_empty() {
-            req = req.header("anthropic-beta", betas.join(","));
-        }
 
         debug!("anthropic: POST {ANTHROPIC_API_URL} (stream=true)");
 
@@ -1518,18 +1492,13 @@ mod tests {
     }
 
     #[test]
-    fn test_agentic_beta_header_omits_token_efficient_tools() {
-        // The token-efficient-tools beta was removed (the 4.x family applies the
-        // optimization natively; the unverified string risked 400-ing every tool
-        // request). With no caching and no thinking, the agentic loop sends no
-        // anthropic-beta header at all; prompt-caching is appended only when a
-        // cache_control boundary is present.
-        let betas_empty: Vec<&str> = Vec::new();
-        assert!(betas_empty.join(",").is_empty());
-
-        let betas_cache = ["prompt-caching-2024-07-31"];
-        let beta_with_cache = betas_cache.join(",");
-        assert!(!beta_with_cache.contains("token-efficient-tools"));
-        assert!(beta_with_cache.contains("prompt-caching-2024-07-31"));
+    fn test_cache_control_present_without_beta_header() {
+        // Prompt caching is driven by cache_control on the system blocks, which
+        // is GA and needs no anthropic-beta header. Verify the cache_control
+        // boundary still serializes (the header that used to accompany it was
+        // removed; a live smoke test confirmed caching still works without it).
+        let blocks = build_system_blocks("Stable.\nKERNEX_CACHE_BOUNDARY\nDynamic.");
+        let json = serde_json::to_value(&blocks).unwrap();
+        assert_eq!(json[0]["cache_control"]["type"], "ephemeral");
     }
 }
