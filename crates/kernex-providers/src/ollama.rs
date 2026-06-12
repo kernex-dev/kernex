@@ -192,6 +192,7 @@ impl Provider for OllamaProvider {
                         &api_messages,
                         &mut executor,
                         max_turns,
+                        context.token_budget,
                     )
                     .await;
 
@@ -283,6 +284,7 @@ impl Provider for OllamaProvider {
 
 impl OllamaProvider {
     /// Ollama-specific agentic loop.
+    #[allow(clippy::too_many_arguments)]
     async fn agentic_loop(
         &self,
         url: &str,
@@ -291,6 +293,7 @@ impl OllamaProvider {
         api_messages: &[kernex_core::context::ApiMessage],
         executor: &mut ToolExecutor,
         max_turns: u32,
+        token_budget: Option<u64>,
     ) -> Result<Response, KernexError> {
         let start = Instant::now();
 
@@ -374,6 +377,23 @@ impl OllamaProvider {
                             content: Some(result.content),
                             tool_calls: None,
                         });
+                    }
+
+                    // Stop before starting another turn once the billed spend
+                    // has reached the caller's budget. A final text answer
+                    // below would already have returned, so nothing completed
+                    // is ever discarded here.
+                    if kernex_core::run::budget_exhausted(total_tokens, token_budget) {
+                        let elapsed_ms = start.elapsed().as_millis() as u64;
+                        let mut resp = build_response(
+                            String::new(),
+                            "ollama",
+                            total_tokens,
+                            elapsed_ms,
+                            last_model,
+                        );
+                        resp.metadata.stop_reason = Some("budget_exhausted".to_string());
+                        return Ok(resp);
                     }
 
                     continue;
@@ -489,5 +509,113 @@ mod tests {
         assert_eq!(tcs.len(), 1);
         assert_eq!(tcs[0].function.name, "bash");
         assert_eq!(tcs[0].function.arguments["command"], "ls");
+    }
+
+    /// Minimal HTTP/1.1 stub: answers every POST with a canned chat response
+    /// containing one tool call and fixed token counts (40 prompt + 60 eval =
+    /// 100 billed per turn), and counts the requests it served. Lets the
+    /// agentic loop run against a real HTTP server without a live model.
+    async fn spawn_tool_call_stub() -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count_srv = count.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let count = count_srv.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 65536];
+                    let mut read = 0usize;
+                    loop {
+                        let n = sock.read(&mut buf[read..]).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        read += n;
+                        let s = String::from_utf8_lossy(&buf[..read]);
+                        if let Some(h_end) = s.find("\r\n\r\n") {
+                            let cl = s.lines().find_map(|l| {
+                                let low = l.to_ascii_lowercase();
+                                low.strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            });
+                            if read - (h_end + 4) >= cl.unwrap_or(0) {
+                                break;
+                            }
+                        }
+                        if read == buf.len() {
+                            break;
+                        }
+                    }
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let body = r#"{"model":"stub","message":{"role":"assistant","tool_calls":[{"function":{"name":"no_such_tool","arguments":{}}}]},"eval_count":60,"prompt_eval_count":40}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        (addr, count)
+    }
+
+    #[tokio::test]
+    async fn agentic_loop_stops_at_token_budget_before_turn_cap() {
+        let (addr, requests) = spawn_tool_call_stub().await;
+        let ws = tempfile::tempdir().unwrap();
+        let provider = OllamaProvider::from_config(
+            format!("http://{addr}"),
+            "stub".into(),
+            Some(ws.path().to_path_buf()),
+        )
+        .unwrap();
+        let mut ctx = Context::new("keep calling tools");
+        ctx.max_turns = Some(50);
+        // One stub turn bills exactly 100 tokens, so the loop must stop after
+        // its first tool turn instead of burning through the 50-turn cap.
+        ctx.token_budget = Some(100);
+
+        let resp = provider.complete(&ctx).await.unwrap();
+
+        assert_eq!(
+            resp.metadata.stop_reason.as_deref(),
+            Some("budget_exhausted")
+        );
+        assert!(resp.text.is_empty(), "no synthetic answer on exhaustion");
+        assert_eq!(resp.metadata.tokens_used, Some(100));
+        assert_eq!(
+            requests.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "budget must stop the loop after the first turn"
+        );
+    }
+
+    #[tokio::test]
+    async fn agentic_loop_without_budget_runs_to_turn_cap() {
+        let (addr, requests) = spawn_tool_call_stub().await;
+        let ws = tempfile::tempdir().unwrap();
+        let provider = OllamaProvider::from_config(
+            format!("http://{addr}"),
+            "stub".into(),
+            Some(ws.path().to_path_buf()),
+        )
+        .unwrap();
+        let mut ctx = Context::new("keep calling tools");
+        ctx.max_turns = Some(3);
+
+        let resp = provider.complete(&ctx).await.unwrap();
+
+        assert_eq!(resp.metadata.stop_reason.as_deref(), Some("max_turns"));
+        assert_eq!(resp.metadata.tokens_used, Some(300));
+        assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 3);
     }
 }

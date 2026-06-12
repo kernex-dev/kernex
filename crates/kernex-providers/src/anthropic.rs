@@ -384,6 +384,7 @@ impl Provider for AnthropicProvider {
                         &api_messages,
                         &mut executor,
                         max_turns,
+                        context.token_budget,
                     )
                     .await;
 
@@ -503,6 +504,7 @@ impl AnthropicProvider {
         api_messages: &[kernex_core::context::ApiMessage],
         executor: &mut ToolExecutor,
         max_turns: u32,
+        token_budget: Option<u64>,
     ) -> Result<Response, KernexError> {
         let start = Instant::now();
 
@@ -627,6 +629,40 @@ impl AnthropicProvider {
                     role: "user".to_string(),
                     content: AnthropicContent::Blocks(tool_result_blocks),
                 });
+
+                // Stop before starting another turn once the billed spend
+                // (input + output + cache writes; cache reads excluded) has
+                // reached the caller's budget. A final text answer above
+                // would already have returned, so nothing completed is ever
+                // discarded here.
+                let billed = total_input_tokens + total_output_tokens + total_cache_creation;
+                if kernex_core::run::budget_exhausted(billed, token_budget) {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    let usage = UsageBreakdown {
+                        input_tokens: Some(total_input_tokens),
+                        output_tokens: Some(total_output_tokens),
+                        cache_read_tokens: if total_cache_read > 0 {
+                            Some(total_cache_read)
+                        } else {
+                            None
+                        },
+                        cache_creation_tokens: if total_cache_creation > 0 {
+                            Some(total_cache_creation)
+                        } else {
+                            None
+                        },
+                    };
+                    let mut resp = build_response_with_usage(
+                        String::new(),
+                        "anthropic",
+                        total_tokens,
+                        elapsed_ms,
+                        last_model,
+                        usage,
+                    );
+                    resp.metadata.stop_reason = Some("budget_exhausted".to_string());
+                    return Ok(resp);
+                }
 
                 continue;
             }
@@ -1502,6 +1538,48 @@ mod tests {
         assert!(u.output_tokens > 0, "output_tokens should be > 0");
         assert_eq!(u.stop_reason.as_deref(), Some("end_turn"));
         eprintln!("LIVE OK: text={text:?} usage={u:?}");
+    }
+
+    /// Live mid-loop token-budget check against the real Messages API. Ignored
+    /// by default: it makes a real, billable call and needs
+    /// `ANTHROPIC_API_KEY` in the environment. Run with:
+    ///   cargo test -p kernex-providers -- --ignored budget_live
+    #[tokio::test]
+    #[ignore = "makes a real billable Anthropic API call; needs ANTHROPIC_API_KEY"]
+    async fn budget_live_stops_agentic_loop_after_first_tool_turn() {
+        let key = match std::env::var("ANTHROPIC_API_KEY") {
+            Ok(k) if !k.is_empty() => k,
+            _ => {
+                eprintln!("skipping budget_live: ANTHROPIC_API_KEY not set");
+                return;
+            }
+        };
+        let ws = tempfile::tempdir().unwrap();
+        let provider = AnthropicProvider::from_config(
+            key,
+            "claude-haiku-4-5".into(),
+            1024,
+            Some(ws.path().to_path_buf()),
+        )
+        .unwrap();
+        let mut ctx = Context::new(
+            "Use the bash tool to run `echo budget-probe` and then summarize the output.",
+        );
+        ctx.max_turns = Some(8);
+        // Any billed spend exhausts a budget of 1, so the loop must stop right
+        // after the first tool turn instead of finishing the task.
+        ctx.token_budget = Some(1);
+
+        let resp = provider.complete(&ctx).await.expect("complete");
+
+        assert_eq!(
+            resp.metadata.stop_reason.as_deref(),
+            Some("budget_exhausted"),
+            "expected the loop to stop on budget after the first tool turn \
+             (if the model answered without calling a tool, re-run)"
+        );
+        assert!(resp.metadata.tokens_used.unwrap_or(0) >= 1);
+        eprintln!("LIVE OK: tokens={:?}", resp.metadata.tokens_used);
     }
 
     #[test]
