@@ -313,8 +313,19 @@ impl ToolExecutor {
 
         debug!("tool/bash: {command}");
 
-        let mut cmd =
-            kernex_sandbox::protected_command("bash", &self.data_dir, &self.sandbox_profile);
+        let mut cmd = match kernex_sandbox::try_protected_command(
+            "bash",
+            &self.data_dir,
+            &self.sandbox_profile,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("Refusing to run bash: {e}"),
+                    is_error: true,
+                }
+            }
+        };
         cmd.arg("-c").arg(command);
         cmd.current_dir(&self.workspace_path);
         // Kill the child process when the handle is dropped (e.g. on timeout).
@@ -445,8 +456,19 @@ impl ToolExecutor {
     async fn exec_toolbox(&self, tb: &Toolbox, args: &Value) -> ToolResult {
         debug!("toolbox/{}: running", tb.name);
 
-        let mut cmd =
-            kernex_sandbox::protected_command(&tb.command, &self.data_dir, &self.sandbox_profile);
+        let mut cmd = match kernex_sandbox::try_protected_command(
+            &tb.command,
+            &self.data_dir,
+            &self.sandbox_profile,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("Refusing to run toolbox '{}': {e}", tb.name),
+                    is_error: true,
+                }
+            }
+        };
         cmd.args(&tb.args);
         cmd.current_dir(&self.workspace_path);
         cmd.kill_on_drop(true);
@@ -678,8 +700,19 @@ impl ToolExecutor {
             ("grep", a)
         };
 
-        let mut cmd =
-            kernex_sandbox::protected_command(cmd_name, &self.data_dir, &self.sandbox_profile);
+        let mut cmd = match kernex_sandbox::try_protected_command(
+            cmd_name,
+            &self.data_dir,
+            &self.sandbox_profile,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("Refusing to run {cmd_name}: {e}"),
+                    is_error: true,
+                }
+            }
+        };
         cmd.args(&argv);
         cmd.kill_on_drop(true);
         // Drain argv so the borrow checker is happy.
@@ -751,8 +784,19 @@ impl ToolExecutor {
             ("-name", pattern.to_string())
         };
 
-        let mut cmd =
-            kernex_sandbox::protected_command("find", &self.data_dir, &self.sandbox_profile);
+        let mut cmd = match kernex_sandbox::try_protected_command(
+            "find",
+            &self.data_dir,
+            &self.sandbox_profile,
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                return ToolResult {
+                    content: format!("Refusing to run find: {e}"),
+                    is_error: true,
+                }
+            }
+        };
         cmd.arg(base.as_os_str())
             .arg(flag)
             .arg(&pat)
@@ -1281,6 +1325,43 @@ mod tests {
         );
         assert!(result.content.contains("PATH="), "base allowlist lost PATH");
         assert!(result.content.contains("HOME="), "base allowlist lost HOME");
+    }
+
+    #[tokio::test]
+    async fn test_bash_honors_required_enforcement() {
+        // Reality gate for the fail-mode policy: with enforcement required,
+        // a real bash subprocess either runs sandboxed (host can enforce -
+        // the CI case on macOS Seatbelt and Linux Landlock) or is refused
+        // outright (host cannot enforce). It must never silently fall back
+        // to an unsandboxed run.
+        let executor = ToolExecutor::new(PathBuf::from("/tmp")).with_sandbox_profile(
+            kernex_sandbox::SandboxProfile {
+                require_os_enforcement: true,
+                ..Default::default()
+            },
+        );
+        let result = executor
+            .exec_bash(&serde_json::json!({"command": "echo enforced-run"}))
+            .await;
+
+        if kernex_sandbox::os_enforcement_available() {
+            assert!(
+                !result.is_error,
+                "sandboxed run failed on an enforcement-capable host: {}",
+                result.content
+            );
+            assert!(result.content.contains("enforced-run"));
+        } else {
+            assert!(
+                result.is_error,
+                "unsandboxed fallback happened despite required enforcement"
+            );
+            assert!(
+                result.content.contains("Refusing to run bash"),
+                "unexpected error shape: {}",
+                result.content
+            );
+        }
     }
 
     #[tokio::test]
