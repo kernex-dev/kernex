@@ -125,7 +125,7 @@ impl ClaudeCodeProvider {
         agent_name: Option<&str>,
         mcp_config_path: Option<&Path>,
     ) -> Result<std::process::Output, KernexError> {
-        let mut cmd = self.base_command();
+        let mut cmd = self.base_command()?;
 
         let mut args = Self::build_run_cli_args(
             prompt,
@@ -168,7 +168,7 @@ impl ClaudeCodeProvider {
         model: &str,
         mcp_config_path: Option<&Path>,
     ) -> Result<std::process::Output, KernexError> {
-        let mut cmd = self.base_command();
+        let mut cmd = self.base_command()?;
 
         cmd.arg("-p")
             .arg(prompt)
@@ -210,18 +210,36 @@ impl ClaudeCodeProvider {
     }
 
     /// Build the base `Command` with working directory and system protection.
-    fn base_command(&self) -> Command {
+    ///
+    /// Errors when OS-level sandbox enforcement is required (profile flag or
+    /// `KERNEX_REQUIRE_SANDBOX=1`) but the subprocess would run unsandboxed:
+    /// either the host cannot enforce, or no working directory is configured
+    /// so there is no sandbox wrapper at all.
+    fn base_command(&self) -> Result<Command, KernexError> {
         let mut cmd = match self.working_dir {
             Some(ref dir) => {
                 // Protection blocks writes to data dir (parent of workspace)
                 // so memory.db is safe, but skills, projects, etc. are writable.
                 let data_dir = dir.parent().unwrap_or(dir);
-                let mut c =
-                    kernex_sandbox::protected_command("claude", data_dir, &self.sandbox_profile);
+                let mut c = kernex_sandbox::try_protected_command(
+                    "claude",
+                    data_dir,
+                    &self.sandbox_profile,
+                )
+                .map_err(|e| ProviderError::Logic(format!("refusing to run claude CLI: {e}")))?;
                 c.current_dir(dir);
                 c
             }
             None => {
+                if kernex_sandbox::enforcement_required(&self.sandbox_profile) {
+                    return Err(ProviderError::Logic(
+                        "refusing to run claude CLI: OS-level sandbox enforcement is \
+                         required but no working directory is configured, so the \
+                         subprocess would run unsandboxed"
+                            .to_string(),
+                    )
+                    .into());
+                }
                 let mut c = Command::new("claude");
                 // No data_dir means no sandbox wrapper; apply the env
                 // isolation directly so this branch matches the wrapped one.
@@ -244,7 +262,7 @@ impl ClaudeCodeProvider {
                 cmd.env("ANTHROPIC_API_KEY", key);
             }
         }
-        cmd
+        Ok(cmd)
     }
 
     /// Execute a command with the configured timeout and standard error handling.
