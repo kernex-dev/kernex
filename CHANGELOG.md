@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-12
+
+Agentic-loop spend control and a multi-poller-safe scheduled-task surface. Tag: [v0.10.0](https://github.com/kernex-dev/kernex/releases/tag/v0.10.0).
+
+### Added
+
+- **`kernex-core` / `kernex-providers` / `kernex-runtime`**: opt-in cumulative token budget for agentic runs. `Context::token_budget` / `RunConfig::token_budget` (default `None` = unlimited); all four agentic loops (anthropic, openai-family, gemini, ollama) share one `kernex_core::run::budget_exhausted` check between turns; exhaustion surfaces as `stop_reason="budget_exhausted"` and the new `RunOutcome::BudgetExhausted` (usage recorded, non-answer not persisted). A completed final answer is always returned even if it crosses the budget. ([#59](https://github.com/kernex-dev/kernex/pull/59))
+- **`kernex-memory`**: atomic task claims + execution history. `MemoryStore::claim_due_tasks` hands each due task to exactly one concurrent poller (`UPDATE ... RETURNING`; stale claims reclaim after 10 minutes); `record_task_run`/`list_task_runs` persist and read what each run produced; migration `019_task_runs.sql`. ([#61](https://github.com/kernex-dev/kernex/pull/61))
+
+### Breaking
+
+- New `RunOutcome::BudgetExhausted` variant (exhaustive matchers gain an arm); new public `token_budget` field on `Context` and `RunConfig` (struct-literal constructors gain a field); `MemoryStore` implementors gain three required methods.
+
+### CI / Release tooling
+
+- The publish chain is now resumable: each step runs `scripts/publish-if-needed.sh` (skips crates whose version is already live), so a transient mid-chain failure is recovered by re-dispatching the workflow. ([#62](https://github.com/kernex-dev/kernex/pull/62))
+
+## [0.9.0] - 2026-06-12
+
+Security-hardening release: subprocess env isolation, sandbox `$HOME` lockdown and egress deny-by-default, enforced skill permissions, SSRF resolve-time pinning, Debug redaction, and a SECURITY.md rewritten to enforced behavior only. See the per-crate changelogs and [SECURITY.md](SECURITY.md) for the full posture. Tag: [v0.9.0](https://github.com/kernex-dev/kernex/releases/tag/v0.9.0).
+
 ## [0.8.3] - 2026-05-19
 
 Additive `kernex-adapter-core` release introducing a project-local write surface so adapters that target files outside the home-rooted `config_root` (Codex `<cwd>/AGENTS.md`, Cursor `.cursorrules`, etc.) can declare a separate project root without bypassing the adapter sandbox. Wire format remains back-compatible with 0.8.2 via `#[serde(default)]`. Tag: [v0.8.3](https://github.com/kernex-dev/kernex/releases/tag/v0.8.3).
