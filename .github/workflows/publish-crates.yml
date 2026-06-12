@@ -16,10 +16,14 @@
 #   https://github.com/rust-lang/crates-io-auth-action
 #   https://rust-lang.github.io/rfcs/3691-trusted-publishing-cratesio.html
 #
-# Failure mode: if any `cargo publish` step fails, the workflow halts. The
-# release manager runs the remaining publishes manually with
-# `cargo publish -p <name>`, in the order documented below. Yanking a failed
-# publish is a separate manual step against crates.io.
+# Failure mode: if any publish step fails, the workflow halts. Each step
+# runs `scripts/publish-if-needed.sh`, which skips crates whose version is
+# already live on crates.io, so the recovery is simply re-dispatching the
+# workflow: completed publishes are skipped and the chain resumes at the
+# crate that failed. (Manual `cargo publish` recovery is no longer possible
+# from a workstation: the long-lived registry token was deleted with the
+# OIDC trusted-publishing migration.) Yanking a bad publish is a separate
+# manual step against crates.io.
 
 name: publish-crates
 
@@ -123,54 +127,54 @@ jobs:
       # step outputs, so each publish step carries the same env block.
 
       - name: Publish kernex-core
-        run: cargo publish -p kernex-core --locked
+        run: ./scripts/publish-if-needed.sh kernex-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-sandbox
-        run: cargo publish -p kernex-sandbox --locked
+        run: ./scripts/publish-if-needed.sh kernex-sandbox
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-memory
-        run: cargo publish -p kernex-memory --locked
+        run: ./scripts/publish-if-needed.sh kernex-memory
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-pipelines
-        run: cargo publish -p kernex-pipelines --locked
+        run: ./scripts/publish-if-needed.sh kernex-pipelines
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-skills
-        run: cargo publish -p kernex-skills --locked
+        run: ./scripts/publish-if-needed.sh kernex-skills
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-providers
-        run: cargo publish -p kernex-providers --locked
+        run: ./scripts/publish-if-needed.sh kernex-providers
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-adapter-core
-        run: cargo publish -p kernex-adapter-core --locked
+        run: ./scripts/publish-if-needed.sh kernex-adapter-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex-runtime
-        run: cargo publish -p kernex-runtime --locked
+        run: ./scripts/publish-if-needed.sh kernex-runtime
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
       - name: Publish kernex (umbrella)
-        run: cargo publish -p kernex --locked
+        run: ./scripts/publish-if-needed.sh kernex
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
