@@ -47,6 +47,22 @@
 //!   by callers. [`os_enforcement_available`] reports Landlock presence,
 //!   not enforcement depth.
 //!
+//! ## Subprocess network policy
+//!
+//! Sandboxed subprocesses are denied network access by default
+//! (`SandboxProfile::allow_network = false`); tools that genuinely need
+//! egress opt in explicitly. Coverage is asymmetric by platform:
+//!
+//! - **macOS Seatbelt**: full — denies every socket operation (TCP, UDP,
+//!   and local sockets; DNS resolution is consequently unavailable too).
+//! - **Linux Landlock**: TCP bind/connect only, and only on kernels 6.7+
+//!   (ABI v4). Older kernels cannot restrict the network; the gap is
+//!   logged at spawn time. UDP and non-TCP sockets are never restricted.
+//!
+//! In-process HTTP performed by the runtime itself (e.g. a `web_fetch`
+//! tool implemented without a subprocess) is not subject to this policy;
+//! it has its own request-level validation.
+//!
 //! Also provides [`is_write_blocked`] and [`is_read_blocked`] for code-level
 //! enforcement in tool executors (protects memory.db and config.toml on all
 //! platforms).
@@ -76,6 +92,17 @@ pub struct SandboxProfile {
     ///
     /// The default flips to `true` in kernex 1.0.
     pub require_os_enforcement: bool,
+    /// When `true`, the sandboxed subprocess may open network connections.
+    /// Defaults to `false`: subprocess network egress is denied by default
+    /// so a compromised or prompt-injected tool cannot exfiltrate data.
+    ///
+    /// Enforcement is platform-asymmetric and documented in the crate docs:
+    /// macOS Seatbelt denies all socket access (TCP, UDP, and local
+    /// sockets, which also disables DNS); Linux Landlock denies TCP
+    /// bind/connect on kernels 6.7+ (ABI v4) and cannot restrict the
+    /// network at all on older kernels (logged at spawn time). UDP and
+    /// non-TCP sockets are never restricted on Linux.
+    pub allow_network: bool,
 }
 
 /// Environment variable that requires OS-level sandbox enforcement
@@ -236,7 +263,7 @@ pub fn hardened_env(cmd: &mut Command) {
 }
 
 /// Credential directories/files under `$HOME` whose READS are denied to
-/// sandboxed subprocesses (D-13 option (b) credential read-deny list).
+/// sandboxed subprocesses (the credential read-deny list).
 ///
 /// Reads stay broad everywhere else; only these high-value secret stores are
 /// blocked, so an agent that is prompted (or tricked) into exfiltrating SSH
@@ -264,7 +291,7 @@ pub fn credential_read_deny_dirs(home: &Path) -> Vec<PathBuf> {
     .collect()
 }
 
-/// Directories whose WRITES are allowed under the D-13 option (b) posture
+/// Directories whose WRITES are allowed under the default lockdown posture
 /// (writes are otherwise denied inside `$HOME`).
 ///
 /// Covers the per-user state/cache dirs that real toolchains write to during
@@ -272,10 +299,10 @@ pub fn credential_read_deny_dirs(home: &Path) -> Vec<PathBuf> {
 /// macOS cache trees). Writes to the workspace/data dir, `$KERNEX_DATA_DIR`,
 /// and the system temp dirs are allowed separately by the platform modules.
 ///
-/// **(a)-fallback tuning point:** if a real toolchain writes somewhere outside
-/// this list and breaks, the fix is to extend this list (or, per D-13, fall
-/// back to a credential-deny-list-only posture). CI cannot exercise every
-/// toolchain, so this is the most likely place to need a follow-up.
+/// **Fallback tuning point:** if a real toolchain writes somewhere outside
+/// this list and breaks, the fix is to extend this list (or fall back to a
+/// credential-deny-list-only posture). CI cannot exercise every toolchain,
+/// so this is the most likely place to need a follow-up.
 pub fn write_allow_dirs(home: &Path) -> Vec<PathBuf> {
     [
         ".cache",

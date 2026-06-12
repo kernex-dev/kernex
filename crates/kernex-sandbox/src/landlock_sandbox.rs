@@ -49,8 +49,8 @@ use tokio::process::Command;
 use tracing::warn;
 
 use landlock::{
-    path_beneath_rules, Access, AccessFs, BitFlags, Ruleset, RulesetAttr, RulesetCreated,
-    RulesetCreatedAttr, ABI,
+    path_beneath_rules, Access, AccessFs, AccessNet, BitFlags, Ruleset, RulesetAttr,
+    RulesetCreated, RulesetCreatedAttr, ABI,
 };
 
 /// All read-related filesystem access flags.
@@ -153,13 +153,39 @@ fn build_ruleset(
 ) -> Result<RulesetCreated, anyhow::Error> {
     let home_dir = crate::resolved_home();
 
-    // D-13 (b): broad read on `/`, but NOT blanket write on `$HOME`. Writes are
+    // Broad read on `/`, but NOT blanket write on `$HOME`. Writes are
     // granted only to the workspace/data dir, the system temp dirs, the
     // toolchain cache/state dirs, and `$KERNEX_DATA_DIR`. Landlock is
     // most-specific-rule-wins, so the credential refer_only rules and the
     // data/ + config refer_only rules below override these for their subtrees.
-    let mut ruleset = Ruleset::default()
-        .handle_access(full_access())?
+    let base = Ruleset::default().handle_access(full_access())?;
+
+    // Network egress deny-by-default: handling the TCP access rights without
+    // adding any NetPort allow rule denies every TCP bind/connect. Only
+    // possible on ABI v4+ (kernel 6.7+); older kernels cannot restrict the
+    // network at all, so the gap is logged instead of silently assumed
+    // covered. UDP and non-TCP sockets are outside Landlock's scope on every
+    // ABI (the macOS Seatbelt path covers all socket families; this
+    // asymmetry is documented in the crate docs).
+    let base = if profile.allow_network {
+        base
+    } else {
+        match landlock_abi_version() {
+            Some(abi) if abi >= NET_RESTRICTION_MIN_ABI => {
+                base.handle_access(AccessNet::BindTcp | AccessNet::ConnectTcp)?
+            }
+            abi => {
+                warn!(
+                    abi = ?abi,
+                    "landlock: kernel ABI lacks network rules (needs v4 / kernel 6.7+); \
+                     subprocess network egress cannot be restricted on this host"
+                );
+                base
+            }
+        }
+    };
+
+    let mut ruleset = base
         .create()?
         .add_rules(path_beneath_rules(&[PathBuf::from("/")], read_access()))?
         .add_rules(path_beneath_rules(&[PathBuf::from("/tmp")], full_access()))?;
@@ -201,7 +227,7 @@ fn build_ruleset(
         }
     }
 
-    // Credential read-deny list (D-13 (b)): refer_only blocks reads and writes;
+    // Credential read-deny list: refer_only blocks reads and writes;
     // most-specific-rule-wins makes this override the broad `/` read for these
     // subtrees, so SSH keys / cloud creds / tokens are unreadable.
     for cred in crate::credential_read_deny_dirs(&home_dir) {
@@ -241,6 +267,25 @@ fn build_ruleset(
 /// Check if the kernel supports Landlock by probing the ABI version file.
 fn landlock_available() -> bool {
     std::path::Path::new("/sys/kernel/security/landlock/abi_version").exists()
+}
+
+/// Path to the kernel's Landlock ABI version file.
+const ABI_VERSION_FILE: &str = "/sys/kernel/security/landlock/abi_version";
+
+/// Minimum Landlock ABI that supports network (TCP bind/connect) rules.
+/// Shipped in kernel 6.7.
+const NET_RESTRICTION_MIN_ABI: u32 = 4;
+
+/// Read the kernel's Landlock ABI version. `None` when Landlock is absent
+/// or the file is unreadable/unparsable.
+fn landlock_abi_version() -> Option<u32> {
+    let content = std::fs::read_to_string(ABI_VERSION_FILE).ok()?;
+    parse_abi_version(&content)
+}
+
+/// Parse the abi_version file content (a decimal integer plus newline).
+fn parse_abi_version(content: &str) -> Option<u32> {
+    content.trim().parse().ok()
 }
 
 /// Minimal access — blocks both reads and writes via Landlock intersection.
@@ -286,5 +331,33 @@ mod tests {
         let cmd = protected_command("claude", &data_dir, &profile);
         let program = cmd.as_std().get_program().to_string_lossy().to_string();
         assert_eq!(program, "claude");
+    }
+
+    #[test]
+    fn test_parse_abi_version() {
+        assert_eq!(parse_abi_version("4\n"), Some(4));
+        assert_eq!(parse_abi_version("5"), Some(5));
+        assert_eq!(parse_abi_version("  6  \n"), Some(6));
+        assert_eq!(parse_abi_version(""), None);
+        assert_eq!(parse_abi_version("not-a-number"), None);
+        assert_eq!(parse_abi_version("-1"), None);
+    }
+
+    #[test]
+    fn test_build_ruleset_with_network_denied_succeeds() {
+        // The deny-by-default path must build a valid ruleset on any
+        // Landlock-capable kernel, whether or not the ABI supports network
+        // rules (older ABIs log the gap and keep filesystem rules).
+        if !landlock_available() {
+            return;
+        }
+        let data_dir = PathBuf::from("/tmp/ws");
+        let profile = crate::SandboxProfile::default();
+        assert!(build_ruleset(&data_dir, &profile).is_ok());
+        let opt_in = crate::SandboxProfile {
+            allow_network: true,
+            ..Default::default()
+        };
+        assert!(build_ruleset(&data_dir, &opt_in).is_ok());
     }
 }

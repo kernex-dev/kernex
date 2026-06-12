@@ -221,12 +221,15 @@ impl ClaudeCodeProvider {
                 // Protection blocks writes to data dir (parent of workspace)
                 // so memory.db is safe, but skills, projects, etc. are writable.
                 let data_dir = dir.parent().unwrap_or(dir);
-                let mut c = kernex_sandbox::try_protected_command(
-                    "claude",
-                    data_dir,
-                    &self.sandbox_profile,
-                )
-                .map_err(|e| ProviderError::Logic(format!("refusing to run claude CLI: {e}")))?;
+                // The Claude CLI IS the provider: it must reach the API, so
+                // it is exempt from the subprocess egress deny-by-default
+                // that governs agent tool subprocesses.
+                let mut profile = self.sandbox_profile.clone();
+                profile.allow_network = true;
+                let mut c = kernex_sandbox::try_protected_command("claude", data_dir, &profile)
+                    .map_err(|e| {
+                        ProviderError::Logic(format!("refusing to run claude CLI: {e}"))
+                    })?;
                 c.current_dir(dir);
                 c
             }

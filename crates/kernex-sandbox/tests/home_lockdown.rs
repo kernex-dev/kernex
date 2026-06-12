@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! Reality gate for the D-13 (b) `$HOME` lockdown (Phase S batch S4).
+//! Integration tests for the `$HOME` lockdown posture.
 //!
 //! Runs REAL sandboxed subprocesses (Seatbelt on macOS, Landlock on Linux) and
 //! asserts that a credential read is denied while a non-credential read and a
@@ -64,7 +64,7 @@ fn home_lockdown_denies_credential_read_allows_workspace() {
         std::env::remove_var("HOME");
     }
 
-    // 1. Credential read is denied (exit-signal clause 2): either the process
+    // 1. Credential read is denied: either the process
     //    failed, or (defensively) the key sentinel never reached stdout.
     let ssh_stdout = String::from_utf8_lossy(&ssh_out.stdout);
     assert!(
