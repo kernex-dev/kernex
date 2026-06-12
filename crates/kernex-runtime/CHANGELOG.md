@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0](https://github.com/kernex-dev/kernex/compare/v0.8.3...v0.9.0) - 2026-06-12
+
+### Fixed
+
+- *(bedrock)* update default model IDs to current Claude models ([#49](https://github.com/kernex-dev/kernex/pull/49))
+- *(anthropic)* rebuild SSE streaming to read usage, stop_reason, and errors ([#47](https://github.com/kernex-dev/kernex/pull/47))
+- *(runtime)* surface max_turns as RunOutcome::MaxTurns, stop fabricating answers ([#43](https://github.com/kernex-dev/kernex/pull/43))
+
 ## [0.8.0](https://github.com/kernex-dev/kernex/compare/v0.7.0...v0.8.0) - 2026-05-12
 
 ### Added
