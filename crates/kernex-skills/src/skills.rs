@@ -200,6 +200,10 @@ struct ToolboxFrontmatter {
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    /// Whether the tool subprocess may open network connections
+    /// (`network = true`). Defaults to deny.
+    #[serde(default)]
+    network: bool,
     #[serde(default = "default_object_schema")]
     parameters: serde_json::Value,
 }
@@ -217,6 +221,10 @@ struct ToolboxJsonEntry {
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    /// Whether the tool subprocess may open network connections
+    /// (`"network": true`). Defaults to deny.
+    #[serde(default)]
+    network: bool,
     #[serde(default = "default_object_schema")]
     parameters: serde_json::Value,
 }
@@ -256,6 +264,7 @@ fn load_toolbox_json(skill_dir: &Path) -> Vec<Toolbox> {
                     command: entry.command,
                     args: entry.args,
                     env: entry.env,
+                    network: entry.network,
                     search_hints: Vec::new(),
                 })
             } else {
@@ -450,6 +459,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                     command: tbf.command,
                     args: tbf.args,
                     env: tbf.env,
+                    network: tbf.network,
                     search_hints: Vec::new(),
                 })
             })
@@ -755,6 +765,7 @@ pub fn skill_search_toolbox() -> Toolbox {
         command: "skill_search".to_string(),
         args: Vec::new(),
         env: std::collections::HashMap::new(),
+        network: false,
         search_hints: vec![
             "tool".to_string(),
             "skill".to_string(),
@@ -1459,6 +1470,40 @@ Body text.
         assert_eq!(fm.toolbox["lint"].command, "bash");
         assert_eq!(fm.toolbox["lint"].description, "Run linter on a file.");
         assert_eq!(fm.toolbox["lint"].args, vec!["scripts/lint.sh"]);
+        assert!(!fm.toolbox["lint"].network, "network must default to deny");
+    }
+
+    #[test]
+    fn test_parse_toolbox_network_opt_in() {
+        let content = r#"---
+name = "fetch-skill"
+description = "Fetching tools."
+trigger = "fetch"
+
+[toolbox.fetch]
+description = "Fetch a URL."
+command = "bash"
+args = ["scripts/fetch.sh"]
+network = true
+---
+"#;
+        let fm = parse_skill_file(content).unwrap();
+        assert!(fm.toolbox["fetch"].network, "network = true not parsed");
+    }
+
+    #[test]
+    fn test_load_toolbox_json_network_opt_in() {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
+        std::fs::write(
+            tmp.join("toolbox.json"),
+            r#"{"toolboxes":{"fetch":{"description":"Fetch.","command":"bash","args":["f.sh"],"network":true}}}"#,
+        )
+        .unwrap();
+
+        let toolboxes = load_toolbox_json(tmp);
+        assert_eq!(toolboxes.len(), 1);
+        assert!(toolboxes[0].network, "network opt-in lost in json mapping");
     }
 
     #[test]
@@ -1598,6 +1643,7 @@ Body text.
             command: "echo".into(),
             args: Vec::new(),
             env: HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         }
     }

@@ -100,7 +100,7 @@ fn build_profile(data_dir: &Path, profile: &crate::SandboxProfile) -> String {
         }
     }
 
-    // Credential read-deny list (D-13 (b)): block reads of high-value secret
+    // Credential read-deny list: block reads of high-value secret
     // stores under $HOME. Reads stay broad everywhere else.
     let home = crate::resolved_home();
     for cred in crate::credential_read_deny_dirs(&home) {
@@ -109,7 +109,7 @@ fn build_profile(data_dir: &Path, profile: &crate::SandboxProfile) -> String {
         }
     }
 
-    // $HOME write lockdown (D-13 (b)): deny writes inside $HOME, then re-allow
+    // $HOME write lockdown: deny writes inside $HOME, then re-allow
     // the workspace/data dir, $KERNEX_DATA_DIR, the system temp dirs, and the
     // toolchain cache/state dirs. SBPL is last-match-wins, so the re-deny of
     // `{data_dir}/data` and config below must follow the allow block. Writes
@@ -157,12 +157,24 @@ fn build_profile(data_dir: &Path, profile: &crate::SandboxProfile) -> String {
         )
     };
 
+    // Network egress deny-by-default: `network*` covers outbound, inbound,
+    // and bind for every socket family (TCP, UDP, and local sockets, which
+    // also disables DNS via mDNSResponder). Tools that genuinely need the
+    // network opt in via `SandboxProfile::allow_network` (wired from the
+    // per-tool `network = true` declaration).
+    let network_block = if profile.allow_network {
+        String::new()
+    } else {
+        String::from("(deny network*)\n")
+    };
+
     format!(
         "(version 1)\n\
         (allow default)\n\
         (deny file-write*\n{deny_writes})\n\
         {home_write_block}\
-        (deny file-read*\n{deny_reads})\n"
+        (deny file-read*\n{deny_reads})\n\
+        {network_block}"
     )
 }
 
@@ -290,8 +302,8 @@ mod tests {
     #[test]
     fn test_profile_denies_credential_reads() {
         // Uses the same resolved HOME build_profile uses, so the .ssh entry
-        // (exit-signal clause 2) lands in the read-deny section when it
-        // sanitizes cleanly (any plain absolute home does).
+        // lands in the read-deny section when it sanitizes cleanly (any
+        // plain absolute home does).
         let home = crate::resolved_home();
         let data_dir = home.join(".kernex");
         let profile = build_profile(&data_dir, &crate::SandboxProfile::default());
@@ -385,6 +397,30 @@ mod tests {
         assert!(
             program.contains("sandbox-exec") || program.contains("claude"),
             "unexpected program: {program}"
+        );
+    }
+
+    #[test]
+    fn test_profile_denies_network_by_default() {
+        let data_dir = PathBuf::from("/tmp/ws");
+        let profile = build_profile(&data_dir, &crate::SandboxProfile::default());
+        assert!(
+            profile.contains("(deny network*)"),
+            "default profile must deny network egress: {profile}"
+        );
+    }
+
+    #[test]
+    fn test_profile_allows_network_on_opt_in() {
+        let data_dir = PathBuf::from("/tmp/ws");
+        let profile_obj = crate::SandboxProfile {
+            allow_network: true,
+            ..Default::default()
+        };
+        let profile = build_profile(&data_dir, &profile_obj);
+        assert!(
+            !profile.contains("(deny network*)"),
+            "opt-in profile must not deny network: {profile}"
         );
     }
 }

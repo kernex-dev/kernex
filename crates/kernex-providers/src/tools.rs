@@ -456,19 +456,22 @@ impl ToolExecutor {
     async fn exec_toolbox(&self, tb: &Toolbox, args: &Value) -> ToolResult {
         debug!("toolbox/{}: running", tb.name);
 
-        let mut cmd = match kernex_sandbox::try_protected_command(
-            &tb.command,
-            &self.data_dir,
-            &self.sandbox_profile,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                return ToolResult {
-                    content: format!("Refusing to run toolbox '{}': {e}", tb.name),
-                    is_error: true,
+        // Per-tool network opt-in: a toolbox that declares `network = true`
+        // gets egress; everything else inherits the executor's
+        // deny-by-default posture.
+        let mut profile = self.sandbox_profile.clone();
+        profile.allow_network = profile.allow_network || tb.network;
+
+        let mut cmd =
+            match kernex_sandbox::try_protected_command(&tb.command, &self.data_dir, &profile) {
+                Ok(c) => c,
+                Err(e) => {
+                    return ToolResult {
+                        content: format!("Refusing to run toolbox '{}': {e}", tb.name),
+                        is_error: true,
+                    }
                 }
-            }
-        };
+            };
         cmd.args(&tb.args);
         cmd.current_dir(&self.workspace_path);
         cmd.kill_on_drop(true);
@@ -1470,6 +1473,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["lint.sh".into()],
             env: std::collections::HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         }];
         executor.register_toolboxes(&toolboxes);
@@ -1486,6 +1490,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["lint.sh".into()],
             env: std::collections::HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         }];
         executor.register_toolboxes(&toolboxes);
@@ -1504,6 +1509,7 @@ mod tests {
             command: "echo".into(),
             args: vec!["hello from toolbox".into()],
             env: std::collections::HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
@@ -1522,6 +1528,7 @@ mod tests {
             command: "cat".into(),
             args: Vec::new(),
             env: std::collections::HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
@@ -1542,6 +1549,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["-c".into(), "echo error >&2; exit 1".into()],
             env: std::collections::HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
@@ -1562,6 +1570,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["-c".into(), "echo $GREETING".into()],
             env,
+            network: false,
             search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
@@ -1580,6 +1589,7 @@ mod tests {
             command: "__nonexistent_cmd_xyz__".into(),
             args: Vec::new(),
             env: std::collections::HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         };
         let result = executor.exec_toolbox(&tb, &serde_json::json!({})).await;

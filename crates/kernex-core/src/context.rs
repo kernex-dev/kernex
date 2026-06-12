@@ -93,6 +93,12 @@ pub struct Toolbox {
     /// Environment variables passed to the script process.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
+    /// Whether the tool subprocess may open network connections. Defaults to
+    /// `false`: sandboxed tool subprocesses are denied network egress unless
+    /// the tool declares `network = true`. Enforced at the OS sandbox layer
+    /// (full coverage on macOS Seatbelt; TCP bind/connect on Linux 6.7+).
+    #[serde(default)]
+    pub network: bool,
     /// Keywords for dynamic tool discovery via tool search.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub search_hints: Vec<String>,
@@ -500,6 +506,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["scripts/lint.sh".into()],
             env: HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         };
         let json = serde_json::to_string(&tb).unwrap();
@@ -528,6 +535,7 @@ mod tests {
             command: "bash".into(),
             args: vec!["lint.sh".into()],
             env: HashMap::new(),
+            network: false,
             search_hints: Vec::new(),
         });
         let json = serde_json::to_string(&ctx).unwrap();
