@@ -99,9 +99,45 @@ pub struct Toolbox {
     /// (full coverage on macOS Seatbelt; TCP bind/connect on Linux 6.7+).
     #[serde(default)]
     pub network: bool,
+    /// Parent environment variable NAMES this tool may receive, resolved at
+    /// spawn time. The spawn boundary clears the inherited environment; this
+    /// list is the declared, user-approvable opt-in for what gets re-added
+    /// (e.g. a skill that needs `GITHUB_TOKEN`). Empty = nothing extra.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env_passthrough: Vec<String>,
+    /// Command allow-list this tool's `command` must satisfy at execution
+    /// time, carried from the owning skill's declared permissions. Empty =
+    /// unrestricted (no allow-list was declared). Enforced by the executor
+    /// before spawning, as defense in depth behind the load-time checks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_commands: Vec<String>,
     /// Keywords for dynamic tool discovery via tool search.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub search_hints: Vec<String>,
+}
+
+/// Does `command` satisfy a declared command allow-list?
+///
+/// - An empty `allowed` list means no restriction was declared: `true`.
+/// - Entries containing `/` are full paths and must equal `command` exactly.
+/// - Entries without `/` are basenames and match any command whose final
+///   path segment equals the entry (`npx` permits `/usr/bin/npx`).
+///
+/// Single source of truth for allow-list semantics: the skills loader and
+/// the tool executor both call this, so load-time and run-time enforcement
+/// cannot drift apart.
+pub fn command_matches_allowlist(allowed: &[String], command: &str) -> bool {
+    if allowed.is_empty() {
+        return true;
+    }
+    let basename = command.rsplit('/').next().unwrap_or(command);
+    allowed.iter().any(|entry| {
+        if entry.contains('/') {
+            entry == command
+        } else {
+            entry == basename
+        }
+    })
 }
 
 fn default_object_schema() -> serde_json::Value {
@@ -507,6 +543,8 @@ mod tests {
             args: vec!["scripts/lint.sh".into()],
             env: HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         };
         let json = serde_json::to_string(&tb).unwrap();
@@ -536,6 +574,8 @@ mod tests {
             args: vec!["lint.sh".into()],
             env: HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         });
         let json = serde_json::to_string(&ctx).unwrap();

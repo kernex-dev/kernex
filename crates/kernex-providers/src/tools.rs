@@ -456,6 +456,21 @@ impl ToolExecutor {
     async fn exec_toolbox(&self, tb: &Toolbox, args: &Value) -> ToolResult {
         debug!("toolbox/{}: running", tb.name);
 
+        // Execution-time enforcement of the owning skill's declared command
+        // allow-list. The loaders already reject undeclared commands, but
+        // this is the last gate before the spawn: a toolbox that reaches
+        // the executor through any other path (hand-registered, future
+        // loader gap) is still refused here, structurally.
+        if !kernex_core::context::command_matches_allowlist(&tb.allowed_commands, &tb.command) {
+            return ToolResult {
+                content: format!(
+                    "Toolbox '{}' blocked: command {:?} is not in the skill's declared command allow-list",
+                    tb.name, tb.command
+                ),
+                is_error: true,
+            };
+        }
+
         // Per-tool network opt-in: a toolbox that declares `network = true`
         // gets egress; everything else inherits the executor's
         // deny-by-default posture.
@@ -478,6 +493,23 @@ impl ToolExecutor {
         cmd.stdin(std::process::Stdio::piped());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        // Declared env passthrough: the spawn boundary cleared the inherited
+        // environment; re-add ONLY the parent vars the skill's permissions
+        // named. Applied before the literal env map so explicit configured
+        // values still win on collision.
+        for key in &tb.env_passthrough {
+            if kernex_core::spawn::is_unsafe_env_key(key) {
+                tracing::warn!(
+                    toolbox = %tb.name,
+                    env_key = %key,
+                    "toolbox: refusing dynamic-linker env passthrough (would bypass sandbox)"
+                );
+                continue;
+            }
+            if let Ok(v) = std::env::var(key) {
+                cmd.env(key, v);
+            }
+        }
         let (safe_env, dropped) = kernex_core::spawn::filter_unsafe_env(&tb.env);
         for k in &dropped {
             tracing::warn!(
@@ -1474,6 +1506,8 @@ mod tests {
             args: vec!["lint.sh".into()],
             env: std::collections::HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         }];
         executor.register_toolboxes(&toolboxes);
@@ -1491,6 +1525,8 @@ mod tests {
             args: vec!["lint.sh".into()],
             env: std::collections::HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         }];
         executor.register_toolboxes(&toolboxes);
@@ -1510,12 +1546,127 @@ mod tests {
             args: vec!["hello from toolbox".into()],
             env: std::collections::HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
         let result = executor.execute("greet", &serde_json::json!({})).await;
         assert!(!result.is_error);
         assert!(result.content.contains("hello from toolbox"));
+    }
+
+    #[tokio::test]
+    async fn test_toolbox_undeclared_command_blocked_at_execution() {
+        // Reality gate: a toolbox whose command is NOT in the owning
+        // skill's declared allow-list is refused at the execution layer,
+        // structurally (no spawn, error result) - not prompt-advisory.
+        // This covers any path that bypasses the loaders.
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let tb = Toolbox {
+            name: "sneaky".into(),
+            description: "Declared echo, ships sh.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo should-never-run".into()],
+            env: std::collections::HashMap::new(),
+            network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: vec!["echo".into()],
+            search_hints: Vec::new(),
+        };
+        executor.register_toolboxes(&[tb]);
+        let result = executor.execute("sneaky", &serde_json::json!({})).await;
+        assert!(result.is_error, "undeclared command was executed");
+        assert!(
+            result
+                .content
+                .contains("not in the skill's declared command allow-list"),
+            "unexpected error shape: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("should-never-run"),
+            "blocked toolbox still produced output"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_toolbox_declared_command_runs() {
+        // Companion positive case: the same toolbox with its command
+        // declared in the allow-list executes normally.
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let tb = Toolbox {
+            name: "honest".into(),
+            description: "Declared sh, ships sh.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "sh".into(),
+            args: vec!["-c".into(), "echo declared-run".into()],
+            env: std::collections::HashMap::new(),
+            network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: vec!["sh".into()],
+            search_hints: Vec::new(),
+        };
+        executor.register_toolboxes(&[tb]);
+        let result = executor.execute("honest", &serde_json::json!({})).await;
+        assert!(
+            !result.is_error,
+            "declared command refused: {}",
+            result.content
+        );
+        assert!(result.content.contains("declared-run"));
+    }
+
+    #[tokio::test]
+    async fn test_toolbox_env_passthrough_declared_only() {
+        // Reality gate for the env permission: a real subprocess receives
+        // ONLY the parent vars the skill declared; everything else stays
+        // cleared by the spawn boundary, and dynamic-linker names are
+        // refused even when declared.
+        std::env::set_var("KERNEX_TEST_DECLARED_VAR", "granted-value");
+        std::env::set_var("KERNEX_TEST_UNDECLARED_VAR", "must-not-leak");
+        std::env::set_var("DYLD_INSERT_LIBRARIES", "/tmp/evil.dylib");
+
+        let mut executor = ToolExecutor::new(PathBuf::from("/tmp"));
+        let tb = Toolbox {
+            name: "envprobe".into(),
+            description: "Print environment.".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            command: "/usr/bin/env".into(),
+            args: Vec::new(),
+            env: std::collections::HashMap::new(),
+            network: false,
+            env_passthrough: vec![
+                "KERNEX_TEST_DECLARED_VAR".into(),
+                "DYLD_INSERT_LIBRARIES".into(),
+            ],
+            allowed_commands: Vec::new(),
+            search_hints: Vec::new(),
+        };
+        executor.register_toolboxes(&[tb]);
+        let result = executor.execute("envprobe", &serde_json::json!({})).await;
+
+        std::env::remove_var("KERNEX_TEST_DECLARED_VAR");
+        std::env::remove_var("KERNEX_TEST_UNDECLARED_VAR");
+        std::env::remove_var("DYLD_INSERT_LIBRARIES");
+
+        assert!(!result.is_error, "env probe failed: {}", result.content);
+        assert!(
+            result
+                .content
+                .contains("KERNEX_TEST_DECLARED_VAR=granted-value"),
+            "declared passthrough var missing: {}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("must-not-leak"),
+            "undeclared parent var leaked into the subprocess"
+        );
+        assert!(
+            !result.content.contains("evil.dylib"),
+            "dynamic-linker var passed through despite refusal rule"
+        );
     }
 
     #[tokio::test]
@@ -1529,6 +1680,8 @@ mod tests {
             args: Vec::new(),
             env: std::collections::HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
@@ -1550,6 +1703,8 @@ mod tests {
             args: vec!["-c".into(), "echo error >&2; exit 1".into()],
             env: std::collections::HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
@@ -1571,6 +1726,8 @@ mod tests {
             args: vec!["-c".into(), "echo $GREETING".into()],
             env,
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         };
         executor.register_toolboxes(&[tb]);
@@ -1590,6 +1747,8 @@ mod tests {
             args: Vec::new(),
             env: std::collections::HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         };
         let result = executor.exec_toolbox(&tb, &serde_json::json!({})).await;
