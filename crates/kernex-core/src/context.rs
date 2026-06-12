@@ -166,6 +166,12 @@ pub struct Context {
     /// Override the provider's default max_turns.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+    /// Stop the agentic loop once cumulative billed tokens reach this budget.
+    /// `None` means unlimited. Checked between turns: a completed final answer
+    /// is always returned even if it crosses the budget; the budget only
+    /// prevents the loop from starting further turns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_budget: Option<u64>,
     /// Override the provider's default allowed tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
@@ -208,6 +214,7 @@ impl std::fmt::Debug for Context {
             .field("mcp_servers", &self.mcp_servers)
             .field("toolboxes", &self.toolboxes)
             .field("max_turns", &self.max_turns)
+            .field("token_budget", &self.token_budget)
             .field("allowed_tools", &self.allowed_tools)
             .field("model", &self.model)
             .field("session_id", &self.session_id)
@@ -244,6 +251,7 @@ impl Context {
             mcp_servers: Vec::new(),
             toolboxes: Vec::new(),
             max_turns: None,
+            token_budget: None,
             allowed_tools: None,
             model: None,
             session_id: None,
@@ -389,6 +397,7 @@ mod tests {
             mcp_servers: Vec::new(),
             toolboxes: Vec::new(),
             max_turns: None,
+            token_budget: None,
             allowed_tools: None,
             model: None,
             session_id: None,
@@ -414,6 +423,7 @@ mod tests {
             mcp_servers: Vec::new(),
             toolboxes: Vec::new(),
             max_turns: None,
+            token_budget: None,
             allowed_tools: None,
             model: None,
             session_id: None,
@@ -440,6 +450,7 @@ mod tests {
             mcp_servers: Vec::new(),
             toolboxes: Vec::new(),
             max_turns: None,
+            token_budget: None,
             allowed_tools: None,
             model: None,
             session_id: Some("sess-abc".into()),
@@ -465,6 +476,7 @@ mod tests {
             mcp_servers: Vec::new(),
             toolboxes: Vec::new(),
             max_turns: None,
+            token_budget: None,
             allowed_tools: None,
             model: None,
             session_id: None,
@@ -486,6 +498,7 @@ mod tests {
             mcp_servers: Vec::new(),
             toolboxes: Vec::new(),
             max_turns: None,
+            token_budget: None,
             allowed_tools: None,
             model: None,
             session_id: Some("sess-456".into()),
@@ -506,6 +519,7 @@ mod tests {
             mcp_servers: Vec::new(),
             toolboxes: Vec::new(),
             max_turns: None,
+            token_budget: None,
             allowed_tools: None,
             model: None,
             session_id: Some("sess-123".into()),

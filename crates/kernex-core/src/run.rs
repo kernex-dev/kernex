@@ -21,12 +21,32 @@ pub enum ModelTier {
 pub struct RunConfig {
     /// Maximum number of agentic turns before stopping. Default: 50.
     pub max_turns: u32,
+    /// Cumulative billed-token budget for the run. `None` (the default) means
+    /// unlimited. When the loop's accumulated billed tokens reach this value,
+    /// the provider stops before starting another turn and the run resolves to
+    /// [`RunOutcome::BudgetExhausted`]. A completed final answer is always
+    /// returned even if it crosses the budget.
+    pub token_budget: Option<u64>,
 }
 
 impl Default for RunConfig {
     fn default() -> Self {
-        Self { max_turns: 50 }
+        Self {
+            max_turns: 50,
+            token_budget: None,
+        }
     }
+}
+
+/// Returns `true` when `spent` billed tokens have reached or exceeded the
+/// configured `budget`. `None` means unlimited (never exhausted).
+///
+/// Shared by every provider's agentic loop so the budget semantics cannot
+/// drift between providers. "Billed" means input + output + cache-creation
+/// tokens; cache reads are excluded so well-cached loops are not penalized
+/// for the cheap path.
+pub fn budget_exhausted(spent: u64, budget: Option<u64>) -> bool {
+    budget.is_some_and(|b| spent >= b)
 }
 
 /// The terminal outcome of an agentic-loop run.
@@ -42,4 +62,29 @@ pub enum RunOutcome {
     EndTurn(Response),
     /// The run hit the `max_turns` limit before the provider stopped.
     MaxTurns,
+    /// The run's cumulative billed tokens reached `token_budget` before the
+    /// provider produced a final answer.
+    BudgetExhausted,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn budget_none_is_never_exhausted() {
+        assert!(!budget_exhausted(u64::MAX, None));
+    }
+
+    #[test]
+    fn budget_exhausted_at_and_past_limit() {
+        assert!(!budget_exhausted(99, Some(100)));
+        assert!(budget_exhausted(100, Some(100)));
+        assert!(budget_exhausted(101, Some(100)));
+    }
+
+    #[test]
+    fn run_config_default_has_no_budget() {
+        assert_eq!(RunConfig::default().token_budget, None);
+    }
 }
