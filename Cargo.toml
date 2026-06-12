@@ -8,7 +8,7 @@ default-members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
-version = "0.9.0"
+version = "0.10.0"
 edition = "2021"
 # Conservative MSRV. If you need a newer language feature, run
 # `cargo install cargo-msrv && cargo msrv verify` before bumping this so the
@@ -54,15 +54,15 @@ serde_yaml_ng = "0.10"
 tempfile = "3"
 
 # Internal crates
-kernex-core = { version = "0.9.0", path = "crates/kernex-core" }
-kernex-sandbox = { version = "0.9.0", path = "crates/kernex-sandbox" }
-kernex-providers = { version = "0.9.0", path = "crates/kernex-providers" }
-kernex-memory = { version = "0.9.0", path = "crates/kernex-memory" }
-kernex-skills = { version = "0.9.0", path = "crates/kernex-skills" }
-kernex-pipelines = { version = "0.9.0", path = "crates/kernex-pipelines" }
-kernex-runtime = { version = "0.9.0", path = "crates/kernex-runtime" }
-kernex = { version = "0.9.0", path = "crates/kernex" }
-kernex-adapter-core = { version = "0.9.0", path = "crates/kernex-adapter-core" }
+kernex-core = { version = "0.10.0", path = "crates/kernex-core" }
+kernex-sandbox = { version = "0.10.0", path = "crates/kernex-sandbox" }
+kernex-providers = { version = "0.10.0", path = "crates/kernex-providers" }
+kernex-memory = { version = "0.10.0", path = "crates/kernex-memory" }
+kernex-skills = { version = "0.10.0", path = "crates/kernex-skills" }
+kernex-pipelines = { version = "0.10.0", path = "crates/kernex-pipelines" }
+kernex-runtime = { version = "0.10.0", path = "crates/kernex-runtime" }
+kernex = { version = "0.10.0", path = "crates/kernex" }
+kernex-adapter-core = { version = "0.10.0", path = "crates/kernex-adapter-core" }
 kernex-presets = { version = "0.6.0", path = "crates/kernex-presets" }
 kernex-brain = { version = "0.6.0", path = "crates/kernex-brain" }
 
