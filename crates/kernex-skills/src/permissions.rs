@@ -71,17 +71,9 @@ impl Permissions {
     ///   command whose final path segment equals the entry (e.g. `npx`
     ///   permits `/usr/bin/npx`, `/opt/node/bin/npx`, or bare `npx`).
     pub fn allows_command(&self, command: &str) -> bool {
-        if self.commands.is_empty() {
-            return true;
-        }
-        let basename = command.rsplit('/').next().unwrap_or(command);
-        self.commands.iter().any(|allowed| {
-            if allowed.contains('/') {
-                allowed == command
-            } else {
-                allowed == basename
-            }
-        })
+        // Delegates to the shared matcher in kernex-core so the load-time
+        // check here and the executor's run-time check cannot drift apart.
+        kernex_core::context::command_matches_allowlist(&self.commands, command)
     }
 }
 

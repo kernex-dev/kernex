@@ -139,16 +139,25 @@ fn read_capped(path: &Path, max_bytes: u64) -> std::io::Result<String> {
     Ok(buf)
 }
 
-/// Validate an MCP command name contains only safe characters and is not
-/// an arbitrary absolute path supplied by skill metadata.
+/// Bare command names (resolved through `$PATH`) accepted for skill-declared
+/// MCP servers. Real MCP servers launch through a small set of well-known
+/// runners; anything else must be an absolute path under a system prefix.
+/// Keeping this list short is the point: a skill cannot name an arbitrary
+/// binary that happens to be on `$PATH`.
+const MCP_BARE_COMMAND_ALLOWLIST: &[&str] = &[
+    "npx", "uvx", "uv", "node", "python", "python3", "deno", "bun", "docker",
+];
+
+/// Shared command-token validation for skill-declared commands (MCP servers
+/// and toolboxes): safe charset, no traversal, no relative paths, and
+/// absolute paths gated through a system-directory allow-list.
 ///
-/// Allows alphanumeric, hyphens, underscores, dots, and `@` for bare names
-/// resolved through `$PATH` (the typical case: `npx`, `uvx`, `node`). For
-/// absolute paths the prefix must match a small allow-list of system
-/// directories (`/usr/`, `/opt/`, `/bin/`, `/sbin/`); anything pointing
-/// into `/tmp`, `/home`, the data dir, etc. is rejected so a skill that
-/// drops a payload file there cannot ship `command = "/tmp/payload"`.
-fn is_safe_mcp_command(command: &str) -> bool {
+/// Relative paths (a `/` without a leading one) are rejected outright: they
+/// resolve against the working directory, which skill content can often
+/// influence, so `command = "bin/tool"` is a hijack waiting to happen.
+/// Anything pointing into `/tmp`, `/home`, the data dir, etc. is rejected so
+/// a skill that drops a payload file there cannot ship `command = "/tmp/payload"`.
+fn is_safe_command_token(command: &str) -> bool {
     if command.is_empty() {
         return false;
     }
@@ -169,9 +178,59 @@ fn is_safe_mcp_command(command: &str) -> bool {
         const SYSTEM_PREFIXES: &[&str] = &["/usr/", "/opt/", "/bin/", "/sbin/", "/Applications/"];
         return SYSTEM_PREFIXES.iter().any(|p| command.starts_with(p));
     }
-    // Bare name or relative path — let `$PATH` / cwd resolution decide,
-    // and rely on skill trust + sandbox to contain the rest.
-    true
+    // Bare name: fine at this layer; the MCP path additionally requires
+    // membership in MCP_BARE_COMMAND_ALLOWLIST, and toolbox commands are
+    // governed by the skill's declared permissions allow-list.
+    !command.contains('/')
+}
+
+/// Validate an MCP server command: shared token checks plus, for bare
+/// names, membership in [`MCP_BARE_COMMAND_ALLOWLIST`]. Absolute paths
+/// (already gated to system prefixes) pass without the bare-name list.
+fn is_safe_mcp_command(command: &str) -> bool {
+    if !is_safe_command_token(command) {
+        return false;
+    }
+    if command.starts_with('/') {
+        return true;
+    }
+    MCP_BARE_COMMAND_ALLOWLIST.contains(&command)
+}
+
+/// Validate a toolbox command: shared token checks only. Bare names stay
+/// permitted here (toolboxes legitimately run `bash`, `python3`, ...);
+/// the skill's declared `permissions.commands` allow-list is the gate that
+/// constrains WHICH ones, at load time and again at execution time.
+fn is_safe_toolbox_command(command: &str) -> bool {
+    is_safe_command_token(command)
+}
+
+/// Validate a single skill-declared command-line argument. Arguments are
+/// passed as argv (no shell), so the filter targets control characters and
+/// shell metacharacters that could change meaning if a downstream runner
+/// re-interprets the string.
+fn is_safe_command_arg(arg: &str) -> bool {
+    arg.chars().all(|c| {
+        !c.is_control()
+            && !matches!(
+                c,
+                '`' | '$' | ';' | '|' | '&' | '<' | '>' | '"' | '\'' | '\\'
+            )
+    })
+}
+
+/// Validate a skill-declared environment variable pair. Keys must be
+/// identifier-shaped; values must not contain control characters (newline
+/// injection into anything that later serializes the environment).
+fn is_safe_env_pair(key: &str, value: &str) -> bool {
+    let mut chars = key.chars();
+    let key_ok = match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {
+            chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        _ => false,
+    };
+    key_ok && value.chars().all(|c| !c.is_control())
 }
 
 /// A single entry in `mcp.json` under `mcpServers`.
@@ -237,7 +296,13 @@ struct ToolboxJsonFile {
 }
 
 /// Load toolboxes from an optional `toolbox.json` file in a skill directory.
-fn load_toolbox_json(skill_dir: &Path) -> Vec<Toolbox> {
+///
+/// Applies the SAME validation chain as frontmatter toolboxes (command
+/// token safety, the skill's declared `permissions.commands` allow-list,
+/// arg/env validation). toolbox.json entries take precedence over
+/// frontmatter on name collision, so an unvalidated path here would let a
+/// skill override a validated toolbox with an unvetted command.
+fn load_toolbox_json(skill_dir: &Path, permissions: &Permissions) -> Vec<Toolbox> {
     let path = skill_dir.join("toolbox.json");
     let content = match read_capped(&path, MAX_SKILL_FILE_BYTES) {
         Ok(c) => c,
@@ -256,25 +321,53 @@ fn load_toolbox_json(skill_dir: &Path) -> Vec<Toolbox> {
     file.toolboxes
         .into_iter()
         .filter_map(|(name, entry)| {
-            if is_safe_mcp_command(&entry.command) {
-                Some(Toolbox {
-                    name,
-                    description: entry.description,
-                    parameters: entry.parameters,
-                    command: entry.command,
-                    args: entry.args,
-                    env: entry.env,
-                    network: entry.network,
-                    search_hints: Vec::new(),
-                })
-            } else {
+            if !is_safe_toolbox_command(&entry.command) {
                 warn!(
                     "skills: rejected unsafe toolbox command {:?} in {}",
                     entry.command,
                     path.display()
                 );
-                None
+                return None;
             }
+            if !permissions.allows_command(&entry.command) {
+                warn!(
+                    "skills: toolbox command {:?} not in permissions.commands allow-list ({:?}) in {}",
+                    entry.command,
+                    permissions.commands,
+                    path.display()
+                );
+                return None;
+            }
+            if let Some(bad) = entry.args.iter().find(|a| !is_safe_command_arg(a)) {
+                warn!(
+                    "skills: rejected toolbox {:?}: unsafe argument {:?} in {}",
+                    name,
+                    bad,
+                    path.display()
+                );
+                return None;
+            }
+            if let Some((k, _)) = entry.env.iter().find(|(k, v)| !is_safe_env_pair(k, v)) {
+                warn!(
+                    "skills: rejected toolbox {:?}: unsafe env var {:?} in {}",
+                    name,
+                    k,
+                    path.display()
+                );
+                return None;
+            }
+            Some(Toolbox {
+                name,
+                description: entry.description,
+                parameters: entry.parameters,
+                command: entry.command,
+                args: entry.args,
+                env: entry.env,
+                network: entry.network || !permissions.network.is_empty(),
+                env_passthrough: permissions.env.clone(),
+                allowed_commands: permissions.commands.clone(),
+                search_hints: Vec::new(),
+            })
         })
         .collect()
 }
@@ -285,7 +378,7 @@ fn load_toolbox_json(skill_dir: &Path) -> Vec<Toolbox> {
 /// dangerous shell metacharacters. Servers from `mcp.json` are merged
 /// with frontmatter servers — `mcp.json` entries take precedence on
 /// name collision.
-fn load_mcp_json(skill_dir: &Path) -> Vec<McpServer> {
+fn load_mcp_json(skill_dir: &Path, permissions: &Permissions) -> Vec<McpServer> {
     let mcp_path = skill_dir.join("mcp.json");
     let content = match read_capped(&mcp_path, MAX_SKILL_FILE_BYTES) {
         Ok(c) => c,
@@ -301,21 +394,47 @@ fn load_mcp_json(skill_dir: &Path) -> Vec<McpServer> {
     file.mcp_servers
         .into_iter()
         .filter_map(|(name, entry)| {
-            if is_safe_mcp_command(&entry.command) {
-                Some(McpServer {
-                    name,
-                    command: entry.command,
-                    args: entry.args,
-                    env: entry.env,
-                })
-            } else {
+            if !is_safe_mcp_command(&entry.command) {
                 warn!(
                     "skills: rejected unsafe MCP command {:?} in {}",
                     entry.command,
                     mcp_path.display()
                 );
-                None
+                return None;
             }
+            if !permissions.allows_command(&entry.command) {
+                warn!(
+                    "skills: MCP command {:?} not in permissions.commands allow-list ({:?}) in {}",
+                    entry.command,
+                    permissions.commands,
+                    mcp_path.display()
+                );
+                return None;
+            }
+            if let Some(bad) = entry.args.iter().find(|a| !is_safe_command_arg(a)) {
+                warn!(
+                    "skills: rejected MCP server {:?}: unsafe argument {:?} in {}",
+                    name,
+                    bad,
+                    mcp_path.display()
+                );
+                return None;
+            }
+            if let Some((k, _)) = entry.env.iter().find(|(k, v)| !is_safe_env_pair(k, v)) {
+                warn!(
+                    "skills: rejected MCP server {:?}: unsafe env var {:?} in {}",
+                    name,
+                    k,
+                    mcp_path.display()
+                );
+                return None;
+            }
+            Some(McpServer {
+                name,
+                command: entry.command,
+                args: entry.args,
+                env: entry.env,
+            })
         })
         .collect()
 }
@@ -409,6 +528,15 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                     );
                     return None;
                 }
+                if let Some(bad) = mfm.args.iter().find(|a| !is_safe_command_arg(a)) {
+                    warn!(
+                        "skills: rejected MCP server {:?}: unsafe argument {:?} in {}",
+                        name,
+                        bad,
+                        skill_file.display()
+                    );
+                    return None;
+                }
                 Some(McpServer {
                     name,
                     command: mfm.command,
@@ -419,7 +547,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             .collect();
 
         // Merge MCP servers from optional mcp.json (takes precedence on name collision).
-        let json_servers = load_mcp_json(&path);
+        let json_servers = load_mcp_json(&path, &fm.permissions);
         for srv in json_servers {
             if let Some(existing) = mcp_servers.iter_mut().find(|s| s.name == srv.name) {
                 *existing = srv;
@@ -435,7 +563,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
             .toolbox
             .into_iter()
             .filter_map(|(name, tbf)| {
-                if !is_safe_mcp_command(&tbf.command) {
+                if !is_safe_toolbox_command(&tbf.command) {
                     warn!(
                         "skills: rejected unsafe toolbox command {:?} in {}",
                         tbf.command,
@@ -452,6 +580,24 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                     );
                     return None;
                 }
+                if let Some(bad) = tbf.args.iter().find(|a| !is_safe_command_arg(a)) {
+                    warn!(
+                        "skills: rejected toolbox {:?}: unsafe argument {:?} in {}",
+                        name,
+                        bad,
+                        skill_file.display()
+                    );
+                    return None;
+                }
+                if let Some((k, _)) = tbf.env.iter().find(|(k, v)| !is_safe_env_pair(k, v)) {
+                    warn!(
+                        "skills: rejected toolbox {:?}: unsafe env var {:?} in {}",
+                        name,
+                        k,
+                        skill_file.display()
+                    );
+                    return None;
+                }
                 Some(Toolbox {
                     name,
                     description: tbf.description,
@@ -459,14 +605,20 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                     command: tbf.command,
                     args: tbf.args,
                     env: tbf.env,
-                    network: tbf.network,
+                    // A declared network host list is the skill-level grant
+                    // that feeds the per-spawn sandbox opt-in (host-level
+                    // granularity stays declarative; the OS sandbox is
+                    // all-or-nothing).
+                    network: tbf.network || !fm.permissions.network.is_empty(),
+                    env_passthrough: fm.permissions.env.clone(),
+                    allowed_commands: fm.permissions.commands.clone(),
                     search_hints: Vec::new(),
                 })
             })
             .collect();
 
         // Merge toolboxes from optional toolbox.json (takes precedence on name collision).
-        let json_toolboxes = load_toolbox_json(&path);
+        let json_toolboxes = load_toolbox_json(&path, &fm.permissions);
         for tb in json_toolboxes {
             if let Some(existing) = toolboxes.iter_mut().find(|t| t.name == tb.name) {
                 *existing = tb;
@@ -595,6 +747,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
     let mut metadata_line = None;
     let mut lazy = false;
     let mut model: Option<String> = None;
+    let mut permissions = Permissions::default();
 
     for line in block.lines() {
         let line = line.trim();
@@ -610,6 +763,12 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
                 "lazy" => lazy = val == "true" || val == "yes",
                 "model" => model = Some(unquote(val)),
                 "metadata" => metadata_line = Some(val.to_string()),
+                // Dotted-key permission declarations, so YAML skills can be
+                // constrained by the same allow-lists as TOML skills.
+                "permissions.files" => permissions.files = parse_yaml_list(val),
+                "permissions.network" => permissions.network = parse_yaml_list(val),
+                "permissions.env" => permissions.env = parse_yaml_list(val),
+                "permissions.commands" => permissions.commands = parse_yaml_list(val),
                 k if k.starts_with("mcp-") => {
                     let server_name = k.strip_prefix("mcp-").unwrap_or("").to_string();
                     if !server_name.is_empty() && !val.is_empty() {
@@ -643,7 +802,7 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
         trigger,
         mcp,
         toolbox: HashMap::new(),
-        permissions: Permissions::default(),
+        permissions,
         lazy,
         model,
     })
@@ -766,6 +925,8 @@ pub fn skill_search_toolbox() -> Toolbox {
         args: Vec::new(),
         env: std::collections::HashMap::new(),
         network: false,
+        env_passthrough: Vec::new(),
+        allowed_commands: Vec::new(),
         search_hints: vec![
             "tool".to_string(),
             "skill".to_string(),
@@ -780,11 +941,17 @@ mod tests {
     use crate::parse::which_exists;
 
     #[test]
-    fn test_is_safe_mcp_command_allows_bare_names() {
+    fn test_is_safe_mcp_command_allows_known_runners_only() {
+        // Bare names must be on the explicit runner allow-list.
         assert!(is_safe_mcp_command("npx"));
         assert!(is_safe_mcp_command("uvx"));
         assert!(is_safe_mcp_command("node"));
-        assert!(is_safe_mcp_command("@scope/tool"));
+        // Arbitrary bare names resolved via $PATH are rejected.
+        assert!(!is_safe_mcp_command("mcp-server-fetch"));
+        assert!(!is_safe_mcp_command("payload"));
+        // Relative paths resolve against an influenceable cwd: rejected.
+        assert!(!is_safe_mcp_command("@scope/tool"));
+        assert!(!is_safe_mcp_command("bin/tool"));
     }
 
     #[test]
@@ -1243,10 +1410,17 @@ description = \"No trigger or MCP.\"
     #[test]
     fn test_is_safe_mcp_command_valid() {
         assert!(is_safe_mcp_command("npx"));
-        assert!(is_safe_mcp_command("my-tool"));
-        assert!(is_safe_mcp_command("my_tool"));
         assert!(is_safe_mcp_command("/usr/bin/node"));
-        assert!(is_safe_mcp_command("@playwright/mcp"));
+        // Bare names outside the runner allow-list need an absolute path.
+        assert!(!is_safe_mcp_command("my-tool"));
+        assert!(!is_safe_mcp_command("my_tool"));
+        assert!(!is_safe_mcp_command("@playwright/mcp"));
+        // Toolbox commands keep bare-name freedom (their gate is the
+        // skill's declared permissions allow-list, load- and run-time).
+        assert!(is_safe_toolbox_command("my-tool"));
+        assert!(is_safe_toolbox_command("bash"));
+        assert!(!is_safe_toolbox_command("bin/tool"));
+        assert!(!is_safe_toolbox_command("../tool"));
     }
 
     #[test]
@@ -1291,7 +1465,7 @@ Body text.
         )
         .unwrap();
 
-        let servers = load_mcp_json(tmp);
+        let servers = load_mcp_json(tmp, &Permissions::default());
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "playwright");
         assert_eq!(servers[0].command, "npx");
@@ -1309,7 +1483,7 @@ Body text.
         )
         .unwrap();
 
-        let servers = load_mcp_json(tmp);
+        let servers = load_mcp_json(tmp, &Permissions::default());
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "postgres");
         assert_eq!(
@@ -1323,7 +1497,7 @@ Body text.
         let tmp_dir = tempfile::TempDir::new().unwrap();
         let tmp = tmp_dir.path();
 
-        let servers = load_mcp_json(tmp);
+        let servers = load_mcp_json(tmp, &Permissions::default());
         assert!(servers.is_empty());
     }
 
@@ -1333,7 +1507,7 @@ Body text.
         let tmp = tmp_dir.path();
         std::fs::write(tmp.join("mcp.json"), "not valid json").unwrap();
 
-        let servers = load_mcp_json(tmp);
+        let servers = load_mcp_json(tmp, &Permissions::default());
         assert!(servers.is_empty());
     }
 
@@ -1347,7 +1521,7 @@ Body text.
         )
         .unwrap();
 
-        let servers = load_mcp_json(tmp);
+        let servers = load_mcp_json(tmp, &Permissions::default());
         assert!(servers.is_empty());
     }
 
@@ -1361,7 +1535,7 @@ Body text.
         )
         .unwrap();
 
-        let servers = load_mcp_json(tmp);
+        let servers = load_mcp_json(tmp, &Permissions::default());
         assert_eq!(servers.len(), 2);
     }
 
@@ -1501,7 +1675,7 @@ network = true
         )
         .unwrap();
 
-        let toolboxes = load_toolbox_json(tmp);
+        let toolboxes = load_toolbox_json(tmp, &Permissions::default());
         assert_eq!(toolboxes.len(), 1);
         assert!(toolboxes[0].network, "network opt-in lost in json mapping");
     }
@@ -1516,7 +1690,7 @@ network = true
         )
         .unwrap();
 
-        let toolboxes = load_toolbox_json(tmp);
+        let toolboxes = load_toolbox_json(tmp, &Permissions::default());
         assert_eq!(toolboxes.len(), 1);
         assert_eq!(toolboxes[0].name, "lint");
         assert_eq!(toolboxes[0].command, "bash");
@@ -1533,7 +1707,7 @@ network = true
         )
         .unwrap();
 
-        let toolboxes = load_toolbox_json(tmp);
+        let toolboxes = load_toolbox_json(tmp, &Permissions::default());
         assert_eq!(toolboxes.len(), 1);
         assert_eq!(toolboxes[0].env.get("ENV").unwrap(), "prod");
         assert!(toolboxes[0].parameters.get("properties").is_some());
@@ -1543,7 +1717,7 @@ network = true
     fn test_load_toolbox_json_missing_file() {
         let tmp_dir = tempfile::TempDir::new().unwrap();
         let tmp = tmp_dir.path();
-        assert!(load_toolbox_json(tmp).is_empty());
+        assert!(load_toolbox_json(tmp, &Permissions::default()).is_empty());
     }
 
     #[test]
@@ -1556,7 +1730,7 @@ network = true
         )
         .unwrap();
 
-        assert!(load_toolbox_json(tmp).is_empty());
+        assert!(load_toolbox_json(tmp, &Permissions::default()).is_empty());
     }
 
     #[test]
@@ -1635,6 +1809,135 @@ network = true
         assert_eq!(skills[0].toolboxes[0].args, vec!["new"]);
     }
 
+    #[test]
+    fn test_yaml_frontmatter_parses_permissions() {
+        let content = "---\nname: yaml-skill\ndescription: Test.\npermissions.commands: [git, npx]\npermissions.env: [GITHUB_TOKEN]\npermissions.network: [api.github.com]\npermissions.files: [\"read:~/.config/app\"]\n---\n";
+        let fm = parse_skill_file(content).unwrap();
+        assert_eq!(fm.permissions.commands, vec!["git", "npx"]);
+        assert_eq!(fm.permissions.env, vec!["GITHUB_TOKEN"]);
+        assert_eq!(fm.permissions.network, vec!["api.github.com"]);
+        assert_eq!(fm.permissions.files, vec!["read:~/.config/app"]);
+    }
+
+    #[test]
+    fn test_yaml_skill_mcp_gated_by_declared_allowlist() {
+        // YAML/TOML parity: a YAML skill that declares a commands
+        // allow-list has its MCP servers held to it, same as TOML.
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
+        let skill_dir = tmp.join("skills/yaml-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: yaml-skill\ndescription: Test.\npermissions.commands: [node]\nmcp-allowed: node server.js\nmcp-blocked: npx some-server\n---\n",
+        )
+        .unwrap();
+
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        let names: Vec<&str> = skills[0]
+            .mcp_servers
+            .iter()
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(
+            names.contains(&"allowed"),
+            "declared command rejected: {names:?}"
+        );
+        assert!(
+            !names.contains(&"blocked"),
+            "undeclared MCP command escaped the allow-list: {names:?}"
+        );
+    }
+
+    #[test]
+    fn test_toolbox_json_respects_declared_allowlist() {
+        // toolbox.json takes precedence on name collision, so it must be
+        // held to the same allow-list as frontmatter toolboxes.
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
+        let skill_dir = tmp.join("skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname = \"my-skill\"\ndescription = \"Test.\"\n\n[permissions]\ncommands = [\"echo\"]\n\n[toolbox.good]\ndescription = \"Fine.\"\ncommand = \"echo\"\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            skill_dir.join("toolbox.json"),
+            r#"{"toolboxes":{"good":{"description":"Override.","command":"python3"},"extra":{"description":"New.","command":"echo"}}}"#,
+        )
+        .unwrap();
+
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        let tbs = &skills[0].toolboxes;
+        // The python3 override is rejected (undeclared), the validated
+        // frontmatter `echo` survives, and the declared json `extra` loads.
+        let good = tbs.iter().find(|t| t.name == "good").unwrap();
+        assert_eq!(good.command, "echo");
+        assert_eq!(good.description, "Fine.");
+        assert!(tbs.iter().any(|t| t.name == "extra"));
+    }
+
+    #[test]
+    fn test_toolboxes_carry_permission_derived_fields() {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
+        let skill_dir = tmp.join("skills/my-skill");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname = \"my-skill\"\ndescription = \"Test.\"\n\n[permissions]\ncommands = [\"sh\"]\nenv = [\"GITHUB_TOKEN\"]\nnetwork = [\"api.github.com\"]\n\n[toolbox.fetch]\ndescription = \"Fetch.\"\ncommand = \"sh\"\n---\n",
+        )
+        .unwrap();
+
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        let tb = &skills[0].toolboxes[0];
+        assert_eq!(tb.allowed_commands, vec!["sh"]);
+        assert_eq!(tb.env_passthrough, vec!["GITHUB_TOKEN"]);
+        assert!(
+            tb.network,
+            "declared network hosts must set the sandbox opt-in"
+        );
+    }
+
+    #[test]
+    fn test_unsafe_args_and_env_rejected() {
+        assert!(is_safe_command_arg("-y"));
+        assert!(is_safe_command_arg("@modelcontextprotocol/server-fetch"));
+        assert!(is_safe_command_arg("--port=8080"));
+        assert!(!is_safe_command_arg("foo; rm -rf /"));
+        assert!(!is_safe_command_arg("$(curl evil)"));
+        assert!(!is_safe_command_arg("a`b`"));
+        assert!(!is_safe_command_arg("line\nbreak"));
+
+        assert!(is_safe_env_pair("GITHUB_TOKEN", "ghp_abc123"));
+        assert!(is_safe_env_pair("_X", "value with spaces"));
+        assert!(!is_safe_env_pair("1BAD", "v"));
+        assert!(!is_safe_env_pair("BAD-KEY", "v"));
+        assert!(!is_safe_env_pair("OK", "line\nbreak"));
+    }
+
+    #[test]
+    fn test_mcp_json_respects_declared_allowlist() {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
+        let perms = Permissions {
+            commands: vec!["node".into()],
+            ..Default::default()
+        };
+        std::fs::write(
+            tmp.join("mcp.json"),
+            r#"{"mcpServers":{"ok":{"command":"node","args":["s.js"]},"bad":{"command":"npx","args":["x"]}}}"#,
+        )
+        .unwrap();
+        let servers = load_mcp_json(tmp, &perms);
+        assert_eq!(servers.len(), 1);
+        assert_eq!(servers[0].name, "ok");
+    }
+
     fn make_toolbox(name: &str) -> Toolbox {
         Toolbox {
             name: name.into(),
@@ -1644,6 +1947,8 @@ network = true
             args: Vec::new(),
             env: HashMap::new(),
             network: false,
+            env_passthrough: Vec::new(),
+            allowed_commands: Vec::new(),
             search_hints: Vec::new(),
         }
     }
