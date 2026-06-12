@@ -2671,3 +2671,206 @@ async fn migration_018_applies_idempotently() {
         .unwrap();
     assert_eq!(count.0, 0);
 }
+
+/// Create a file-backed store so a second pool can open the same database
+/// (in-memory SQLite is per-connection, so it cannot model two concurrent
+/// claimers). Returns the store and the TempDir guard keeping the file alive.
+async fn file_store() -> (Store, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let db_path = dir.path().join("claims.db");
+    let store = open_store_at(&db_path).await;
+    (store, dir)
+}
+
+async fn open_store_at(db_path: &std::path::Path) -> Store {
+    let opts = SqliteConnectOptions::from_str(&format!("sqlite://{}", db_path.display()))
+        .unwrap()
+        .create_if_missing(true);
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(opts)
+        .await
+        .unwrap();
+    Store::run_migrations(&pool).await.unwrap();
+    Store {
+        pool,
+        max_context_messages: 10,
+    }
+}
+
+#[tokio::test]
+async fn test_claim_due_tasks_hands_each_task_to_exactly_one_claimer() {
+    let (store_a, dir) = file_store().await;
+    let store_b = open_store_at(&dir.path().join("claims.db")).await;
+
+    store_a
+        .create_task(
+            "cron",
+            "user1",
+            "cli",
+            "claimed exactly once",
+            "2020-01-01 00:00:00",
+            None,
+            "scheduled",
+            "proj",
+        )
+        .await
+        .unwrap();
+
+    // Two real concurrent claimers against the same database file.
+    let (a, b) = tokio::join!(store_a.claim_due_tasks(), store_b.claim_due_tasks());
+    let total = a.unwrap().len() + b.unwrap().len();
+    assert_eq!(total, 1, "exactly one claimer must win the due task");
+
+    // The task is claimed: a further round sees nothing.
+    assert!(store_a.claim_due_tasks().await.unwrap().is_empty());
+    assert!(store_b.claim_due_tasks().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn test_stale_claim_is_reclaimed() {
+    let store = test_store().await;
+    let id = store
+        .create_task(
+            "cron",
+            "user1",
+            "cli",
+            "abandoned by a dead claimer",
+            "2020-01-01 00:00:00",
+            None,
+            "scheduled",
+            "proj",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(store.claim_due_tasks().await.unwrap().len(), 1);
+    assert!(store.claim_due_tasks().await.unwrap().is_empty());
+
+    // Backdate the claim past the staleness window: the task becomes
+    // reclaimable, modeling a claimer that died mid-run.
+    sqlx::query(
+        "UPDATE scheduled_tasks SET claimed_at = datetime('now', '-11 minutes') WHERE id = ?",
+    )
+    .bind(&id)
+    .execute(&store.pool)
+    .await
+    .unwrap();
+
+    let reclaimed = store.claim_due_tasks().await.unwrap();
+    assert_eq!(reclaimed.len(), 1);
+    assert_eq!(reclaimed[0].id, id);
+}
+
+#[tokio::test]
+async fn test_complete_recurring_releases_claim_into_pending() {
+    let store = test_store().await;
+    let id = store
+        .create_task(
+            "cron",
+            "user1",
+            "cli",
+            "recurring claim release",
+            "2020-01-01 00:00:00",
+            Some("daily"),
+            "scheduled",
+            "proj",
+        )
+        .await
+        .unwrap();
+
+    let claimed = store.claim_due_tasks().await.unwrap();
+    assert_eq!(claimed.len(), 1);
+
+    store.complete_task(&id, Some("daily")).await.unwrap();
+
+    let (status, claimed_at): (String, Option<String>) =
+        sqlx::query_as("SELECT status, claimed_at FROM scheduled_tasks WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "pending");
+    assert!(claimed_at.is_none());
+}
+
+#[tokio::test]
+async fn test_fail_task_retry_releases_claim_into_pending() {
+    let store = test_store().await;
+    let id = store
+        .create_task(
+            "cron",
+            "user1",
+            "cli",
+            "failing claim release",
+            "2020-01-01 00:00:00",
+            None,
+            "scheduled",
+            "proj",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(store.claim_due_tasks().await.unwrap().len(), 1);
+    let will_retry = store.fail_task(&id, "boom", 3).await.unwrap();
+    assert!(will_retry);
+
+    let (status, claimed_at): (String, Option<String>) =
+        sqlx::query_as("SELECT status, claimed_at FROM scheduled_tasks WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+    assert_eq!(status, "pending");
+    assert!(claimed_at.is_none());
+}
+
+#[tokio::test]
+async fn test_record_and_list_task_runs() {
+    let store = test_store().await;
+    let task_id = "0123456789abcdef";
+
+    store
+        .record_task_run(
+            task_id,
+            "2026-06-12 10:00:00",
+            "completed",
+            Some("first result"),
+            None,
+            Some(1234),
+        )
+        .await
+        .unwrap();
+    store
+        .record_task_run(
+            task_id,
+            "2026-06-12 11:00:00",
+            "failed",
+            None,
+            Some("provider exploded"),
+            None,
+        )
+        .await
+        .unwrap();
+
+    // Prefix lookup, newest first.
+    let runs = store.list_task_runs("01234567", 10).await.unwrap();
+    assert_eq!(runs.len(), 2);
+    assert_eq!(runs[0].status, "failed");
+    assert_eq!(runs[0].error.as_deref(), Some("provider exploded"));
+    assert_eq!(runs[1].status, "completed");
+    assert_eq!(runs[1].result.as_deref(), Some("first result"));
+    assert_eq!(runs[1].tokens_used, Some(1234));
+
+    // Limit caps the result set.
+    assert_eq!(store.list_task_runs(task_id, 1).await.unwrap().len(), 1);
+
+    // Unknown prefix yields nothing.
+    assert!(store.list_task_runs("ffff", 10).await.unwrap().is_empty());
+
+    // The DB CHECK rejects an invalid status value.
+    assert!(store
+        .record_task_run(task_id, "2026-06-12 12:00:00", "bogus", None, None, None)
+        .await
+        .is_err());
+}

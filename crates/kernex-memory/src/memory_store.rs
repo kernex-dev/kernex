@@ -21,7 +21,7 @@ use async_trait::async_trait;
 
 use crate::error::MemoryError;
 use crate::observation::{Observation, ObservationType, SaveEntry};
-use crate::store::{DueTask, Store, UsageSummary};
+use crate::store::{DueTask, Store, TaskRunRecord, UsageSummary};
 use crate::types::{HistoryRow, MessageRow};
 
 /// Public trait surface over [`Store`].
@@ -201,6 +201,36 @@ pub trait MemoryStore: Send + Sync {
 
     /// All pending tasks whose `due_at` is in the past.
     async fn get_due_tasks(&self) -> Result<Vec<DueTask>, MemoryError>;
+
+    /// Atomically claim every due task (status 'pending' -> 'claimed' in a
+    /// single statement) and return the claimed rows. When several pollers
+    /// share a store, each due task is handed to exactly one of them; a
+    /// claim abandoned by a dead claimer becomes reclaimable after a
+    /// timeout. The claim is released by `complete_task` (recurring tasks
+    /// return to 'pending' at the next due time) or `fail_task` (retries
+    /// return to 'pending').
+    async fn claim_due_tasks(&self) -> Result<Vec<DueTask>, MemoryError>;
+
+    /// Record one execution of a scheduled task. `status` must be
+    /// `"completed"` or `"failed"`. Returns the new run id.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_task_run(
+        &self,
+        task_id: &str,
+        started_at: &str,
+        status: &str,
+        result: Option<&str>,
+        error: Option<&str>,
+        tokens_used: Option<u64>,
+    ) -> Result<String, MemoryError>;
+
+    /// Recorded runs for tasks whose id starts with `task_id_prefix`,
+    /// newest first, capped at `limit`.
+    async fn list_task_runs(
+        &self,
+        task_id_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<TaskRunRecord>, MemoryError>;
 }
 
 #[async_trait]
@@ -370,6 +400,39 @@ impl MemoryStore for Store {
 
     async fn get_due_tasks(&self) -> Result<Vec<DueTask>, MemoryError> {
         Store::get_due_tasks(self).await
+    }
+
+    async fn claim_due_tasks(&self) -> Result<Vec<DueTask>, MemoryError> {
+        Store::claim_due_tasks(self).await
+    }
+
+    async fn record_task_run(
+        &self,
+        task_id: &str,
+        started_at: &str,
+        status: &str,
+        result: Option<&str>,
+        error: Option<&str>,
+        tokens_used: Option<u64>,
+    ) -> Result<String, MemoryError> {
+        Store::record_task_run(
+            self,
+            task_id,
+            started_at,
+            status,
+            result,
+            error,
+            tokens_used,
+        )
+        .await
+    }
+
+    async fn list_task_runs(
+        &self,
+        task_id_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<TaskRunRecord>, MemoryError> {
+        Store::list_task_runs(self, task_id_prefix, limit).await
     }
 }
 
