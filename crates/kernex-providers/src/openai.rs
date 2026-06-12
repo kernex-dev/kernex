@@ -202,6 +202,7 @@ pub(crate) async fn openai_agentic_complete(
     api_messages: &[ApiMessage],
     executor: &mut ToolExecutor,
     max_turns: u32,
+    token_budget: Option<u64>,
     provider_name: &str,
 ) -> Result<Response, KernexError> {
     let start = Instant::now();
@@ -297,6 +298,23 @@ pub(crate) async fn openai_agentic_complete(
                     });
                 }
 
+                // Stop before starting another turn once the billed spend has
+                // reached the caller's budget. A final text answer below would
+                // already have returned, so nothing completed is ever
+                // discarded here.
+                if kernex_core::run::budget_exhausted(total_tokens, token_budget) {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    let mut resp = build_response(
+                        String::new(),
+                        provider_name,
+                        total_tokens,
+                        elapsed_ms,
+                        last_model,
+                    );
+                    resp.metadata.stop_reason = Some("budget_exhausted".to_string());
+                    return Ok(resp);
+                }
+
                 continue; // Next turn.
             }
         }
@@ -370,6 +388,7 @@ impl Provider for OpenAiProvider {
                     &api_messages,
                     &mut executor,
                     max_turns,
+                    context.token_budget,
                     name,
                 )
                 .await;

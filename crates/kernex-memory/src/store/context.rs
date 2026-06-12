@@ -297,6 +297,7 @@ impl Store {
             mcp_servers: Vec::new(),
             toolboxes: Vec::new(),
             max_turns: None,
+            token_budget: None,
             allowed_tools: None,
             model: None,
             session_id: None,

@@ -105,6 +105,7 @@ impl Provider for OpenRouterProvider {
                     &api_messages,
                     &mut executor,
                     max_turns,
+                    context.token_budget,
                     "openrouter",
                 )
                 .await;

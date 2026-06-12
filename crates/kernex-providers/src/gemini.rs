@@ -272,6 +272,7 @@ impl Provider for GeminiProvider {
                         &api_messages,
                         &mut executor,
                         max_turns,
+                        context.token_budget,
                     )
                     .await;
 
@@ -376,6 +377,7 @@ impl Provider for GeminiProvider {
 
 impl GeminiProvider {
     /// Gemini-specific agentic loop using functionCall/functionResponse.
+    #[allow(clippy::too_many_arguments)]
     async fn agentic_loop(
         &self,
         model: &str,
@@ -383,6 +385,7 @@ impl GeminiProvider {
         api_messages: &[kernex_core::context::ApiMessage],
         executor: &mut ToolExecutor,
         max_turns: u32,
+        token_budget: Option<u64>,
     ) -> Result<Response, KernexError> {
         let start = Instant::now();
 
@@ -499,6 +502,23 @@ impl GeminiProvider {
                     role: Some("user".to_string()),
                     parts: response_parts,
                 });
+
+                // Stop before starting another turn once the billed spend has
+                // reached the caller's budget. A final text answer below would
+                // already have returned, so nothing completed is ever
+                // discarded here.
+                if kernex_core::run::budget_exhausted(total_tokens, token_budget) {
+                    let elapsed_ms = start.elapsed().as_millis() as u64;
+                    let mut resp = build_response(
+                        String::new(),
+                        "gemini",
+                        total_tokens,
+                        elapsed_ms,
+                        Some(model.to_string()),
+                    );
+                    resp.metadata.stop_reason = Some("budget_exhausted".to_string());
+                    return Ok(resp);
+                }
 
                 continue;
             }

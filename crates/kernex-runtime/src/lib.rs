@@ -589,8 +589,9 @@ impl Runtime {
             context.toolboxes = toolboxes;
         }
 
-        // Set max_turns, hooks, and permission rules.
+        // Set max_turns, token budget, hooks, and permission rules.
         context.max_turns = Some(config.max_turns);
+        context.token_budget = config.token_budget;
         context.hook_runner = Some(self.hook_runner.clone());
         context.permission_rules = self.permission_rules.clone();
 
@@ -637,6 +638,13 @@ impl Runtime {
         // empty/synthetic exchange or firing `on_stop` with a non-answer.
         if response.metadata.stop_reason.as_deref() == Some("max_turns") {
             return Ok(RunOutcome::MaxTurns);
+        }
+
+        // Token-budget exhaustion: same discipline as max_turns — usage was
+        // recorded above, but the non-answer is neither persisted nor handed
+        // to `on_stop`.
+        if response.metadata.stop_reason.as_deref() == Some("budget_exhausted") {
+            return Ok(RunOutcome::BudgetExhausted);
         }
 
         // Fire on_stop hook.
@@ -1133,6 +1141,15 @@ db_path = "{escaped}/memory.db"
         assert!(
             matches!(outcome, RunOutcome::MaxTurns),
             "max_turns stop_reason should yield RunOutcome::MaxTurns, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_maps_budget_exhausted_stop_reason_to_budget_outcome() {
+        let outcome = run_with_stop_reason(Some("budget_exhausted")).await;
+        assert!(
+            matches!(outcome, RunOutcome::BudgetExhausted),
+            "budget_exhausted stop_reason should yield RunOutcome::BudgetExhausted, got {outcome:?}"
         );
     }
 
