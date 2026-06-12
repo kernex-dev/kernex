@@ -22,7 +22,7 @@ mod usage;
 
 pub use checkpoints::PhaseCheckpoint;
 pub use context::{detect_language, format_user_profile};
-pub use tasks::DueTask;
+pub use tasks::{DueTask, TaskRunRecord};
 pub use usage::{UsageBreakdown, UsageSummary};
 
 use crate::error::MemoryError;
@@ -290,6 +290,10 @@ impl Store {
             (
                 "018_observations",
                 include_str!("../../migrations/018_observations.sql"),
+            ),
+            (
+                "019_task_runs",
+                include_str!("../../migrations/019_task_runs.sql"),
             ),
         ];
 

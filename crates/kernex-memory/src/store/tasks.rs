@@ -16,6 +16,27 @@ pub struct DueTask {
     pub project: String,
 }
 
+/// One recorded execution of a scheduled task.
+#[derive(Debug, Clone)]
+pub struct TaskRunRecord {
+    pub id: String,
+    pub task_id: String,
+    pub started_at: String,
+    pub finished_at: String,
+    /// `"completed"` or `"failed"` (enforced by a DB CHECK).
+    pub status: String,
+    /// Response text on success.
+    pub result: Option<String>,
+    /// Error text on failure.
+    pub error: Option<String>,
+    /// Billed tokens for the run, when the provider reported a count.
+    pub tokens_used: Option<i64>,
+}
+
+/// A claim older than this is considered abandoned (the claimer died
+/// mid-run) and becomes reclaimable by the next poller.
+const CLAIM_STALE_MINUTES: u32 = 10;
+
 impl Store {
     /// Create a scheduled task. Deduplicates on two levels:
     /// 1. Exact match: same sender + description + normalized due_at.
@@ -143,6 +164,144 @@ impl Store {
             .collect())
     }
 
+    /// Atomically claim every task that is due: status flips
+    /// 'pending' -> 'claimed' and the claimed rows are returned in the same
+    /// statement, so when several pollers (an HTTP server, an open REPL, a
+    /// one-shot drain) share a store, each due task is handed to exactly one
+    /// of them. Claims left behind by a dead claimer become reclaimable
+    /// after [`CLAIM_STALE_MINUTES`].
+    ///
+    /// The claim is released by [`Store::complete_task`] (recurring tasks
+    /// return to 'pending' at the next due time) or [`Store::fail_task`]
+    /// (retries return to 'pending').
+    pub async fn claim_due_tasks(&self) -> Result<Vec<DueTask>, MemoryError> {
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+        )> = sqlx::query_as(
+            "UPDATE scheduled_tasks \
+             SET status = 'claimed', claimed_at = datetime('now') \
+             WHERE (status = 'pending' AND datetime(due_at) <= datetime('now')) \
+                OR (status = 'claimed' AND datetime(claimed_at) <= datetime('now', ?)) \
+             RETURNING id, channel, sender_id, reply_target, description, repeat, task_type, project",
+        )
+        .bind(format!("-{CLAIM_STALE_MINUTES} minutes"))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| MemoryError::sqlite("claim due tasks failed", e))?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(
+                    id,
+                    channel,
+                    sender_id,
+                    reply_target,
+                    description,
+                    repeat,
+                    task_type,
+                    project,
+                )| {
+                    DueTask {
+                        id,
+                        channel,
+                        sender_id,
+                        reply_target,
+                        description,
+                        repeat,
+                        task_type,
+                        project,
+                    }
+                },
+            )
+            .collect())
+    }
+
+    /// Record one execution of a scheduled task. `status` must be
+    /// `"completed"` or `"failed"` (DB CHECK); `finished_at` is stamped
+    /// server-side. Returns the new run id.
+    pub async fn record_task_run(
+        &self,
+        task_id: &str,
+        started_at: &str,
+        status: &str,
+        result: Option<&str>,
+        error: Option<&str>,
+        tokens_used: Option<u64>,
+    ) -> Result<String, MemoryError> {
+        let id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO task_runs (id, task_id, started_at, status, result, error, tokens_used) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&id)
+        .bind(task_id)
+        .bind(started_at)
+        .bind(status)
+        .bind(result)
+        .bind(error)
+        .bind(tokens_used.map(|t| t as i64))
+        .execute(&self.pool)
+        .await
+        .map_err(|e| MemoryError::sqlite("record task run failed", e))?;
+        Ok(id)
+    }
+
+    /// Recorded runs for tasks whose id starts with `task_id_prefix`,
+    /// newest first, capped at `limit`.
+    pub async fn list_task_runs(
+        &self,
+        task_id_prefix: &str,
+        limit: u32,
+    ) -> Result<Vec<TaskRunRecord>, MemoryError> {
+        #[allow(clippy::type_complexity)]
+        let rows: Vec<(
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        )> = sqlx::query_as(
+            "SELECT id, task_id, started_at, finished_at, status, result, error, tokens_used \
+             FROM task_runs WHERE task_id LIKE ? \
+             ORDER BY started_at DESC LIMIT ?",
+        )
+        .bind(format!("{task_id_prefix}%"))
+        .bind(i64::from(limit))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| MemoryError::sqlite("list task runs failed", e))?;
+
+        Ok(rows
+            .into_iter()
+            .map(
+                |(id, task_id, started_at, finished_at, status, result, error, tokens_used)| {
+                    TaskRunRecord {
+                        id,
+                        task_id,
+                        started_at,
+                        finished_at,
+                        status,
+                        result,
+                        error,
+                        tokens_used,
+                    }
+                },
+            )
+            .collect())
+    }
+
     /// Complete a task: one-shot tasks become 'delivered', recurring tasks advance due_at.
     pub async fn complete_task(&self, id: &str, repeat: Option<&str>) -> Result<(), MemoryError> {
         match repeat {
@@ -163,12 +322,18 @@ impl Store {
                     _ => "+1 day",
                 };
 
-                sqlx::query("UPDATE scheduled_tasks SET due_at = datetime(due_at, ?) WHERE id = ?")
-                    .bind(offset)
-                    .bind(id)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| MemoryError::sqlite("advance task failed", e))?;
+                // Advancing a recurring task also releases any claim so the
+                // next occurrence is visible to pollers again.
+                sqlx::query(
+                    "UPDATE scheduled_tasks \
+                     SET due_at = datetime(due_at, ?), status = 'pending', claimed_at = NULL \
+                     WHERE id = ?",
+                )
+                .bind(offset)
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(|e| MemoryError::sqlite("advance task failed", e))?;
 
                 if interval == "weekdays" {
                     sqlx::query(
@@ -214,10 +379,13 @@ impl Store {
         let new_count = current_count + 1;
 
         if new_count < max_retries {
+            // The retry also releases any claim so the rescheduled attempt
+            // is visible to pollers again.
             sqlx::query(
                 "UPDATE scheduled_tasks \
                  SET retry_count = ?, last_error = ?, \
-                     due_at = datetime('now', '+2 minutes') \
+                     due_at = datetime('now', '+2 minutes'), \
+                     status = 'pending', claimed_at = NULL \
                  WHERE id = ?",
             )
             .bind(new_count as i64)
