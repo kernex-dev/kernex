@@ -20,11 +20,32 @@
 //!
 //! [`protected_command`] is best-effort and never fails: when the host
 //! cannot apply OS-level enforcement it returns an unsandboxed command
-//! and logs a warning. For deployments where running unsandboxed is
-//! unacceptable, set `SandboxProfile::require_os_enforcement = true` and
-//! call [`try_protected_command`] instead, which surfaces an
+//! after emitting a once-per-process stderr warning. For deployments where
+//! running unsandboxed is unacceptable, set
+//! `SandboxProfile::require_os_enforcement = true` (or export
+//! `KERNEX_REQUIRE_SANDBOX=1`, which applies process-wide without code
+//! changes) and call [`try_protected_command`] instead, which surfaces an
 //! [`std::io::Error`] when enforcement is unavailable. [`os_enforcement_available`]
 //! reports the host's capability without building a command.
+//!
+//! The fail-open fallback is the 0.x default; kernex 1.0 flips the library
+//! default to fail-closed (`require_os_enforcement = true`). Embedders that
+//! need today's lenient behaviour at 1.0 will have to opt out explicitly.
+//!
+//! ## Platform enforcement notes
+//!
+//! - **macOS**: enforcement relies on `/usr/bin/sandbox-exec`, which Apple
+//!   documents as deprecated but still ships and uses in its own tooling.
+//!   There is no supported third-party replacement API. If a future macOS
+//!   release removes it, [`os_enforcement_available`] returns `false` and
+//!   the fail-mode policy above applies.
+//! - **Linux**: Landlock enforcement depth depends on the kernel ABI
+//!   (5.13 minimum; 6.7+ adds TCP restrictions; 6.12+ for ABI v5). On
+//!   kernels between 5.13 and 6.11 some access rights cannot be enforced
+//!   and the sandbox degrades to what the kernel supports; the ruleset
+//!   status is logged at spawn time but is not observable programmatically
+//!   by callers. [`os_enforcement_available`] reports Landlock presence,
+//!   not enforcement depth.
 //!
 //! Also provides [`is_write_blocked`] and [`is_read_blocked`] for code-level
 //! enforcement in tool executors (protects memory.db and config.toml on all
@@ -47,10 +68,86 @@ pub struct SandboxProfile {
     /// enforcement is unavailable (no Seatbelt on macOS, no Landlock kernel
     /// support on Linux, or an unsupported platform). Defaults to `false`,
     /// which preserves the historical fail-open behaviour of
-    /// [`protected_command`]: a warning is logged and a plain command is
-    /// returned. Set this to `true` for security-sensitive deployments where
-    /// running unsandboxed is unacceptable.
+    /// [`protected_command`]: a once-per-process stderr warning is emitted
+    /// and a plain command is returned. Set this to `true` for
+    /// security-sensitive deployments where running unsandboxed is
+    /// unacceptable, or export [`REQUIRE_SANDBOX_ENV`] to get the same
+    /// effect process-wide without touching code.
+    ///
+    /// The default flips to `true` in kernex 1.0.
     pub require_os_enforcement: bool,
+}
+
+/// Environment variable that requires OS-level sandbox enforcement
+/// process-wide, equivalent to setting
+/// [`SandboxProfile::require_os_enforcement`] on every profile.
+///
+/// Any value other than empty, `0`, or `false` (case-insensitive) counts as
+/// set. Honoured by [`try_protected_command`] and by every caller that
+/// routes through [`enforcement_required`]. [`protected_command`] is
+/// infallible by signature and cannot honour it; strict deployments must use
+/// [`try_protected_command`].
+pub const REQUIRE_SANDBOX_ENV: &str = "KERNEX_REQUIRE_SANDBOX";
+
+/// Returns `true` when OS-level sandbox enforcement is required, either by
+/// the profile flag or by the [`REQUIRE_SANDBOX_ENV`] environment variable.
+pub fn enforcement_required(profile: &SandboxProfile) -> bool {
+    profile.require_os_enforcement || env_requires_sandbox()
+}
+
+fn env_requires_sandbox() -> bool {
+    match std::env::var(REQUIRE_SANDBOX_ENV) {
+        Ok(v) => {
+            let v = v.trim();
+            !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
+        }
+        Err(_) => false,
+    }
+}
+
+static UNSANDBOXED_WARNING_EMITTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Emit the unsandboxed-fallback warning, once per process. Returns `true`
+/// when this call emitted it (used by tests; later calls are no-ops).
+///
+/// Deliberately written to stderr in addition to `tracing`: embedders that
+/// never install a tracing subscriber must still see it.
+fn warn_unsandboxed_once() -> bool {
+    if UNSANDBOXED_WARNING_EMITTED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    eprintln!(
+        "kernex-sandbox: WARNING: OS-level sandbox enforcement is unavailable on this host; \
+         subprocesses run UNSANDBOXED (code-level path checks remain). \
+         Set {REQUIRE_SANDBOX_ENV}=1 or SandboxProfile::require_os_enforcement to refuse \
+         spawning instead. This fail-open fallback becomes fail-closed in kernex 1.0."
+    );
+    tracing::warn!(
+        "OS-level sandbox enforcement unavailable; subprocesses run unsandboxed \
+         (set {REQUIRE_SANDBOX_ENV}=1 to refuse)"
+    );
+    true
+}
+
+/// Shared fail-mode gate: error when enforcement is required but the host
+/// cannot provide it; warn once per process when falling back unsandboxed.
+fn check_enforcement(available: bool, profile: &SandboxProfile) -> std::io::Result<()> {
+    if available {
+        return Ok(());
+    }
+    if enforcement_required(profile) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            format!(
+                "OS-level sandbox enforcement is required \
+                 (SandboxProfile::require_os_enforcement or {REQUIRE_SANDBOX_ENV}=1) \
+                 but unavailable on this host"
+            ),
+        ));
+    }
+    warn_unsandboxed_once();
+    Ok(())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -67,15 +164,19 @@ mod landlock_sandbox;
 /// Blocks writes to dangerous system directories and the runtime's core
 /// data directory (memory.db). On platforms without OS-level enforcement
 /// (no `/usr/bin/sandbox-exec`, no Landlock kernel support, Windows, etc.)
-/// this falls back to a plain command with a warning, preserving the
-/// historical fail-open behaviour. For deployments where running
-/// unsandboxed is unacceptable, set `profile.require_os_enforcement = true`
-/// and use [`try_protected_command`].
+/// this falls back to a plain command after a once-per-process stderr
+/// warning, preserving the historical fail-open behaviour. This function is
+/// infallible by signature and therefore cannot honour
+/// [`REQUIRE_SANDBOX_ENV`] or `require_os_enforcement`; deployments where
+/// running unsandboxed is unacceptable must use [`try_protected_command`].
 ///
 /// `data_dir` is the runtime data directory (e.g. `~/.kernex/`). Writes to
 /// `{data_dir}/data/` are blocked (protects memory.db). All other paths
 /// under `data_dir` (workspace, skills, projects) remain writable.
 pub fn protected_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
+    if !os_enforcement_available() {
+        warn_unsandboxed_once();
+    }
     let mut cmd = platform_command(program, data_dir, profile);
     hardened_env(&mut cmd);
     cmd
@@ -209,21 +310,17 @@ pub(crate) fn resolved_home() -> PathBuf {
 /// Strict variant of [`protected_command`].
 ///
 /// Returns an [`io::Error`](std::io::Error) of kind [`Unsupported`](std::io::ErrorKind::Unsupported)
-/// when the host cannot apply OS-level enforcement *and*
-/// `profile.require_os_enforcement` is `true`. When the flag is `false`
-/// this behaves identically to [`protected_command`] and always returns
-/// `Ok(Command)`.
+/// when the host cannot apply OS-level enforcement *and* enforcement is
+/// required, either via `profile.require_os_enforcement` or the
+/// [`REQUIRE_SANDBOX_ENV`] environment variable. When enforcement is not
+/// required this behaves identically to [`protected_command`] (warns once
+/// per process and falls back) and always returns `Ok(Command)`.
 pub fn try_protected_command(
     program: &str,
     data_dir: &Path,
     profile: &SandboxProfile,
 ) -> std::io::Result<Command> {
-    if profile.require_os_enforcement && !os_enforcement_available() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            "OS-level sandbox enforcement is required but unavailable on this host",
-        ));
-    }
+    check_enforcement(os_enforcement_available(), profile)?;
     let mut cmd = platform_command(program, data_dir, profile);
     hardened_env(&mut cmd);
     Ok(cmd)
@@ -645,6 +742,86 @@ mod tests {
         } else {
             let err = result.expect_err("expected Err on a host without enforcement");
             assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        }
+    }
+
+    #[test]
+    fn test_enforcement_required_profile_flag() {
+        let lenient = SandboxProfile::default();
+        let strict = SandboxProfile {
+            require_os_enforcement: true,
+            ..Default::default()
+        };
+        // The env var may be set in the developer's shell; only assert the
+        // cases that are deterministic regardless of it.
+        assert!(enforcement_required(&strict));
+        if std::env::var_os(REQUIRE_SANDBOX_ENV).is_none() {
+            assert!(!enforcement_required(&lenient));
+        }
+    }
+
+    #[test]
+    fn test_env_requires_sandbox_value_parsing() {
+        // Exercises the value parser via a save/restore cycle. Runs in one
+        // test to avoid interleaving env mutation across parallel tests.
+        let saved = std::env::var_os(REQUIRE_SANDBOX_ENV);
+
+        std::env::set_var(REQUIRE_SANDBOX_ENV, "1");
+        assert!(env_requires_sandbox());
+        std::env::set_var(REQUIRE_SANDBOX_ENV, "true");
+        assert!(env_requires_sandbox());
+        std::env::set_var(REQUIRE_SANDBOX_ENV, "0");
+        assert!(!env_requires_sandbox());
+        std::env::set_var(REQUIRE_SANDBOX_ENV, "false");
+        assert!(!env_requires_sandbox());
+        std::env::set_var(REQUIRE_SANDBOX_ENV, "");
+        assert!(!env_requires_sandbox());
+        std::env::remove_var(REQUIRE_SANDBOX_ENV);
+        assert!(!env_requires_sandbox());
+
+        if let Some(v) = saved {
+            std::env::set_var(REQUIRE_SANDBOX_ENV, v);
+        }
+    }
+
+    #[test]
+    fn test_check_enforcement_fail_modes() {
+        let lenient = SandboxProfile::default();
+        let strict = SandboxProfile {
+            require_os_enforcement: true,
+            ..Default::default()
+        };
+
+        // Enforcement available: always Ok, strict or not.
+        assert!(check_enforcement(true, &lenient).is_ok());
+        assert!(check_enforcement(true, &strict).is_ok());
+
+        // Unavailable + required: refuse with ErrorKind::Unsupported.
+        let err = check_enforcement(false, &strict).expect_err("strict must refuse");
+        assert_eq!(err.kind(), std::io::ErrorKind::Unsupported);
+        assert!(
+            err.to_string().contains(REQUIRE_SANDBOX_ENV),
+            "refusal message must name the env-var escape hatch"
+        );
+
+        // Unavailable + not required: fall back Ok (warns once per process)
+        // unless the developer's shell exports the env var.
+        if std::env::var_os(REQUIRE_SANDBOX_ENV).is_none() {
+            assert!(check_enforcement(false, &lenient).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_warn_unsandboxed_emits_once_per_process() {
+        // First call in the process may or may not have happened already
+        // (other tests hit the fallback path); what must hold is that after
+        // one emission every subsequent call is a no-op.
+        let first = warn_unsandboxed_once();
+        let second = warn_unsandboxed_once();
+        if first {
+            assert!(!second, "warning emitted twice in one process");
+        } else {
+            assert!(!second, "warning re-emitted after a prior emission");
         }
     }
 
