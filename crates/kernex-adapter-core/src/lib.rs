@@ -80,7 +80,7 @@ impl Detection {
     /// `<cwd>/AGENTS.md` (project); Cursor writes `~/.cursor/mcp.json`
     /// (home) plus `<cwd>/.cursorrules` (project). The Stage 5 APPLY
     /// sandbox check accepts writes inside EITHER `config_root` OR
-    /// `project_root` per Phase F SDD ADR-001 (RESOLVED 2026-05-19).
+    /// `project_root`.
     pub fn with_project_root(
         installed: bool,
         config_root: Option<std::path::PathBuf>,
