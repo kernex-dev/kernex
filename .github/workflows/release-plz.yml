@@ -79,7 +79,7 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
 
       - name: Run release-plz (release-pr + release)
-        uses: release-plz/action@064f4d1e36c843611ddf013be726beaa4ad804db # v0.5.129
+        uses: release-plz/action@e8792575c7f2366cf6ff3ccc33ead9ace5b691c7 # v0.5.130
         # No `command:` override: runs both `release-pr` (opens / updates the
         # draft Release PR) and `release` (creates the v* tag once a Release
         # PR has merged and Cargo.toml > last tag). The tag push then fires
