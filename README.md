@@ -119,9 +119,9 @@ Add Kernex to your project:
 
 ```toml
 [dependencies]
-kernex-runtime = "0.8.3"
-kernex-core = "0.8.3"
-kernex-providers = "0.8.3"
+kernex-runtime = "0.10"
+kernex-core = "0.10"
+kernex-providers = "0.10"
 tokio = { version = "1", features = ["full"] }
 ```
 
@@ -129,14 +129,12 @@ Send a message and get a response with persistent memory:
 
 ```rust
 use kernex_runtime::RuntimeBuilder;
-use kernex_core::traits::Provider;
 use kernex_core::message::Request;
-use kernex_providers::factory::ProviderFactory;
-use kernex_providers::ProviderConfig;
+use kernex_providers::factory::{ProviderConfig, ProviderFactory};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Elegant, environment-based construction via `from_env()` 
+    // Elegant, environment-based construction via `from_env()`
     // Uses $KERNEX_DATA_DIR, $KERNEX_SYSTEM_PROMPT, and $KERNEX_CHANNEL
     let runtime = RuntimeBuilder::from_env().build().await?;
 
@@ -144,8 +142,7 @@ async fn main() -> anyhow::Result<()> {
     config.model = Some("llama3.2".to_string());
     config.base_url = Some("http://localhost:11434".to_string());
 
-    let provider = ProviderFactory::create("ollama", Some(serde_json::to_value(config)?))?;
-
+    let provider = ProviderFactory::create("ollama", config)?;
 
     let request = Request::text("user-1", "What is Rust?");
     let response = runtime.complete(&provider, &request).await?;
@@ -194,11 +191,12 @@ Two completion methods:
 ```rust
 use kernex_core::run::{RunConfig, RunOutcome};
 
-let config = RunConfig { max_turns: 20 };
+let config = RunConfig { max_turns: 20, token_budget: Some(200_000) };
 
 match runtime.run(&provider, &request, &config).await? {
     RunOutcome::EndTurn(response) => println!("{}", response.text),
     RunOutcome::MaxTurns => eprintln!("turn limit reached"),
+    RunOutcome::BudgetExhausted => eprintln!("token budget reached"),
 }
 ```
 
@@ -413,7 +411,7 @@ cp -r examples/skills/_template ~/.kernex/skills/my-skill
 
 ### "unknown provider type: xyz"
 
-The provider name must match exactly. Valid values: `openai`, `anthropic`, `ollama`, `gemini`, `openrouter`, `claude-code`.
+The provider name must match exactly. Valid values: `openai`, `anthropic`, `ollama`, `gemini`, `openrouter`, `claude-code`, `groq`, `mistral`, `deepseek`, `fireworks`, `xai`, plus `bedrock` when the `bedrock` feature is enabled.
 
 ### "config error: failed to create data dir"
 
