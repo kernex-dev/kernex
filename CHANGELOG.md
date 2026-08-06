@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Bumped `crossbeam-epoch` to 0.9.20, closing RUSTSEC-2026-0204 (invalid
+  pointer dereference in the `fmt::Pointer` impl for `Atomic` and `Shared`).
+  It reaches the workspace transitively.
+- Bumped `anyhow` to 1.0.104, closing RUSTSEC-2026-0190 (unsoundness in
+  `Error::downcast_mut`). `anyhow` is a direct dependency of `kernex-runtime`
+  and `kernex-sandbox`.
+- Bumped `quinn-proto` to 0.11.16, closing RUSTSEC-2026-0185 (remote memory
+  exhaustion from unbounded out-of-order stream reassembly). The crate sits in
+  `Cargo.lock` but not in the build graph for any supported target, so
+  published crates were never exposed; the bump keeps `cargo audit` and
+  `cargo deny` clean.
+- Bumped `spin` to 0.9.9, replacing a yanked release.
+
+All four are lockfile-only, with no source changes.
+
 ## [0.10.0] - 2026-06-12
 
 Agentic-loop spend control and a multi-poller-safe scheduled-task surface. Tag: [v0.10.0](https://github.com/kernex-dev/kernex/releases/tag/v0.10.0).
