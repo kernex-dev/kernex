@@ -97,7 +97,7 @@ graph TD
     M --> C
     K --> C
     PL --> C
-    S -.o|OS Protection| P
+    S -.->|OS Protection| P
 ```
 
 
