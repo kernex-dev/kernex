@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **kernex-providers**: `opencode` provider. Runs the local `opencode` CLI
+  (`opencode run --format json`) inside the kernex OS sandbox, like
+  `claude-code`, so sandboxed agent runs work with any model OpenCode supports
+  (Anthropic, OpenAI, OpenRouter, local Ollama, and more). Tool permissions and
+  MCP servers are injected per call through `OPENCODE_CONFIG_CONTENT` as
+  explicit allow or deny rules; the user's OpenCode config files are never
+  modified. Returns the final step's text, the OpenCode session ID (pass it
+  back as `Context::session_id` to continue) and token counts. Requested in
+  #18.
+
 ### Changed
 
 - **kernex-providers / kernex-core**: default and tier model IDs that their

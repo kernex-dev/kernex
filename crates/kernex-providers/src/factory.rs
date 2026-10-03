@@ -128,7 +128,7 @@ fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
 pub struct ProviderFactory;
 
 impl ProviderFactory {
-    /// Create a provider from a string name ("openai", "anthropic", "gemini", "ollama", "openrouter", "claude-code").
+    /// Create a provider from a string name ("openai", "anthropic", "gemini", "ollama", "openrouter", "claude-code", "opencode").
     pub fn create(
         provider: &str,
         config: ProviderConfig,
@@ -210,6 +210,15 @@ impl ProviderFactory {
                     5, // max resumes
                     config.model.unwrap_or_default(),
                     None, // oauth token
+                )
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                Ok(Box::new(p))
+            }
+            "opencode" => {
+                let p = crate::opencode::OpenCodeProvider::from_config(
+                    3600, // timeout
+                    config.workspace_path,
+                    config.model.unwrap_or_default(),
                 )
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
                 Ok(Box::new(p))
@@ -338,6 +347,7 @@ impl ProviderFactory {
             "ollama",
             "openrouter",
             "claude-code",
+            "opencode",
             "groq",
             "mistral",
             "deepseek",
@@ -352,6 +362,7 @@ impl ProviderFactory {
             "ollama",
             "openrouter",
             "claude-code",
+            "opencode",
             "groq",
             "mistral",
             "deepseek",
@@ -471,15 +482,16 @@ mod tests {
         assert!(providers.contains(&"ollama"));
         assert!(providers.contains(&"openrouter"));
         assert!(providers.contains(&"claude-code"));
+        assert!(providers.contains(&"opencode"));
         assert!(providers.contains(&"groq"));
         assert!(providers.contains(&"mistral"));
         assert!(providers.contains(&"deepseek"));
         assert!(providers.contains(&"fireworks"));
         assert!(providers.contains(&"xai"));
         #[cfg(not(feature = "bedrock"))]
-        assert_eq!(providers.len(), 11);
-        #[cfg(feature = "bedrock")]
         assert_eq!(providers.len(), 12);
+        #[cfg(feature = "bedrock")]
+        assert_eq!(providers.len(), 13);
     }
 
     #[test]
@@ -563,6 +575,18 @@ mod tests {
         assert!(result.is_ok());
         let provider = result.unwrap();
         assert_eq!(provider.name(), "claude-code");
+    }
+
+    #[test]
+    fn factory_creates_opencode() {
+        let config = ProviderConfig {
+            workspace_path: Some(PathBuf::from("/tmp")),
+            model: Some("ollama/qwen3-coder:30b".into()),
+            ..Default::default()
+        };
+        let provider = ProviderFactory::create("opencode", config).unwrap();
+        assert_eq!(provider.name(), "opencode");
+        assert!(!provider.requires_api_key());
     }
 
     #[test]
