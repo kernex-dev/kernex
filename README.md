@@ -43,7 +43,7 @@ For running examples:
 ## Features
 
 - **Sandbox-first execution** — OS-level protection via Seatbelt (macOS) and Landlock (Linux, kernel 5.13+) combined with highly configurable `SandboxProfile` allow/deny lists
-- **11 AI providers** — Claude Code CLI, Anthropic, OpenAI, Ollama, OpenRouter, Gemini, Groq, Mistral, DeepSeek, Fireworks, xAI; AWS Bedrock via optional `bedrock` feature
+- **12 AI providers** — Claude Code CLI, OpenCode CLI, Anthropic, OpenAI, Ollama, OpenRouter, Gemini, Groq, Mistral, DeepSeek, Fireworks, xAI; AWS Bedrock via optional `bedrock` feature
 - **OpenAI-compatible base URL** — works with LiteLLM, Cerebras, Hugging Face, and any OpenAI-compatible endpoint
 - **Dynamic instantiation** — instantiate any provider from a config map at runtime via `ProviderFactory`
 - **Streaming API** — `Runtime::complete_stream()` surfaces provider streaming through the public API via `tokio::sync::mpsc::Receiver<StreamEvent>`
@@ -234,11 +234,12 @@ let runtime = RuntimeBuilder::new()
 
 ## Providers
 
-Kernex ships with 11 built-in AI providers, plus AWS Bedrock behind an optional feature:
+Kernex ships with 12 built-in AI providers, plus AWS Bedrock behind an optional feature:
 
 | Provider | Module | API Key Required |
 |----------|--------|-----------------|
 | Claude Code CLI | `claude_code` | No (uses local CLI) |
+| OpenCode CLI | `opencode` | No (uses local CLI and its configured model provider) |
 | Anthropic | `anthropic` | Yes |
 | OpenAI | `openai` | Yes |
 | Ollama | `ollama` | No (local) |
@@ -250,6 +251,22 @@ Kernex ships with 11 built-in AI providers, plus AWS Bedrock behind an optional 
 | Fireworks | `fireworks` | Yes |
 | xAI | `xai` | Yes |
 | AWS Bedrock | `bedrock` | Yes (SigV4 / AWS creds) |
+
+### Sandboxed coding agents without vendor lock-in
+
+`claude-code` and `opencode` both run a full coding agent CLI inside the kernex OS sandbox (Seatbelt on macOS, Landlock on Linux) when a workspace path is set. `opencode` works with any model OpenCode supports, local Ollama models included. Pass the model as `provider/model`:
+
+```rust
+use kernex_providers::factory::{ProviderConfig, ProviderFactory};
+
+let provider = ProviderFactory::create("opencode", ProviderConfig {
+    model: Some("ollama/qwen3-coder:30b".into()),
+    workspace_path: Some("/path/to/workspace".into()),
+    ..Default::default()
+})?;
+```
+
+Tool permissions (`Context::allowed_tools`) and MCP servers are injected per call through `OPENCODE_CONFIG_CONTENT`; your OpenCode config files are never modified. Permissions are always `allow` or `deny`, never `ask`, so a headless run cannot stall on a prompt. Model provider keys stored with `opencode auth login` work as is; keys in environment variables pass through for the common providers, and `OpenCodeProvider::with_env_passthrough` adds others.
 
 ### Prompt caching (Anthropic)
 
@@ -411,7 +428,7 @@ cp -r examples/skills/_template ~/.kernex/skills/my-skill
 
 ### "unknown provider type: xyz"
 
-The provider name must match exactly. Valid values: `openai`, `anthropic`, `ollama`, `gemini`, `openrouter`, `claude-code`, `groq`, `mistral`, `deepseek`, `fireworks`, `xai`, plus `bedrock` when the `bedrock` feature is enabled.
+The provider name must match exactly. Valid values: `openai`, `anthropic`, `ollama`, `gemini`, `openrouter`, `claude-code`, `opencode`, `groq`, `mistral`, `deepseek`, `fireworks`, `xai`, plus `bedrock` when the `bedrock` feature is enabled.
 
 ### "config error: failed to create data dir"
 

@@ -17,6 +17,7 @@ pub mod http_retry;
 pub(crate) mod mcp_client;
 pub mod ollama;
 pub mod openai;
+pub mod opencode;
 pub mod openrouter;
 pub mod tool_params;
 pub(crate) mod tools;
