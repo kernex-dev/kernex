@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **kernex-providers / kernex-core**: default and tier model IDs that their
+  providers have retired now point at current models (checked against each
+  provider's deprecation page on 2026-10-03). Gemini `gemini-2.0-flash` (shut
+  down 2026-06-01) and the `gemini-2.5-flash` fallback (closed to new accounts)
+  become `gemini-3.5-flash`; Groq `llama-3.3-70b-versatile` and
+  `deepseek-r1-distill-llama-70b` become `openai/gpt-oss-120b`; DeepSeek
+  `deepseek-chat` / `deepseek-reasoner` (retired 2026-07-24) become
+  `deepseek-flash` / `deepseek-v4-pro`; xAI `grok-3-mini` / `grok-3` (no longer
+  listed) become `grok-4.3` / `grok-4.7`. An explicit `model` in config is
+  unaffected. `deepseek-flash` thinks by default, unlike `deepseek-chat`.
+
 ### Security
 
 - Bumped `crossbeam-epoch` to 0.9.20, closing RUSTSEC-2026-0204 (invalid
