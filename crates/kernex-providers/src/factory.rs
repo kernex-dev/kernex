@@ -97,22 +97,22 @@ fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
         ("openai", ModelTier::Flagship) => "gpt-4o",
         ("anthropic", ModelTier::Standard) => "claude-sonnet-4-6",
         ("anthropic", ModelTier::Flagship) => "claude-opus-4-8",
-        ("gemini", ModelTier::Standard) => "gemini-2.0-flash",
+        ("gemini", ModelTier::Standard) => "gemini-3.5-flash",
         ("gemini", ModelTier::Flagship) => "gemini-2.5-pro",
         ("ollama", ModelTier::Standard) => "llama3.2",
         ("ollama", ModelTier::Flagship) => "llama3.1:70b",
         ("openrouter", ModelTier::Standard) => "anthropic/claude-sonnet-4-6",
         ("openrouter", ModelTier::Flagship) => "anthropic/claude-opus-4-8",
-        ("groq", ModelTier::Standard) => "llama-3.3-70b-versatile",
-        ("groq", ModelTier::Flagship) => "deepseek-r1-distill-llama-70b",
+        ("groq", ModelTier::Standard) => "openai/gpt-oss-120b",
+        ("groq", ModelTier::Flagship) => "openai/gpt-oss-120b",
         ("mistral", ModelTier::Standard) => "mistral-small-latest",
         ("mistral", ModelTier::Flagship) => "mistral-large-latest",
-        ("deepseek", ModelTier::Standard) => "deepseek-chat",
-        ("deepseek", ModelTier::Flagship) => "deepseek-reasoner",
+        ("deepseek", ModelTier::Standard) => "deepseek-flash",
+        ("deepseek", ModelTier::Flagship) => "deepseek-v4-pro",
         ("fireworks", ModelTier::Standard) => "accounts/fireworks/models/llama-v3p3-70b-instruct",
         ("fireworks", ModelTier::Flagship) => "accounts/fireworks/models/deepseek-r1",
-        ("xai", ModelTier::Standard) => "grok-3-mini",
-        ("xai", ModelTier::Flagship) => "grok-3",
+        ("xai", ModelTier::Standard) => "grok-4.3",
+        ("xai", ModelTier::Flagship) => "grok-4.7",
         // Bedrock: US cross-region inference profiles. kernex defaults to the
         // us-east-1 region, where these models are not available for in-region
         // on-demand, so the geo profile (`us.` prefix) is required. Non-US
@@ -165,7 +165,7 @@ impl ProviderFactory {
             }
             "gemini" => {
                 let model = resolve_model("gemini", config.model, config.tier)
-                    .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+                    .unwrap_or_else(|| "gemini-3.5-flash".to_string());
                 let p = crate::gemini::GeminiProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
@@ -218,7 +218,7 @@ impl ProviderFactory {
             "groq" => {
                 require_https_for_keyed_provider("groq", config.base_url.as_deref())?;
                 let model = resolve_model("groq", config.model, config.tier)
-                    .unwrap_or_else(|| "llama-3.3-70b-versatile".to_string());
+                    .unwrap_or_else(|| "openai/gpt-oss-120b".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -252,7 +252,7 @@ impl ProviderFactory {
             "deepseek" => {
                 require_https_for_keyed_provider("deepseek", config.base_url.as_deref())?;
                 let model = resolve_model("deepseek", config.model, config.tier)
-                    .unwrap_or_else(|| "deepseek-chat".to_string());
+                    .unwrap_or_else(|| "deepseek-flash".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -288,7 +288,7 @@ impl ProviderFactory {
             "xai" => {
                 require_https_for_keyed_provider("xai", config.base_url.as_deref())?;
                 let model = resolve_model("xai", config.model, config.tier)
-                    .unwrap_or_else(|| "grok-3-mini".to_string());
+                    .unwrap_or_else(|| "grok-4.3".to_string());
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -577,7 +577,7 @@ mod tests {
         );
         assert_eq!(
             model_from_tier("gemini", ModelTier::Standard),
-            "gemini-2.0-flash"
+            "gemini-3.5-flash"
         );
         assert_eq!(model_from_tier("ollama", ModelTier::Standard), "llama3.2");
         assert_eq!(
@@ -744,11 +744,11 @@ mod tests {
     fn model_from_tier_compat_providers() {
         assert_eq!(
             model_from_tier("groq", ModelTier::Standard),
-            "llama-3.3-70b-versatile"
+            "openai/gpt-oss-120b"
         );
         assert_eq!(
             model_from_tier("groq", ModelTier::Flagship),
-            "deepseek-r1-distill-llama-70b"
+            "openai/gpt-oss-120b"
         );
         assert_eq!(
             model_from_tier("mistral", ModelTier::Standard),
@@ -760,13 +760,13 @@ mod tests {
         );
         assert_eq!(
             model_from_tier("deepseek", ModelTier::Standard),
-            "deepseek-chat"
+            "deepseek-flash"
         );
         assert_eq!(
             model_from_tier("deepseek", ModelTier::Flagship),
-            "deepseek-reasoner"
+            "deepseek-v4-pro"
         );
-        assert_eq!(model_from_tier("xai", ModelTier::Standard), "grok-3-mini");
-        assert_eq!(model_from_tier("xai", ModelTier::Flagship), "grok-3");
+        assert_eq!(model_from_tier("xai", ModelTier::Standard), "grok-4.3");
+        assert_eq!(model_from_tier("xai", ModelTier::Flagship), "grok-4.7");
     }
 }

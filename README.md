@@ -289,7 +289,7 @@ let provider = OpenAiProvider::from_config(
 let provider = OpenAiProvider::from_config(
     "https://api.deepseek.com/v1".into(),
     "sk-...".into(),
-    "deepseek-chat".into(),
+    "deepseek-flash".into(),
     None,
 )?;
 
@@ -297,7 +297,7 @@ let provider = OpenAiProvider::from_config(
 let provider = OpenAiProvider::from_config(
     "https://api.cerebras.ai/v1".into(),
     "csk-...".into(),
-    "llama3.1-70b".into(),
+    "gpt-oss-120b".into(),
     None,
 )?;
 ```

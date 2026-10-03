@@ -35,7 +35,7 @@ pub fn default_ollama_model() -> String {
     "llama3".to_string()
 }
 pub fn default_gemini_model() -> String {
-    "gemini-2.0-flash".to_string()
+    "gemini-3.5-flash".to_string()
 }
 pub fn default_memory_backend() -> String {
     "sqlite".to_string()
