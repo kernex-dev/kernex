@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0](https://github.com/kernex-dev/kernex/compare/v0.10.0...v0.11.0) - 2026-11-21
+
+### Added
+
+- *(providers)* expose ProviderFactory::default_model
+- *(providers)* add sandboxed opencode CLI provider
+
+### Fixed
+
+- *(providers)* replace Gemini IDs before the 2026-12-01 shutdown; use listed OpenRouter IDs
+- *(providers)* replace retired default and tier model IDs
+
+### Other
+
+- make the README quick start compile and state 12 providers everywhere
+
 ## [0.10.0](https://github.com/kernex-dev/kernex/compare/v0.9.0...v0.10.0) - 2026-06-12
 
 ### Added
