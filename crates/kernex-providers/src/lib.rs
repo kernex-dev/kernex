@@ -2,8 +2,9 @@
 
 //! kernex-providers: AI backend implementations and tool execution.
 //!
-//! Provides 7 AI providers (Claude Code CLI, Anthropic, OpenAI, Ollama,
-//! OpenRouter, Gemini, AWS Bedrock), a shared tool executor with sandbox
+//! Provides 12 AI providers (Claude Code CLI, OpenCode CLI, Anthropic, OpenAI,
+//! Ollama, OpenRouter, Gemini, Groq, Mistral, DeepSeek, Fireworks, xAI) plus
+//! AWS Bedrock behind the `bedrock` feature, a shared tool executor with sandbox
 //! enforcement, and an MCP client for external tool integration.
 
 pub mod anthropic;

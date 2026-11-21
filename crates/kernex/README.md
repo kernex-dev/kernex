@@ -7,7 +7,7 @@ feels more natural in your `Cargo.toml`.
 
 ```toml
 [dependencies]
-kernex = "0.4"
+kernex = "0.10"
 ```
 
 ## Quick start
@@ -57,7 +57,7 @@ If you only need part of the runtime, depend on the underlying crate
 directly:
 
 - [`kernex-core`](https://crates.io/crates/kernex-core) — types, traits, errors
-- [`kernex-providers`](https://crates.io/crates/kernex-providers) — 11 AI provider backends
+- [`kernex-providers`](https://crates.io/crates/kernex-providers) — 12 AI provider backends
 - [`kernex-memory`](https://crates.io/crates/kernex-memory) — SQLite-backed store
 - [`kernex-skills`](https://crates.io/crates/kernex-skills) — skill loader
 - [`kernex-pipelines`](https://crates.io/crates/kernex-pipelines) — multi-agent topology
