@@ -97,12 +97,12 @@ fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
         ("openai", ModelTier::Flagship) => "gpt-4o",
         ("anthropic", ModelTier::Standard) => "claude-sonnet-4-6",
         ("anthropic", ModelTier::Flagship) => "claude-opus-4-8",
-        ("gemini", ModelTier::Standard) => "gemini-3.5-flash",
-        ("gemini", ModelTier::Flagship) => "gemini-2.5-pro",
+        ("gemini", ModelTier::Standard) => "gemini-3.6-flash",
+        ("gemini", ModelTier::Flagship) => "gemini-3.8-flash",
         ("ollama", ModelTier::Standard) => "llama3.2",
         ("ollama", ModelTier::Flagship) => "llama3.1:70b",
-        ("openrouter", ModelTier::Standard) => "anthropic/claude-sonnet-4-6",
-        ("openrouter", ModelTier::Flagship) => "anthropic/claude-opus-4-8",
+        ("openrouter", ModelTier::Standard) => "anthropic/claude-sonnet-4.6",
+        ("openrouter", ModelTier::Flagship) => "anthropic/claude-opus-4.8",
         ("groq", ModelTier::Standard) => "openai/gpt-oss-120b",
         ("groq", ModelTier::Flagship) => "openai/gpt-oss-120b",
         ("mistral", ModelTier::Standard) => "mistral-small-latest",
@@ -165,7 +165,7 @@ impl ProviderFactory {
             }
             "gemini" => {
                 let model = resolve_model("gemini", config.model, config.tier)
-                    .unwrap_or_else(|| "gemini-3.5-flash".to_string());
+                    .unwrap_or_else(|| "gemini-3.6-flash".to_string());
                 let p = crate::gemini::GeminiProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
@@ -191,7 +191,7 @@ impl ProviderFactory {
             }
             "openrouter" => {
                 let model = resolve_model("openrouter", config.model, config.tier)
-                    .unwrap_or_else(|| "anthropic/claude-sonnet-4-6".to_string());
+                    .unwrap_or_else(|| "anthropic/claude-sonnet-4.6".to_string());
                 let p = crate::openrouter::OpenRouterProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
@@ -601,12 +601,12 @@ mod tests {
         );
         assert_eq!(
             model_from_tier("gemini", ModelTier::Standard),
-            "gemini-3.5-flash"
+            "gemini-3.6-flash"
         );
         assert_eq!(model_from_tier("ollama", ModelTier::Standard), "llama3.2");
         assert_eq!(
             model_from_tier("openrouter", ModelTier::Standard),
-            "anthropic/claude-sonnet-4-6"
+            "anthropic/claude-sonnet-4.6"
         );
     }
 
@@ -619,7 +619,7 @@ mod tests {
         assert_eq!(model_from_tier("openai", ModelTier::Flagship), "gpt-4o");
         assert_eq!(
             model_from_tier("gemini", ModelTier::Flagship),
-            "gemini-2.5-pro"
+            "gemini-3.8-flash"
         );
         assert_eq!(
             model_from_tier("ollama", ModelTier::Flagship),
@@ -627,7 +627,7 @@ mod tests {
         );
         assert_eq!(
             model_from_tier("openrouter", ModelTier::Flagship),
-            "anthropic/claude-opus-4-8"
+            "anthropic/claude-opus-4.8"
         );
     }
 
