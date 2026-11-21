@@ -46,8 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   published crates were never exposed; the bump keeps `cargo audit` and
   `cargo deny` clean.
 - Bumped `spin` to 0.9.9, replacing a yanked release.
+- Bumped `rustls` to 0.23.46 (RUSTSEC-2026-0346, -0347, -0348, -0349),
+  `rustls-webpki` to 0.103.17 (RUSTSEC-2026-0382) and `webpki-roots` to 1.0.12
+  (RUSTSEC-2026-0381). These are the TLS stack behind every HTTP provider.
+- Bumped `quinn-proto` to 0.11.19 (RUSTSEC-2026-0338 to -0342, -0523, -0524)
+  and `quinn-udp` to 0.5.16 (RUSTSEC-2026-0538).
+- Bumped `tokio` to 1.53.3, closing RUSTSEC-2026-0386 (`AsyncFd::new` and
+  related constructors violate I/O safety).
 
-All four are lockfile-only, with no source changes.
+All of the above are lockfile-only, with no source changes.
+
+Accepted for now, each with a reason and a review date in `deny.toml` (and
+`.cargo/audit.toml` for the first): RUSTSEC-2026-0459 in the SQLite bundled by
+`libsqlite3-sys`, a local-only issue that needs a crafted database and `-wal`
+pair, while kernex-memory opens only the database it creates; the fix arrives
+with sqlx 0.9. Also the unmaintained notices for `basic-toml`, `chrono`,
+`pin-utils` and `unsafe-libyaml`, none of which has a patched release.
 
 ## [0.10.0] - 2026-06-12
 
