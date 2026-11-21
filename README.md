@@ -107,7 +107,7 @@ graph TD
 | [`kernex-core`](crates/kernex-core) | [![](https://img.shields.io/crates/v/kernex-core?style=flat-square)](https://crates.io/crates/kernex-core) | Shared types, traits, config, sanitization |
 | [`kernex-adapter-core`](crates/kernex-adapter-core) | [![](https://img.shields.io/crates/v/kernex-adapter-core?style=flat-square)](https://crates.io/crates/kernex-adapter-core) | `Adapter` trait + `AdapterId`, `Capability`, `AdapterRegistry` |
 | [`kernex-sandbox`](crates/kernex-sandbox) | [![](https://img.shields.io/crates/v/kernex-sandbox?style=flat-square)](https://crates.io/crates/kernex-sandbox) | OS-level sandbox (Seatbelt + Landlock) |
-| [`kernex-providers`](crates/kernex-providers) | [![](https://img.shields.io/crates/v/kernex-providers?style=flat-square)](https://crates.io/crates/kernex-providers) | 11 AI providers (+ Bedrock optional), tool executor, MCP client |
+| [`kernex-providers`](crates/kernex-providers) | [![](https://img.shields.io/crates/v/kernex-providers?style=flat-square)](https://crates.io/crates/kernex-providers) | 12 AI providers (+ Bedrock optional), tool executor, MCP client |
 | [`kernex-memory`](crates/kernex-memory) | [![](https://img.shields.io/crates/v/kernex-memory?style=flat-square)](https://crates.io/crates/kernex-memory) | SQLite memory, FTS5 search, reward learning, `MemoryStore` trait, soft-delete |
 | [`kernex-skills`](crates/kernex-skills) | [![](https://img.shields.io/crates/v/kernex-skills?style=flat-square)](https://crates.io/crates/kernex-skills) | Skill/project loader, trigger matching |
 | [`kernex-pipelines`](crates/kernex-pipelines) | [![](https://img.shields.io/crates/v/kernex-pipelines?style=flat-square)](https://crates.io/crates/kernex-pipelines) | TOML topology, multi-agent orchestration |
@@ -123,6 +123,7 @@ kernex-runtime = "0.10"
 kernex-core = "0.10"
 kernex-providers = "0.10"
 tokio = { version = "1", features = ["full"] }
+anyhow = "1"
 ```
 
 Send a message and get a response with persistent memory:
@@ -145,7 +146,7 @@ async fn main() -> anyhow::Result<()> {
     let provider = ProviderFactory::create("ollama", config)?;
 
     let request = Request::text("user-1", "What is Rust?");
-    let response = runtime.complete(&provider, &request).await?;
+    let response = runtime.complete(provider.as_ref(), &request).await?;
     println!("{}", response.text);
 
     Ok(())
