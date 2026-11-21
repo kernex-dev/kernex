@@ -1055,14 +1055,14 @@ dependencies = [
 
 [[package]]
 name = "kernex"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "kernex-runtime",
 ]
 
 [[package]]
 name = "kernex-adapter-core"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "async-trait",
  "serde",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-brain"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-core"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "async-trait",
  "basic-toml",
@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-memory"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-pipelines"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "basic-toml",
  "kernex-core",
@@ -1141,7 +1141,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-presets"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "basic-toml",
  "kernex-adapter-core",
@@ -1152,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-providers"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-runtime"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1197,7 +1197,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-sandbox"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "anyhow",
  "landlock",
@@ -1208,7 +1208,7 @@ dependencies = [
 
 [[package]]
 name = "kernex-skills"
-version = "0.10.0"
+version = "0.10.1"
 dependencies = [
  "basic-toml",
  "kernex-core",
