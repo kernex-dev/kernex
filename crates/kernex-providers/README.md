@@ -2,7 +2,7 @@
 
 LLM provider implementations and the shared agentic tool-execution loop for the [Kernex](https://github.com/kernex-dev/kernex) AI agent runtime.
 
-Ships 11 production providers behind the unified `Provider` trait from `kernex-core`:
+Ships 12 production providers behind the unified `Provider` trait from `kernex-core`:
 
 | Provider | Auth | Streaming | Tools |
 |----------|------|-----------|-------|
@@ -17,6 +17,7 @@ Ships 11 production providers behind the unified `Provider` trait from `kernex-c
 | Fireworks | API key | yes | yes |
 | xAI | API key | yes | yes |
 | Claude Code (CLI) | OAuth | no (subprocess) | yes |
+| OpenCode (CLI) | OpenCode's own config | no (subprocess) | yes |
 
 AWS Bedrock is also available behind the `bedrock` Cargo feature.
 
