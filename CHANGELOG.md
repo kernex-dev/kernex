@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **kernex-providers**: `ProviderFactory::default_model(name)` returns the
+  model a provider uses when neither `model` nor `tier` is set. The factory
+  reads the same table, so tools that display the effective model no longer
+  need their own copy.
 - **kernex-providers**: `opencode` provider. Runs the local `opencode` CLI
   (`opencode run --format json`) inside the kernex OS sandbox, like
   `claude-code`, so sandboxed agent runs work with any model OpenCode supports

@@ -124,10 +124,46 @@ fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
     }
 }
 
+/// Owned form of [`ProviderFactory::default_model`] for the factory arms.
+/// Every caller names a provider that has a default, so the empty fallback
+/// is unreachable in practice.
+fn default_model_owned(provider: &str) -> String {
+    ProviderFactory::default_model(provider)
+        .unwrap_or_default()
+        .to_string()
+}
+
 /// Factory to instantiate providers by string name.
 pub struct ProviderFactory;
 
 impl ProviderFactory {
+    /// The model a provider uses when the caller sets neither `model` nor
+    /// `tier` in [`ProviderConfig`].
+    ///
+    /// This is the single table the factory itself reads, so a caller that
+    /// wants to show the effective model (a CLI banner, a log line) can ask
+    /// for it instead of keeping a copy that drifts.
+    ///
+    /// Returns `None` for unknown names and for the CLI-backed providers
+    /// (`claude-code`, `opencode`), which let the underlying CLI choose.
+    /// `bedrock` is answered whether or not the `bedrock` feature is compiled.
+    pub fn default_model(provider: &str) -> Option<&'static str> {
+        match provider {
+            "openai" => Some("gpt-4o"),
+            "anthropic" => Some("claude-sonnet-4-6"),
+            "gemini" => Some("gemini-3.6-flash"),
+            "ollama" => Some("llama3.2"),
+            "openrouter" => Some("anthropic/claude-sonnet-4.6"),
+            "groq" => Some("openai/gpt-oss-120b"),
+            "mistral" => Some("mistral-small-latest"),
+            "deepseek" => Some("deepseek-flash"),
+            "xai" => Some("grok-4.3"),
+            "fireworks" => Some("accounts/fireworks/models/llama-v3p3-70b-instruct"),
+            "bedrock" => Some("us.anthropic.claude-sonnet-4-6"),
+            _ => None,
+        }
+    }
+
     /// Create a provider from a string name ("openai", "anthropic", "gemini", "ollama", "openrouter", "claude-code", "opencode").
     pub fn create(
         provider: &str,
@@ -137,7 +173,7 @@ impl ProviderFactory {
             "openai" => {
                 require_https_for_keyed_provider("openai", config.base_url.as_deref())?;
                 let model = resolve_model("openai", config.model, config.tier)
-                    .unwrap_or_else(|| "gpt-4o".to_string());
+                    .unwrap_or_else(|| default_model_owned("openai"));
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -152,7 +188,7 @@ impl ProviderFactory {
             }
             "anthropic" => {
                 let model = resolve_model("anthropic", config.model, config.tier)
-                    .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+                    .unwrap_or_else(|| default_model_owned("anthropic"));
                 let p = crate::anthropic::AnthropicProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
@@ -165,7 +201,7 @@ impl ProviderFactory {
             }
             "gemini" => {
                 let model = resolve_model("gemini", config.model, config.tier)
-                    .unwrap_or_else(|| "gemini-3.6-flash".to_string());
+                    .unwrap_or_else(|| default_model_owned("gemini"));
                 let p = crate::gemini::GeminiProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
@@ -177,7 +213,7 @@ impl ProviderFactory {
             }
             "ollama" => {
                 let model = resolve_model("ollama", config.model, config.tier)
-                    .unwrap_or_else(|| "llama3.2".to_string());
+                    .unwrap_or_else(|| default_model_owned("ollama"));
                 let p = crate::ollama::OllamaProvider::from_config(
                     config
                         .base_url
@@ -191,7 +227,7 @@ impl ProviderFactory {
             }
             "openrouter" => {
                 let model = resolve_model("openrouter", config.model, config.tier)
-                    .unwrap_or_else(|| "anthropic/claude-sonnet-4.6".to_string());
+                    .unwrap_or_else(|| default_model_owned("openrouter"));
                 let p = crate::openrouter::OpenRouterProvider::from_config(
                     config.api_key.unwrap_or_default(),
                     model,
@@ -227,7 +263,7 @@ impl ProviderFactory {
             "groq" => {
                 require_https_for_keyed_provider("groq", config.base_url.as_deref())?;
                 let model = resolve_model("groq", config.model, config.tier)
-                    .unwrap_or_else(|| "openai/gpt-oss-120b".to_string());
+                    .unwrap_or_else(|| default_model_owned("groq"));
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -244,7 +280,7 @@ impl ProviderFactory {
             "mistral" => {
                 require_https_for_keyed_provider("mistral", config.base_url.as_deref())?;
                 let model = resolve_model("mistral", config.model, config.tier)
-                    .unwrap_or_else(|| "mistral-small-latest".to_string());
+                    .unwrap_or_else(|| default_model_owned("mistral"));
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -261,7 +297,7 @@ impl ProviderFactory {
             "deepseek" => {
                 require_https_for_keyed_provider("deepseek", config.base_url.as_deref())?;
                 let model = resolve_model("deepseek", config.model, config.tier)
-                    .unwrap_or_else(|| "deepseek-flash".to_string());
+                    .unwrap_or_else(|| default_model_owned("deepseek"));
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -277,10 +313,8 @@ impl ProviderFactory {
             }
             "fireworks" => {
                 require_https_for_keyed_provider("fireworks", config.base_url.as_deref())?;
-                let model =
-                    resolve_model("fireworks", config.model, config.tier).unwrap_or_else(|| {
-                        "accounts/fireworks/models/llama-v3p3-70b-instruct".to_string()
-                    });
+                let model = resolve_model("fireworks", config.model, config.tier)
+                    .unwrap_or_else(|| default_model_owned("fireworks"));
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -297,7 +331,7 @@ impl ProviderFactory {
             "xai" => {
                 require_https_for_keyed_provider("xai", config.base_url.as_deref())?;
                 let model = resolve_model("xai", config.model, config.tier)
-                    .unwrap_or_else(|| "grok-4.3".to_string());
+                    .unwrap_or_else(|| default_model_owned("xai"));
                 let p = crate::openai::OpenAiProvider::from_config(
                     config
                         .base_url
@@ -314,7 +348,7 @@ impl ProviderFactory {
             #[cfg(feature = "bedrock")]
             "bedrock" => {
                 let model = resolve_model("bedrock", config.model, config.tier)
-                    .unwrap_or_else(|| "us.anthropic.claude-sonnet-4-6".to_string());
+                    .unwrap_or_else(|| default_model_owned("bedrock"));
                 let region = config.base_url.unwrap_or_else(|| "us-east-1".to_string());
                 let access_key_id = config.api_key.unwrap_or_default();
                 let secret_access_key = std::env::var("AWS_SECRET_ACCESS_KEY").unwrap_or_default();
@@ -651,6 +685,22 @@ mod tests {
     fn resolve_model_returns_none_when_both_absent() {
         let result = resolve_model("anthropic", None, None);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn default_model_covers_every_api_provider() {
+        for name in ProviderFactory::supported_providers() {
+            let default = ProviderFactory::default_model(name);
+            if name == "claude-code" || name == "opencode" {
+                assert_eq!(default, None, "{name} lets its CLI choose the model");
+            } else {
+                assert!(
+                    default.is_some_and(|m| !m.is_empty()),
+                    "{name} has no default model"
+                );
+            }
+        }
+        assert_eq!(ProviderFactory::default_model("nope"), None);
     }
 
     #[test]
