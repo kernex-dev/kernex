@@ -8,7 +8,24 @@ all-features = true
 
 [advisories]
 version = 2
-ignore = []
+# Accepted risks. Every entry carries a reason and a review date; remove the
+# entry as soon as the fix or a replacement lands. Reviewed 2026-11-20, next
+# review 2027-02-20 or at the next sqlx upgrade, whichever comes first.
+ignore = [
+    # SQLite before 3.54.0 can return uninitialized page-cache memory when it
+    # opens a database with a crafted sibling `-wal` file. Local vector: the
+    # process has to open files a less trusted party wrote. kernex-memory only
+    # opens its own database, which it creates with mode 0600 in the user's
+    # data directory. The fix needs libsqlite3-sys >= 0.39, which arrives with
+    # sqlx 0.9 (Rust 1.94+); tracked with the MSRV review.
+    { id = "RUSTSEC-2026-0459", reason = "local-only vector on a database kernex creates itself; fix needs sqlx 0.9" },
+    # Unmaintained crates with no patched release. No vulnerability is reported
+    # against the versions in use.
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml unmaintained; parse-only use on local config, replacement under review" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; no drop-in replacement across core, memory and providers yet" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained; transitive through hyper" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained; transitive through serde_yaml_ng, optional `yaml` feature only" },
+]
 
 [licenses]
 version = 2
