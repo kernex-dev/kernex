@@ -16,6 +16,13 @@
 #   https://github.com/rust-lang/crates-io-auth-action
 #   https://rust-lang.github.io/rfcs/3691-trusted-publishing-cratesio.html
 #
+# The token and the build never meet. Each crate is packaged and verified
+# (compiled, which runs the build scripts of every dependency) in a step
+# that has no token, then uploaded with `--no-verify` in a step that has
+# it and compiles nothing. The publish job restores no build cache: a
+# cache is written by other runs, and this job's output is what users
+# install.
+#
 # Failure mode: if any publish step fails, the workflow halts. Each step
 # runs `scripts/publish-if-needed.sh`, which skips crates whose version is
 # already live on crates.io, so the recovery is simply re-dispatching the
@@ -38,12 +45,9 @@ on:
   #   App migration lands, after which automatic triggers work).
   # - Also useful for emergency republishes or yank recovery.
   # Usage: `gh workflow run publish-crates.yml --ref v0.6.1`
+  # The tag is the ref the run is dispatched on; there is no separate input.
+  # A dispatch on a branch is refused by the first step of each job.
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to publish (e.g. v0.6.1). Must already exist.'
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -67,6 +71,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      - name: Require a release tag
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/tags/v[0-9]*.[0-9]*.[0-9]*) echo "publishing from $REF" ;;
+            *) echo "error: this workflow publishes from a release tag, not $REF" >&2; exit 1 ;;
+          esac
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
@@ -98,13 +111,22 @@ jobs:
       id-token: write
       contents: read
     steps:
+      - name: Require a release tag
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          case "$REF" in
+            refs/tags/v[0-9]*.[0-9]*.[0-9]*) echo "publishing from $REF" ;;
+            *) echo "error: this workflow publishes from a release tag, not $REF" >&2; exit 1 ;;
+          esac
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
 
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          prefix-key: ${{ env.CACHE_NAMESPACE }}
+      # No build cache here on purpose; see the header.
 
       - name: Mint crates.io OIDC token
         id: auth
@@ -122,59 +144,77 @@ jobs:
       # Each publish is followed by a 30s wait to let crates.io's index
       # propagate before the next dependency resolution runs.
       #
-      # CARGO_REGISTRY_TOKEN is set per-step from the OIDC auth step's
-      # output. GitHub Actions does not allow job-level `env:` to reference
-      # step outputs, so each publish step carries the same env block.
+      # CARGO_REGISTRY_TOKEN is set only on the `publish` steps, from the
+      # OIDC auth step's output. The `package` steps compile and must not
+      # see it; the script refuses to package when the variable is set.
 
+      - name: Package kernex-core
+        run: ./scripts/publish-if-needed.sh package kernex-core
       - name: Publish kernex-core
-        run: ./scripts/publish-if-needed.sh kernex-core
+        run: ./scripts/publish-if-needed.sh publish kernex-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
+      - name: Package kernex-sandbox
+        run: ./scripts/publish-if-needed.sh package kernex-sandbox
       - name: Publish kernex-sandbox
-        run: ./scripts/publish-if-needed.sh kernex-sandbox
+        run: ./scripts/publish-if-needed.sh publish kernex-sandbox
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
+      - name: Package kernex-memory
+        run: ./scripts/publish-if-needed.sh package kernex-memory
       - name: Publish kernex-memory
-        run: ./scripts/publish-if-needed.sh kernex-memory
+        run: ./scripts/publish-if-needed.sh publish kernex-memory
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
+      - name: Package kernex-pipelines
+        run: ./scripts/publish-if-needed.sh package kernex-pipelines
       - name: Publish kernex-pipelines
-        run: ./scripts/publish-if-needed.sh kernex-pipelines
+        run: ./scripts/publish-if-needed.sh publish kernex-pipelines
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
+      - name: Package kernex-skills
+        run: ./scripts/publish-if-needed.sh package kernex-skills
       - name: Publish kernex-skills
-        run: ./scripts/publish-if-needed.sh kernex-skills
+        run: ./scripts/publish-if-needed.sh publish kernex-skills
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
+      - name: Package kernex-providers
+        run: ./scripts/publish-if-needed.sh package kernex-providers
       - name: Publish kernex-providers
-        run: ./scripts/publish-if-needed.sh kernex-providers
+        run: ./scripts/publish-if-needed.sh publish kernex-providers
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
+      - name: Package kernex-adapter-core
+        run: ./scripts/publish-if-needed.sh package kernex-adapter-core
       - name: Publish kernex-adapter-core
-        run: ./scripts/publish-if-needed.sh kernex-adapter-core
+        run: ./scripts/publish-if-needed.sh publish kernex-adapter-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
+      - name: Package kernex-runtime
+        run: ./scripts/publish-if-needed.sh package kernex-runtime
       - name: Publish kernex-runtime
-        run: ./scripts/publish-if-needed.sh kernex-runtime
+        run: ./scripts/publish-if-needed.sh publish kernex-runtime
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
       - run: sleep 30
 
+      - name: Package kernex (umbrella)
+        run: ./scripts/publish-if-needed.sh package kernex
       - name: Publish kernex (umbrella)
-        run: ./scripts/publish-if-needed.sh kernex
+        run: ./scripts/publish-if-needed.sh publish kernex
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
