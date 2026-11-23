@@ -12,9 +12,8 @@
 # upper bound (from --sample-size and --measurement-time defaults). We
 # enforce on the median.
 #
-# Used by .github/workflows/ci.yml to close FU-A-03 (promote cold_start
-# from informational to a hard CI gate at the 50 ms threshold from
-# V2-EXECUTION-PLAN decision 1.4).
+# Used by .github/workflows/ci.yml as a hard CI gate on cold_start at
+# the 50 ms threshold.
 
 set -euo pipefail
 

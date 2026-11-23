@@ -1112,16 +1112,16 @@ fn test_normalize_due_at_already_normalized() {
 #[test]
 fn test_descriptions_similar_email_variants() {
     assert!(descriptions_are_similar(
-        "Enviar email de amor diario a Adriana (adri_navega@hotmail.com)",
-        "Enviar email de amor diario a Adriana (adri_navega@hotmail.com) — escribir un mensaje"
+        "Enviar email diario a Ana (ana@example.com)",
+        "Enviar email diario a Ana (ana@example.com) — escribir un mensaje"
     ));
 }
 
 #[test]
-fn test_descriptions_similar_hostinger() {
+fn test_descriptions_similar_hosting() {
     assert!(descriptions_are_similar(
-        "Cancel Hostinger plan — expires March 17",
-        "Cancel Hostinger VPS — last reminder, expires TOMORROW"
+        "Cancel hosting plan — expires March 17",
+        "Cancel hosting VPS — last reminder, expires TOMORROW"
     ));
 }
 
@@ -1129,7 +1129,7 @@ fn test_descriptions_similar_hostinger() {
 fn test_descriptions_different() {
     assert!(!descriptions_are_similar(
         "Send good morning message to the team",
-        "Cancel Hostinger plan and subscription"
+        "Cancel hosting plan and subscription"
     ));
 }
 
@@ -1147,7 +1147,7 @@ async fn test_create_task_fuzzy_dedup() {
             "api",
             "user1",
             "reply1",
-            "Send daily email to Adriana",
+            "Send daily email to Ana",
             "2026-02-22 07:00:00",
             Some("daily"),
             "action",
@@ -1161,7 +1161,7 @@ async fn test_create_task_fuzzy_dedup() {
             "api",
             "user1",
             "reply1",
-            "Send daily email to Adriana",
+            "Send daily email to Ana",
             "2026-02-22T07:00:00Z",
             Some("daily"),
             "action",
@@ -1176,7 +1176,7 @@ async fn test_create_task_fuzzy_dedup() {
             "api",
             "user1",
             "reply1",
-            "Send daily love email to Adriana via gmail",
+            "Send daily status email to Ana via gmail",
             "2026-02-22 07:05:00",
             Some("daily"),
             "action",
@@ -1191,7 +1191,7 @@ async fn test_create_task_fuzzy_dedup() {
             "api",
             "user2",
             "reply2",
-            "Send daily email to Adriana",
+            "Send daily email to Ana",
             "2026-02-22 07:00:00",
             Some("daily"),
             "action",
