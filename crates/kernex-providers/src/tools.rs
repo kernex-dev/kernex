@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use tracing::{debug, warn};
 
 mod files;
+mod gates;
 mod web_fetch;
 
 #[cfg(test)]
@@ -119,32 +120,6 @@ impl ToolExecutor {
     pub fn with_allowed_tools(mut self, allowed: Option<Vec<String>>) -> Self {
         self.allowed_tools = allowed;
         self
-    }
-
-    /// Whether the allowlist admits `tool_name`.
-    fn tool_allowed(&self, tool_name: &str) -> bool {
-        match &self.allowed_tools {
-            None => true,
-            Some(list) => list.iter().any(|name| name.eq_ignore_ascii_case(tool_name)),
-        }
-    }
-
-    /// What the permission rules match for this call. A file tool's path is
-    /// made absolute against the workspace first, so a rule written for a
-    /// directory cannot be sidestepped with a relative path or `..`.
-    fn rule_subject(&self, tool_name: &str, args: &Value) -> String {
-        use kernex_core::permissions::PermissionRules;
-        match tool_name.to_ascii_lowercase().as_str() {
-            "read" | "write" | "edit" | "grep" | "glob" => {
-                let given = PermissionRules::subject(tool_name, args);
-                if given.is_empty() {
-                    self.workspace_path.to_string_lossy().into_owned()
-                } else {
-                    self.resolve_path(&given).to_string_lossy().into_owned()
-                }
-            }
-            _ => PermissionRules::subject(tool_name, args),
-        }
     }
 
     /// Set a custom sandbox profile.
@@ -281,8 +256,10 @@ impl ToolExecutor {
 
         // Permission rules check.
         if let Some(rules) = &self.permission_rules {
+            let owned = self.rule_subjects(tool_name, args);
+            let subjects: Vec<&str> = owned.iter().map(String::as_str).collect();
             if let kernex_core::permissions::PermissionOutcome::Deny(reason) =
-                rules.check_subject(tool_name, &self.rule_subject(tool_name, args))
+                rules.check_subjects(tool_name, &subjects)
             {
                 return ToolResult {
                     content: format!("Tool call denied: {reason}"),
@@ -1073,6 +1050,19 @@ mod tests {
         assert!(refused.is_error && refused.content.contains("not allowed"));
         assert!(!ws.join("b.txt").exists());
 
+        // Spellings a host may carry over from an agent CLI's configuration.
+        let styled = ToolExecutor::new(ws.clone()).with_allowed_tools(Some(vec![
+            "Bash(git *)".to_string(),
+            " Read".to_string(),
+            "WebFetch".to_string(),
+            "mcp__srv__deploy".to_string(),
+        ]));
+        let names: Vec<String> = styled.all_tool_defs().into_iter().map(|d| d.name).collect();
+        assert_eq!(names, vec!["bash".to_string(), "read".to_string()]);
+        assert!(styled.tool_allowed("web_fetch"));
+        assert!(!styled.tool_allowed("deploy"), "no MCP server owns it");
+        assert!(!styled.tool_allowed("write"));
+
         let mut none = ToolExecutor::new(ws).with_allowed_tools(Some(Vec::new()));
         assert!(none.all_tool_defs().is_empty());
         assert!(
@@ -1106,6 +1096,51 @@ mod tests {
                 "{path}"
             );
         }
+        // A symlink to the denied directory, and the workspace reached under
+        // another name, name the same file.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(ws.join("private"), ws.join("link")).unwrap();
+            let alias = dir.path().join("alias");
+            std::os::unix::fs::symlink(&ws, &alias).unwrap();
+            for path in [
+                "link/key".to_string(),
+                format!("{}/private/key", alias.display()),
+            ] {
+                let result = tools
+                    .execute("read", &serde_json::json!({"file_path": path}))
+                    .await;
+                assert!(
+                    result.is_error && result.content.contains("denied by rule"),
+                    "{path}"
+                );
+            }
+        }
+        // A search that starts at the directory, above it, or with no path
+        // does not return what is inside.
+        std::fs::write(ws.join("private/note.txt"), "needle-private").unwrap();
+        std::fs::write(ws.join("public.txt"), "needle-public").unwrap();
+        for args in [
+            serde_json::json!({"pattern": "needle"}),
+            serde_json::json!({"pattern": "needle", "path": "."}),
+            serde_json::json!({"pattern": "needle", "path": "private"}),
+        ] {
+            let found = tools.execute("grep", &args).await;
+            assert!(
+                !found.content.contains("needle-private"),
+                "{args}: {}",
+                found.content
+            );
+        }
+        let found = tools
+            .execute("grep", &serde_json::json!({"pattern": "needle"}))
+            .await;
+        assert!(found.content.contains("needle-public"), "{}", found.content);
+        let listed = tools
+            .execute("glob", &serde_json::json!({"pattern": "*.txt"}))
+            .await;
+        assert!(listed.content.contains("public.txt"), "{}", listed.content);
+        assert!(!listed.content.contains("note.txt"), "{}", listed.content);
         let public = tools
             .execute("read", &serde_json::json!({"file_path": "public.txt"}))
             .await;

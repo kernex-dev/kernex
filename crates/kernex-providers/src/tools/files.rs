@@ -335,6 +335,7 @@ impl ToolExecutor {
         match tokio::time::timeout(std::time::Duration::from_secs(30), cmd.output()).await {
             Ok(Ok(output)) => {
                 let stdout = without_excluded(&String::from_utf8_lossy(&output.stdout), &excluded);
+                let stdout = self.without_rule_denied("grep", stdout);
                 // grep/rg exit code 1 = no matches (not an error for us).
                 if stdout.is_empty() && !output.status.success() {
                     // A protected path the search could not enter is not
@@ -396,6 +397,7 @@ impl ToolExecutor {
         match tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output()).await {
             Ok(Ok(output)) => {
                 let stdout = without_excluded(&String::from_utf8_lossy(&output.stdout), &excluded);
+                let stdout = self.without_rule_denied("glob", stdout);
                 if stdout.is_empty() {
                     ok("(no files matched)")
                 } else {

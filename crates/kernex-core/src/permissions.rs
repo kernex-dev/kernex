@@ -88,10 +88,29 @@ impl PermissionRules {
     /// Check a call whose subject the caller already has, for example a file
     /// path it has resolved against its workspace.
     pub fn check_subject(&self, tool_name: &str, subject: &str) -> PermissionOutcome {
+        self.check_subjects(tool_name, &[subject])
+    }
+
+    /// Whether a deny rule matches, leaving the allow list aside. For a
+    /// host that filters what a call returns: a search result is a file
+    /// that was read, whatever tool found it.
+    pub fn denies(&self, tool_name: &str, subject: &str) -> bool {
+        subject.len() > MAX_SUBJECT_LEN
+            || self
+                .deny
+                .iter()
+                .any(|pattern| pattern_matches(pattern, tool_name, subject))
+    }
+
+    /// Check a call that has more than one spelling of its subject, such as
+    /// a directory with and without its trailing slash. A deny rule that
+    /// matches any spelling blocks the call; with an allow list, one
+    /// spelling has to match an allow rule.
+    pub fn check_subjects(&self, tool_name: &str, subjects: &[&str]) -> PermissionOutcome {
         if self.allow.is_empty() && self.deny.is_empty() {
             return PermissionOutcome::Allow;
         }
-        if subject.len() > MAX_SUBJECT_LEN {
+        if subjects.iter().any(|s| s.len() > MAX_SUBJECT_LEN) {
             return PermissionOutcome::Deny(format!(
                 "arguments of '{tool_name}' exceed the {MAX_SUBJECT_LEN}-byte limit for permission rules"
             ));
@@ -99,17 +118,21 @@ impl PermissionRules {
 
         // Deny list evaluated first.
         for pattern in &self.deny {
-            if pattern_matches(pattern, tool_name, subject) {
+            if subjects
+                .iter()
+                .any(|subject| pattern_matches(pattern, tool_name, subject))
+            {
                 return PermissionOutcome::Deny(format!("denied by rule: {pattern}"));
             }
         }
 
         // If allow list is non-empty, the call must match at least one entry.
         if !self.allow.is_empty() {
-            let allowed = self
-                .allow
-                .iter()
-                .any(|p| allow_pattern_matches(p, tool_name, subject));
+            let allowed = self.allow.iter().any(|p| {
+                subjects
+                    .iter()
+                    .any(|subject| allow_pattern_matches(p, tool_name, subject))
+            });
             if !allowed {
                 return PermissionOutcome::Deny(format!("tool '{tool_name}' not in allow list"));
             }
@@ -123,7 +146,8 @@ impl PermissionRules {
 /// does not match a command that chains, pipes, substitutes or redirects:
 /// `Bash(git *)` would otherwise allow `git status; curl ...`.
 fn allow_pattern_matches(pattern: &str, tool_name: &str, subject: &str) -> bool {
-    let scoped = pattern.contains('(') && pattern.ends_with(')');
+    // `Bash(*)` says "any command", the same as a bare `Bash`.
+    let scoped = pattern.contains('(') && pattern.ends_with(')') && !pattern.ends_with("(*)");
     if scoped
         && tool_name.eq_ignore_ascii_case("bash")
         && SHELL_CONTROL.iter().any(|op| subject.contains(op))
@@ -472,6 +496,14 @@ mod tests {
                 "{command}"
             );
         }
+        let any = PermissionRules {
+            allow: vec!["Bash(*)".to_string()],
+            deny: vec![],
+        };
+        assert!(matches!(
+            any.check("bash", &json!({"command": "ls | wc -l"})),
+            PermissionOutcome::Allow
+        ));
         // A bare tool name allows every command, and a deny rule still
         // matches the whole string.
         let bare = PermissionRules {

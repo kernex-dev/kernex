@@ -80,6 +80,14 @@ pub fn tool_search_exclusions(
         .collect()
 }
 
+/// `path` with its symlinks resolved, the way the tool checks resolve it:
+/// the deepest existing ancestor is canonicalized and the remaining
+/// components are appended. For a host that matches its own rules against
+/// the file a tool would really open.
+pub fn resolved_path(path: &Path) -> PathBuf {
+    crate::policy::resolve(path)
+}
+
 /// Make `options` refuse to open a symlink at the last path component.
 ///
 /// On a platform without that flag the options are returned unchanged.
