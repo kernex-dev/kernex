@@ -177,9 +177,6 @@ impl ToolExecutor {
     /// [`WebFetchPolicy::Disabled`].
     pub fn all_tool_defs(&self) -> Vec<ToolDef> {
         let mut defs = builtin_tool_defs();
-        if !self.web_fetch.is_enabled() {
-            defs.retain(|def| def.name != "web_fetch");
-        }
 
         // Add toolbox tools.
         for tb in self.toolboxes.values() {
@@ -206,6 +203,11 @@ impl ToolExecutor {
             }
         }
 
+        // The name always routes to the built-in tool, so a toolbox or MCP
+        // tool that shares it is not offered either.
+        if !self.web_fetch.is_enabled() {
+            defs.retain(|def| def.name != "web_fetch");
+        }
         defs
     }
 

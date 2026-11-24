@@ -14,7 +14,14 @@ use super::{truncate_output, ToolExecutor, ToolResult, MAX_READ_OUTPUT};
 /// Redirects followed before a fetch is abandoned.
 const MAX_REDIRECTS: usize = 5;
 
+/// Upper bound for one call, redirects and name lookups included.
+const FETCH_TIMEOUT_SECS: u64 = 60;
+
 /// Which hosts the `web_fetch` tool may reach.
+///
+/// The policy governs the runtime's own `web_fetch` tool. A provider that
+/// is itself an agent CLI brings its own tools, which this policy does not
+/// see.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WebFetchPolicy {
@@ -108,11 +115,27 @@ impl ToolExecutor {
 
         debug!("tool/web_fetch: {url}");
 
+        let limit = std::time::Duration::from_secs(FETCH_TIMEOUT_SECS);
+        match tokio::time::timeout(limit, self.fetch_following_redirects(url)).await {
+            Ok(result) => result,
+            Err(_) => error(format!(
+                "Error: fetch of '{url}' timed out after {FETCH_TIMEOUT_SECS}s"
+            )),
+        }
+    }
+
+    async fn fetch_following_redirects(&self, url: &str) -> ToolResult {
         let mut current = url.to_string();
+        // What an error names. A redirect target is the server's text, so
+        // only its scheme and host are repeated.
+        let mut label = format!("'{url}'");
         for _ in 0..=MAX_REDIRECTS {
-            match self.fetch_hop(&current).await {
+            match self.fetch_hop(&current, &label).await {
                 Hop::Done(result) => return result,
-                Hop::Redirect(next) => current = next,
+                Hop::Redirect(next) => {
+                    label = redirect_label(&next);
+                    current = next;
+                }
             }
         }
         error(format!(
@@ -123,7 +146,7 @@ impl ToolExecutor {
     /// Send one request. The URL is validated, checked against the policy
     /// and pinned to the addresses that were validated, whether it came from
     /// the model or from a `Location` header.
-    async fn fetch_hop(&self, url: &str) -> Hop {
+    async fn fetch_hop(&self, url: &str, label: &str) -> Hop {
         let local = self.fetch_allows_local();
         // SSRF guard: only allow https://, reject loopback / private / link-local
         // / cloud-metadata IP ranges so a tool-using model cannot probe
@@ -133,18 +156,27 @@ impl ToolExecutor {
         let parsed = if local {
             match reqwest::Url::parse(url) {
                 Ok(parsed) => parsed,
-                Err(_) => return Hop::Done(refused(url, "not a valid URL")),
+                Err(_) => return Hop::Done(refused(label, "not a valid URL")),
             }
         } else {
             match is_safe_fetch_url(url) {
                 Ok(parsed) => parsed,
-                Err(reason) => return Hop::Done(refused(url, reason)),
+                Err(reason) => return Hop::Done(refused(label, reason)),
             }
         };
+        // Credentials in a URL would be sent as an Authorization header.
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Hop::Done(refused(label, "the URL carries credentials"));
+        }
+        // The name that is validated and pinned must be the name the client
+        // looks up, and a trailing dot makes them differ.
+        if parsed.host_str().is_some_and(|h| h.ends_with('.')) {
+            return Hop::Done(refused(label, "the host ends with a dot"));
+        }
         let host = normalize_host(parsed.host_str().unwrap_or(""));
         if !self.web_fetch.permits(&host) {
             return Hop::Done(refused(
-                url,
+                label,
                 "the host is not allowed by the web_fetch policy",
             ));
         }
@@ -174,7 +206,7 @@ impl ToolExecutor {
             if !local {
                 if let Some(bad) = addrs.iter().find(|a| !is_public_ip(&a.ip())) {
                     return Hop::Done(error(format!(
-                        "Error: refusing to fetch '{url}': host resolves to a non-public address ({})",
+                        "Error: refusing to fetch {label}: host resolves to a non-public address ({})",
                         bad.ip()
                     )));
                 }
@@ -200,7 +232,7 @@ impl ToolExecutor {
             return match location.and_then(|target| parsed.join(target).ok()) {
                 Some(next) => Hop::Redirect(next.to_string()),
                 None => Hop::Done(error(format!(
-                    "Error: '{url}' answered {status} without a usable Location"
+                    "Error: {label} answered {status} without a usable Location"
                 ))),
             };
         }
@@ -222,8 +254,20 @@ impl ToolExecutor {
     }
 }
 
-fn refused(url: &str, reason: &str) -> ToolResult {
-    error(format!("Error: refusing to fetch '{url}': {reason}"))
+fn refused(label: &str, reason: &str) -> ToolResult {
+    error(format!("Error: refusing to fetch {label}: {reason}"))
+}
+
+/// How an error names a redirect target: scheme and host, nothing else.
+fn redirect_label(target: &str) -> String {
+    match reqwest::Url::parse(target) {
+        Ok(url) => format!(
+            "a redirect to {}://{}",
+            url.scheme(),
+            url.host_str().unwrap_or("")
+        ),
+        Err(_) => "a redirect".to_string(),
+    }
 }
 
 /// Validate a URL for `web_fetch` against SSRF abuse.
@@ -262,13 +306,31 @@ fn is_public_ip(ip: &std::net::IpAddr) -> bool {
                 || v4.is_broadcast()
                 || v4.is_multicast()
                 || v4.is_unspecified()
+                // 0.0.0.0/8 (this host), 240.0.0.0/4 (reserved),
+                // 198.18.0.0/15 (benchmarking), 192.0.0.0/24 (protocol use).
+                || octets[0] == 0
+                || octets[0] >= 240
+                || (octets[0] == 198 && (octets[1] & 0xfe) == 18)
+                || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
                 // 169.254.169.254 — AWS / GCP / Azure instance metadata.
                 || (octets[0] == 169 && octets[1] == 254)
                 // 100.64.0.0/10 — carrier-grade NAT, often points at internal services.
                 || (octets[0] == 100 && (octets[1] & 0b1100_0000) == 64))
         }
         std::net::IpAddr::V6(v6) => {
+            // An IPv4 address written as IPv6 is judged as that IPv4 address.
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public_ip(&std::net::IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
             !(v6.is_loopback()
+                // ::/96 (IPv4-compatible), 64:ff9b::/96 (NAT64) and 2002::/16
+                // (6to4) all carry an IPv4 address that is not checked here.
+                || seg[..6] == [0; 6]
+                || (seg[0] == 0x64 && seg[1] == 0xff9b)
+                || seg[0] == 0x2002
+                // fec0::/10 — site-local.
+                || (seg[0] & 0xffc0) == 0xfec0
                 || v6.is_unspecified()
                 || v6.is_multicast()
                 // fd00::/8 — unique local addresses.
@@ -292,6 +354,72 @@ mod tests {
         assert!(!policy.is_enabled());
         assert!(!policy.permits("example.com"));
         assert!(WebFetchPolicy::AllowAll.permits("example.com"));
+    }
+
+    #[test]
+    fn test_addresses_that_only_look_public_are_rejected() {
+        for url in [
+            "https://[::ffff:127.0.0.1]/",
+            "https://[::ffff:169.254.169.254]/",
+            "https://[::ffff:10.0.0.1]/",
+            "https://[::127.0.0.1]/",
+            "https://[64:ff9b::7f00:1]/",
+            "https://[2002:7f00:1::]/",
+            "https://[fec0::1]/",
+            "https://0.1.2.3/",
+            "https://240.0.0.1/",
+            "https://198.18.0.1/",
+            "https://192.0.0.1/",
+        ] {
+            assert!(is_safe_fetch_url(url).is_err(), "{url}");
+        }
+        for url in [
+            "https://93.184.216.34/",
+            "https://[2606:4700::1111]/",
+            "https://198.20.0.1/",
+        ] {
+            assert!(is_safe_fetch_url(url).is_ok(), "{url}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_credentials_and_trailing_dot_are_refused() {
+        let port = serve().await;
+        let tools = executor(WebFetchPolicy::AllowAll);
+        let creds = fetch(&tools, format!("http://user:secret@127.0.0.1:{port}/ok")).await;
+        assert!(creds.is_error && creds.content.contains("credentials"));
+        let dotted = fetch(&tools, format!("http://localhost.:{port}/ok")).await;
+        assert!(dotted.is_error && dotted.content.contains("ends with a dot"));
+        // The same rules apply to a redirect target.
+        let hop = fetch(
+            &tools,
+            format!("http://127.0.0.1:{port}/to/http://u:p@127.0.0.1:{port}/ok"),
+        )
+        .await;
+        assert!(hop.is_error && hop.content.contains("credentials"));
+        assert!(!hop.content.contains("u:p"), "{}", hop.content);
+    }
+
+    #[tokio::test]
+    async fn test_refused_redirect_names_only_scheme_and_host() {
+        let port = serve().await;
+        let tools = executor(WebFetchPolicy::AllowHosts(vec!["127.0.0.1".to_string()]));
+        let result = fetch(
+            &tools,
+            format!("http://127.0.0.1:{port}/to/http://localhost:{port}/x?note=SYSTEM-says-ok"),
+        )
+        .await;
+        assert!(result.is_error);
+        assert!(
+            result.content.contains("a redirect to http://localhost"),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("SYSTEM-says-ok"),
+            "{}",
+            result.content
+        );
     }
 
     #[test]
