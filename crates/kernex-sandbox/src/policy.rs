@@ -56,7 +56,7 @@ pub(crate) enum Denial {
     Relative,
     /// The path is under a protected location.
     Protected,
-    /// The path is outside every write root.
+    /// The path is outside every root that applies to the request.
     OutsideWriteRoots,
     /// The policy could not be built, so nothing is allowed.
     InvalidPolicy,
@@ -112,6 +112,8 @@ pub(crate) struct Policy {
     write_deny: Vec<PathBuf>,
     read_deny: Vec<PathBuf>,
     guards: Vec<PathBuf>,
+    tool_write_roots: Vec<PathBuf>,
+    tool_read_roots: Vec<PathBuf>,
     workspace_rejection: Option<WorkspaceRejection>,
     invalid: Option<String>,
 }
@@ -188,6 +190,16 @@ impl Policy {
         if workspace_rejection.is_none() && scope.workspace.is_absolute() {
             push_unique(&mut write_roots, workspace);
         }
+        // In-process file tools: the workspace and the host's explicit
+        // paths only, not the temp and toolchain directories.
+        let mut tool_write_roots = write_roots.clone();
+        for dir in &allowed {
+            push_unique(&mut tool_write_roots, dir.clone());
+        }
+        let mut tool_read_roots = tool_write_roots.clone();
+        for dir in profile.read_paths.iter().filter(|p| p.is_absolute()) {
+            push_unique(&mut tool_read_roots, resolve(dir));
+        }
         for dir in &host.temp_dirs {
             // A temp dir that contains the home directory (a misplaced
             // `TMPDIR`) would make the whole home writable.
@@ -210,6 +222,8 @@ impl Policy {
             write_deny,
             read_deny,
             guards,
+            tool_write_roots,
+            tool_read_roots,
             workspace_rejection,
             invalid,
         }
@@ -263,6 +277,40 @@ impl Policy {
             return Err(Denial::Protected);
         }
         Ok(())
+    }
+
+    /// Decide whether an in-process file tool may read `path`, and return
+    /// the resolved path it must open.
+    pub(crate) fn check_tool_read(&self, path: &Path) -> Result<PathBuf, Denial> {
+        self.check_tool(path, &self.tool_read_roots, &self.read_deny)
+    }
+
+    /// Decide whether an in-process file tool may write `path`, and return
+    /// the resolved path it must open.
+    pub(crate) fn check_tool_write(&self, path: &Path) -> Result<PathBuf, Denial> {
+        self.check_tool(path, &self.tool_write_roots, &self.write_deny)
+    }
+
+    fn check_tool(
+        &self,
+        path: &Path,
+        roots: &[PathBuf],
+        deny: &[PathBuf],
+    ) -> Result<PathBuf, Denial> {
+        if !path.is_absolute() {
+            return Err(Denial::Relative);
+        }
+        if self.invalid.is_some() {
+            return Err(Denial::InvalidPolicy);
+        }
+        let resolved = resolve(path);
+        if under_any_deny(&resolved, deny) {
+            return Err(Denial::Protected);
+        }
+        if under_any(&resolved, roots) {
+            return Ok(resolved);
+        }
+        Err(Denial::OutsideWriteRoots)
     }
 
     /// Decide whether `path` may be written.

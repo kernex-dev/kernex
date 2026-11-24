@@ -89,10 +89,12 @@
 //! tool implemented without a subprocess) is not subject to this policy;
 //! it has its own request-level validation.
 //!
-//! Also provides [`is_write_blocked`] and [`is_read_blocked`] for code-level
-//! enforcement in tool executors. They apply the same policy on every
-//! platform, so an in-process tool never reaches further than a sandboxed
-//! subprocess.
+//! Also provides [`is_write_blocked`] and [`is_read_blocked`], which apply
+//! the subprocess policy to a path on every platform, and the narrower
+//! checks for in-process file tools ([`tool_read_path`],
+//! [`tool_write_path`]): those confine a tool to the workspace,
+//! `allowed_paths` and `read_paths`, because no OS profile stands behind
+//! code that runs inside the host process.
 //!
 //! This crate is intentionally standalone with zero internal dependencies,
 //! making it usable outside the Kernex ecosystem.
@@ -111,6 +113,10 @@ pub struct SandboxProfile {
     pub allowed_paths: Vec<PathBuf>,
     /// Extra paths that should be completely blocked for read/write.
     pub blocked_paths: Vec<PathBuf>,
+    /// Extra directories the in-process file tools may read, beside the
+    /// workspace and `allowed_paths` (see [`tool_read_path`]). Subprocess
+    /// reads are not affected: they are broad already.
+    pub read_paths: Vec<PathBuf>,
     /// When `true`, [`try_protected_command`] returns an error if OS-level
     /// enforcement is unavailable (no Seatbelt on macOS, no Landlock kernel
     /// support on Linux, or an unsupported platform). Defaults to `false`,
@@ -157,6 +163,12 @@ impl SandboxProfile {
     /// Set the paths blocked for both reads and writes.
     pub fn with_blocked_paths(mut self, paths: Vec<PathBuf>) -> Self {
         self.blocked_paths = paths;
+        self
+    }
+
+    /// Set the extra directories the file tools may read.
+    pub fn with_read_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.read_paths = paths;
         self
     }
 
@@ -262,10 +274,14 @@ mod gate;
 mod paths;
 mod policy;
 mod scope;
+mod tool_access;
 
 pub use env::{hardened_env, BASE_ENV_ALLOWLIST};
 pub use paths::{credential_read_deny_dirs, write_allow_dirs};
 pub use scope::SandboxScope;
+pub use tool_access::{
+    no_follow, tool_read_path, tool_search_exclusions, tool_write_path, ToolPathDenied,
+};
 
 use gate::check_workspace;
 use policy::Policy;
