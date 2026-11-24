@@ -195,8 +195,19 @@ pub(crate) fn is_plain_name(name: &str) -> bool {
 }
 
 /// Create `dir` (and its parents) and make it readable by the owner only.
+///
+/// `dir` itself must be a directory, not a symlink: the sandbox grants
+/// write access to the place a granted path resolves to, so a link left
+/// where a CLI keeps its state would carry the next call's access, and this
+/// change of permissions, wherever it points.
 pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dir)?;
+    if !std::fs::symlink_metadata(dir)?.is_dir() {
+        return Err(std::io::Error::other(format!(
+            "{} is not a directory",
+            dir.display()
+        )));
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -209,6 +220,26 @@ pub(crate) fn create_private_dir(dir: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_dir_that_is_a_symlink_is_refused() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let victim = root.path().join("victim");
+        std::fs::create_dir(&victim).unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = root.path().join("state");
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        assert!(create_private_dir(&link).is_err());
+        let mode = std::fs::metadata(&victim).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o755);
+
+        let plain = root.path().join("plain").join("dir");
+        create_private_dir(&plain).unwrap();
+        let mode = std::fs::metadata(&plain).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
 
     fn server(name: &str, network: bool) -> McpServer {
         McpServer {

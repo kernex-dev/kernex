@@ -44,7 +44,12 @@ those limits are stated.
   cache/state dirs; reads of credential stores (`~/.ssh`, `~/.aws`,
   `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, gh/gcloud configs,
   browser/keychain stores) are denied; the runtime's own database and config
-  are unreadable and unwritable. Code-level checks
+  are unreadable and unwritable. On macOS a write root itself, and every
+  directory between it and an enclosing write root, cannot be created,
+  removed, renamed or replaced by a symlink inside the sandbox, so a toolchain
+  cache directory that does not exist yet must be created outside it; a host
+  path granted through `allowed_paths` that is itself a symlink is ignored.
+  Code-level checks
   (`is_read_blocked`/`is_write_blocked`) back this on all platforms.
 - **Network egress deny-by-default** — sandboxed tool subprocesses cannot open
   network connections unless the tool declares `network = true`. On macOS

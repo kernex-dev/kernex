@@ -14,14 +14,18 @@
 //!   would leave its protected name.
 //! - `allowed_paths` lifts a default credential entry it names exactly,
 //!   never the runtime's state or a `blocked_paths` entry. An entry that
-//!   contains the home directory is ignored.
+//!   contains the home directory, or that is itself a symlink, is ignored.
 //!
 //! Every path is compared after symlink resolution, including a path whose
 //! last components do not exist yet.
 //!
 //! A protected path inside a write root could be reached by renaming one of
-//! the directories above it, so the policy also lists those directories
-//! ([`Policy::guards`]): the OS profile denies renaming or removing them.
+//! the directories above it, and a write root replaced by a symlink would
+//! carry the next sandbox's write access wherever the link points. So the
+//! policy also lists the write roots themselves and the directories above a
+//! protected path or a write root that sit inside a write root
+//! ([`Policy::guards`]): the OS profile denies creating, renaming or
+//! removing them.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -160,6 +164,8 @@ impl Policy {
             .allowed_paths
             .iter()
             .filter(|p| p.is_absolute())
+            // A link put in place of the entry would carry the grant elsewhere.
+            .filter(|p| !p.symlink_metadata().is_ok_and(|m| m.is_symlink()))
             .map(|p| resolve(p))
             // Like a misplaced temp dir: it would make the whole home writable.
             .filter(|p| !home.starts_with(p))
@@ -260,10 +266,13 @@ impl Policy {
         &self.read_deny
     }
 
-    /// Directories above a protected path that sit inside a write root.
-    /// Renaming or removing one of them would move the protected path, so
-    /// the OS profile denies writes to these directories themselves (not
-    /// to their other contents). Read by the Seatbelt generator only.
+    /// The write roots, and the directories above a protected path or a
+    /// write root that sit inside a write root. Renaming or removing one of
+    /// them would move the protected path or let a symlink take the root's
+    /// place, so the OS profile denies writes to these directories
+    /// themselves (not to their other contents). A write root that does not
+    /// exist yet cannot be created inside the sandbox. Read by the Seatbelt
+    /// generator only.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn guards(&self) -> &[PathBuf] {
         &self.guards
@@ -415,13 +424,14 @@ fn first_relative(scope: &SandboxScope, profile: &SandboxProfile) -> Option<Stri
         .map(|(what, path)| format!("{what} is not an absolute path: {}", path.display()))
 }
 
-/// Every directory from a write root down to the parent of a deny path
-/// that the root contains.
+/// Every directory from a write root down to the parent of a deny path, or
+/// down to a write root, that the root contains.
 fn guard_dirs(roots: &[PathBuf], write_deny: &[PathBuf], read_deny: &[PathBuf]) -> Vec<PathBuf> {
     let mut guards = Vec::new();
-    for denied in write_deny.iter().chain(read_deny) {
+    let above_denied = write_deny.iter().chain(read_deny).map(|d| d.parent());
+    for start in above_denied.chain(roots.iter().map(|r| Some(r.as_path()))) {
         for root in roots {
-            let mut dir = denied.parent();
+            let mut dir = start;
             while let Some(current) = dir {
                 if !current.starts_with(root) {
                     break;
@@ -915,12 +925,60 @@ mod tests {
         assert!(!policy.guards().contains(&p("code")));
 
         // State outside every root needs no guard. What remains guards the
-        // toolchain directories that hold a read-only `bin` or a credential
-        // file.
+        // write roots and the toolchain directories that hold a read-only
+        // `bin` or a credential file.
         let default_guards = self::policy().guards().to_vec();
         assert!(default_guards.contains(&p(".cargo")));
         assert!(!default_guards.iter().any(|g| g.starts_with(p(".kernex"))));
-        assert!(!default_guards.contains(&p("code/proj")));
+        assert!(!default_guards.contains(&p("code")));
+    }
+
+    #[test]
+    fn test_guards_keep_every_write_root_in_place() {
+        // A workspace inside the temp dir: the workspace, and every
+        // directory between it and the temp dir, cannot be swapped.
+        let scope = SandboxScope::new("/kx-policy-test/tmp/run/ws", format!("{HOME}/.kernex"));
+        let profile = SandboxProfile {
+            allowed_paths: vec![p(".kernex/cli/claude")],
+            ..Default::default()
+        };
+        let policy = Policy::with_host(&scope, &profile, &host());
+        let guards = policy.guards();
+        for dir in [
+            "/kx-policy-test/tmp/run/ws",
+            "/kx-policy-test/tmp/run",
+            "/kx-policy-test/tmp",
+        ] {
+            assert!(guards.contains(&PathBuf::from(dir)), "{dir}");
+        }
+        assert!(guards.contains(&p(".kernex/cli/claude")));
+        assert!(guards.contains(&p(".npm")));
+        assert!(!guards.contains(&PathBuf::from("/kx-policy-test")));
+        assert!(!guards.contains(&p(".kernex/cli")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_an_allowed_path_that_is_a_symlink_is_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        let link = dir.path().join("state");
+        std::fs::create_dir(&victim).unwrap();
+        std::os::unix::fs::symlink(&victim, &link).unwrap();
+        let profile = SandboxProfile {
+            allowed_paths: vec![link.clone(), dir.path().join("plain")],
+            ..Default::default()
+        };
+        let policy = Policy::with_host(&scope(), &profile, &host());
+        let victim = resolve(&victim);
+        assert!(!policy.write_roots().iter().any(|r| r == &victim));
+        assert_eq!(
+            policy.check_tool_write(&link.join("f")),
+            Err(Denial::OutsideWriteRoots)
+        );
+        assert!(policy
+            .write_roots()
+            .contains(&resolve(&dir.path().join("plain"))));
     }
 
     #[test]

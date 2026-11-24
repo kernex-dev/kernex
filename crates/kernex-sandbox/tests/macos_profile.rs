@@ -359,3 +359,45 @@ fn keychain_is_out_of_reach_unless_allowed() {
         allowed.stderr
     );
 }
+
+#[test]
+fn write_roots_cannot_be_swapped_for_a_symlink() {
+    if !enforcement_or_skip("root_swap") {
+        return;
+    }
+    // Inside the temp dir, itself a write root, so a root and the
+    // directory above it are both reachable by a rename.
+    let base = tempfile::tempdir().expect("base");
+    let base = base.path().canonicalize().unwrap();
+    let parent = base.join("run");
+    let ws = parent.join("ws");
+    let state = parent.join("state");
+    let victim = base.join("victim");
+    for dir in [&ws, &state, &victim] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let scope = SandboxScope::new(&ws, home().join(".kernex"));
+    let mut profile = SandboxProfile::default();
+    profile.allowed_paths.push(state.clone());
+    let (v, p) = (victim.display(), parent.display());
+    for root in [&ws, &state] {
+        let r = root.display();
+        let script = format!(
+            "cd / ; rmdir '{r}' ; ln -s '{v}' '{r}' ; mv '{r}' '{r}.old' ; \
+             mv '{p}' '{p}.old' && mkdir '{p}' && ln -s '{v}' '{r}' ; true"
+        );
+        let out = sandboxed(
+            &scope,
+            &profile,
+            Path::new("/"),
+            "/bin/sh",
+            &["-c", &script],
+        );
+        let meta = std::fs::symlink_metadata(root).expect("root still exists");
+        assert!(
+            meta.is_dir() && !parent.with_extension("old").exists(),
+            "{r} was swapped: {}",
+            out.stderr
+        );
+    }
+}

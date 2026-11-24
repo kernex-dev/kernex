@@ -423,3 +423,33 @@ printf '{{"type":"result","subtype":"success","result":"ok"}}'
         "a job the CLI left running outlived the call"
     );
 }
+
+#[tokio::test]
+async fn a_cli_state_directory_replaced_by_a_link_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("state");
+    let victim = root.path().join("victim");
+    std::fs::create_dir_all(data_dir.join("cli")).unwrap();
+    std::fs::create_dir_all(&victim).unwrap();
+    let probe = victim.join("written");
+    for dir in ["claude", "opencode"] {
+        std::os::unix::fs::symlink(&victim, data_dir.join("cli").join(dir)).unwrap();
+    }
+    let dirs = SandboxDirs::new().with_data_dir(&data_dir);
+
+    let cli = stand_in(root.path(), "fake-claude", &[&probe]);
+    let claude = ClaudeCodeProvider::from_config(3, vec![], 60, None, 0, String::new(), None)
+        .with_sandbox_dirs(dirs.clone())
+        .with_program(cli.to_string_lossy());
+    assert!(claude.complete(&Context::new("hello")).await.is_err());
+
+    let cli = stand_in(root.path(), "fake-opencode", &[&probe]);
+    let opencode = OpenCodeProvider::from_config(60, None, "anthropic/claude-sonnet-4-6".into())
+        .with_sandbox_dirs(dirs)
+        .with_program(cli.to_string_lossy())
+        .with_env_source(fake_key);
+    assert!(opencode.complete(&Context::new("hello")).await.is_err());
+
+    // Neither CLI ran, and the link target was left as it was.
+    assert_eq!(std::fs::read_dir(&victim).unwrap().count(), 0);
+}
