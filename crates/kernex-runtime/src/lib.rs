@@ -37,6 +37,8 @@
 
 pub use kernex_adapter_core::{Adapter, AdapterError, AdapterId, AdapterRegistry, Capability};
 
+#[cfg(feature = "sqlite-store")]
+mod persist;
 #[cfg(feature = "opentelemetry")]
 pub mod telemetry;
 
@@ -280,8 +282,7 @@ impl Runtime {
         let project_key = project_ref.unwrap_or("default");
 
         #[cfg(feature = "sqlite-store")]
-        self.store
-            .store_exchange(&self.channel, request, &response, project_key)
+        self.store_exchange(needs, request, &response, project_key)
             .await?;
 
         // Record token usage if the provider reported a count.
@@ -423,7 +424,7 @@ impl Runtime {
 
         // Background task: forward events and persist exchange when done.
         #[cfg(feature = "sqlite-store")]
-        let store = self.store.clone();
+        let (store, store_wanted) = (self.store.clone(), needs.store);
         let channel = self.channel.clone();
         let request_clone = request.clone();
         #[allow(unused_variables)]
@@ -476,9 +477,15 @@ impl Runtime {
                         ..Default::default()
                     },
                 };
-                if let Err(e) = store
-                    .store_exchange(&channel, &request_clone, &response, &project_key)
-                    .await
+                if let Err(e) = persist::exchange(
+                    store_wanted,
+                    &store,
+                    &channel,
+                    &request_clone,
+                    &response,
+                    &project_key,
+                )
+                .await
                 {
                     tracing::warn!("failed to persist streaming exchange: {e}");
                 }
@@ -511,7 +518,7 @@ impl Runtime {
         request: &Request,
         config: &RunConfig,
     ) -> Result<RunOutcome, KernexError> {
-        let needs = ContextNeeds::default();
+        let needs = &config.needs;
         let project_ref = self.project.as_deref();
 
         // Input guardrail.
@@ -554,7 +561,7 @@ impl Runtime {
                     Some(ProviderSummarizer { provider }),
                 )
             } else {
-                (std::borrow::Cow::Borrowed(&needs), None)
+                (std::borrow::Cow::Borrowed(needs), None)
             };
             self.store
                 .build_context(
@@ -654,8 +661,7 @@ impl Runtime {
         #[allow(unused_variables)]
         let project_key = project_ref.unwrap_or("default");
         #[cfg(feature = "sqlite-store")]
-        self.store
-            .store_exchange(&self.channel, request, &response, project_key)
+        self.store_exchange(needs, request, &response, project_key)
             .await?;
 
         Ok(RunOutcome::EndTurn(response))

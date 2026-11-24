@@ -1,5 +1,6 @@
 //! Configuration and outcome types for the agentic runtime loop.
 
+use crate::context::ContextNeeds;
 use crate::message::Response;
 
 /// Selects a performance/cost tier when creating a provider via `ProviderConfig`.
@@ -27,6 +28,9 @@ pub struct RunConfig {
     /// [`RunOutcome::BudgetExhausted`]. A completed final answer is always
     /// returned even if it crosses the budget.
     pub token_budget: Option<u64>,
+    /// Which memory blocks the run loads, and whether it writes to memory.
+    /// Default: [`ContextNeeds::default`].
+    pub needs: ContextNeeds,
 }
 
 impl Default for RunConfig {
@@ -34,6 +38,7 @@ impl Default for RunConfig {
         Self {
             max_turns: 50,
             token_budget: None,
+            needs: ContextNeeds::default(),
         }
     }
 }

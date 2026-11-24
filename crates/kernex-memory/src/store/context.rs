@@ -46,9 +46,16 @@ impl Store {
         summarizer: Option<&dyn Summarizer>,
     ) -> Result<Context, MemoryError> {
         let project_key = active_project.unwrap_or("");
-        let conv_id = self
-            .get_or_create_conversation(channel, &incoming.sender_id, project_key)
-            .await?;
+        // Without storing, an existing conversation is read and none is
+        // created or touched; an empty id matches no message.
+        let conv_id = if needs.store {
+            self.get_or_create_conversation(channel, &incoming.sender_id, project_key)
+                .await?
+        } else {
+            self.find_conversation(channel, &incoming.sender_id, project_key)
+                .await?
+                .unwrap_or_default()
+        };
 
         let history_fut = async {
             let rows: Vec<(String, String)> = sqlx::query_as(
@@ -217,9 +224,11 @@ impl Store {
                 lang.clone()
             } else {
                 let detected = detect_language(&incoming.text).to_string();
-                let _ = self
-                    .store_fact(&incoming.sender_id, "preferred_language", &detected)
-                    .await;
+                if needs.store {
+                    let _ = self
+                        .store_fact(&incoming.sender_id, "preferred_language", &detected)
+                        .await;
+                }
                 detected
             };
 
@@ -238,7 +247,11 @@ impl Store {
 
         let new_stage = compute_onboarding_stage(current_stage, real_fact_count, has_tasks);
 
-        let onboarding_hint = if new_stage != current_stage {
+        // Onboarding advances by storing its stage, so a call that stores
+        // nothing shows no hint.
+        let onboarding_hint = if !needs.store {
+            None
+        } else if new_stage != current_stage {
             let _ = self
                 .store_fact(
                     &incoming.sender_id,
@@ -272,7 +285,7 @@ impl Store {
         };
 
         let facts_for_prompt: &[(String, String)] = if needs.profile { &facts } else { &[] };
-        let built_prompt = build_system_prompt(&SystemPromptContext {
+        let system_prompt = build_system_prompt(&SystemPromptContext {
             base_rules: base_system_prompt,
             facts: facts_for_prompt,
             summaries: &summaries,
@@ -282,13 +295,8 @@ impl Store {
             lessons: &lessons,
             language: &language,
             onboarding_hint,
+            compact_summary: compact_summary.as_deref(),
         });
-
-        let system_prompt = if let Some(summary) = compact_summary {
-            format!("[Earlier conversation summary]\n{summary}\n\n{built_prompt}")
-        } else {
-            built_prompt
-        };
 
         Ok(Context {
             system_prompt,

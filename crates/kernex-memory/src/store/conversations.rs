@@ -15,21 +15,7 @@ impl Store {
         sender_id: &str,
         project: &str,
     ) -> Result<String, MemoryError> {
-        let row: Option<(String,)> = sqlx::query_as(
-            "SELECT id FROM conversations \
-             WHERE channel = ? AND sender_id = ? AND project = ? AND status = 'active' \
-             AND datetime(last_activity) > datetime('now', ? || ' minutes') \
-             ORDER BY last_activity DESC LIMIT 1",
-        )
-        .bind(channel)
-        .bind(sender_id)
-        .bind(project)
-        .bind(-CONVERSATION_TIMEOUT_MINUTES)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| MemoryError::sqlite("query failed", e))?;
-
-        if let Some((id,)) = row {
+        if let Some(id) = self.find_conversation(channel, sender_id, project).await? {
             sqlx::query(
                 "UPDATE conversations SET last_activity = datetime('now'), updated_at = datetime('now') WHERE id = ?",
             )
@@ -54,6 +40,30 @@ impl Store {
         .map_err(|e| MemoryError::sqlite("insert failed", e))?;
 
         Ok(id)
+    }
+
+    /// The active conversation of `sender_id` on `channel` and `project`,
+    /// if one has had activity recently. Reads only.
+    pub(crate) async fn find_conversation(
+        &self,
+        channel: &str,
+        sender_id: &str,
+        project: &str,
+    ) -> Result<Option<String>, MemoryError> {
+        let row: Option<(String,)> = sqlx::query_as(
+            "SELECT id FROM conversations \
+             WHERE channel = ? AND sender_id = ? AND project = ? AND status = 'active' \
+             AND datetime(last_activity) > datetime('now', ? || ' minutes') \
+             ORDER BY last_activity DESC LIMIT 1",
+        )
+        .bind(channel)
+        .bind(sender_id)
+        .bind(project)
+        .bind(-CONVERSATION_TIMEOUT_MINUTES)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| MemoryError::sqlite("query failed", e))?;
+        Ok(row.map(|(id,)| id))
     }
 
     /// Find active conversations that have been idle beyond the timeout.
