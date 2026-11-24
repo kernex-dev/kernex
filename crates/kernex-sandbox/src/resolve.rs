@@ -42,15 +42,19 @@ fn resolve_within(path: &Path, budget: &mut u8) -> PathBuf {
             Component::Normal(name) => {
                 let parent = current.clone();
                 current.push(name);
-                if current.symlink_metadata().is_err() {
+                if *budget == 0 || current.symlink_metadata().is_err() {
                     continue;
                 }
-                if let Ok(real) = std::fs::canonicalize(&current) {
-                    current = real;
-                } else if let Ok(target) = std::fs::read_link(&current) {
-                    if *budget > 0 {
-                        *budget -= 1;
-                        current = resolve_within(&parent.join(target), budget);
+                match std::fs::canonicalize(&current) {
+                    Ok(real) => current = real,
+                    // The kernel cannot open it either: stop following, and
+                    // leave the link in place for the caller to refuse.
+                    Err(e) if is_loop(&e) => *budget = 0,
+                    Err(_) => {
+                        if let Ok(target) = std::fs::read_link(&current) {
+                            *budget -= 1;
+                            current = resolve_within(&parent.join(target), budget);
+                        }
                     }
                 }
             }
@@ -59,16 +63,27 @@ fn resolve_within(path: &Path, budget: &mut u8) -> PathBuf {
     current
 }
 
+#[cfg(unix)]
+fn is_loop(e: &std::io::Error) -> bool {
+    e.raw_os_error() == Some(libc::ELOOP)
+}
+
+#[cfg(not(unix))]
+fn is_loop(_: &std::io::Error) -> bool {
+    false
+}
+
 /// Where the symlinks met while resolving `path` sit, each given by its
 /// own location (its parent resolved, its name as written). A process that
 /// can repoint one of them changes what `path` resolves to next time.
-pub(crate) fn links_on(path: &Path) -> Vec<PathBuf> {
+/// `None` when there are more than can be followed.
+pub(crate) fn links_on(path: &Path) -> Option<Vec<PathBuf>> {
     let (mut links, mut budget) = (Vec::new(), MAX_LINKS);
-    collect_links(path, &mut budget, &mut links);
-    links
+    collect_links(path, &mut budget, &mut links).then_some(links)
 }
 
-fn collect_links(path: &Path, budget: &mut u8, links: &mut Vec<PathBuf>) {
+/// Returns false when the budget ran out.
+fn collect_links(path: &Path, budget: &mut u8, links: &mut Vec<PathBuf>) -> bool {
     let mut current = PathBuf::new();
     for component in path.components() {
         match component {
@@ -89,17 +104,24 @@ fn collect_links(path: &Path, budget: &mut u8, links: &mut Vec<PathBuf>) {
             links.push(parent.join(name));
         }
         if *budget == 0 {
-            return;
+            return false;
         }
         *budget -= 1;
-        collect_links(&parent.join(target), budget, links);
+        if !collect_links(&parent.join(target), budget, links) {
+            return false;
+        }
         current = resolve(&current);
     }
+    true
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    fn links(path: &Path) -> Vec<PathBuf> {
+        links_on(path).unwrap()
+    }
 
     #[test]
     fn links_on_names_every_link_where_it_sits() {
@@ -111,39 +133,53 @@ mod tests {
         std::os::unix::fs::symlink(base.join("a"), base.join("b")).unwrap();
         std::os::unix::fs::symlink("inner", base.join("real/rel")).unwrap();
 
-        assert_eq!(links_on(&base.join("a/inner")), [base.join("a")]);
+        assert_eq!(links(&base.join("a/inner")), [base.join("a")]);
         assert_eq!(
-            links_on(&base.join("b/rel/x")),
+            links(&base.join("b/rel/x")),
             [base.join("b"), base.join("a"), base.join("real/rel")]
         );
-        assert!(links_on(&base.join("real/inner")).is_empty());
+        assert!(links(&base.join("real/inner")).is_empty());
         // `..` after a component that does not exist goes back as written.
-        assert_eq!(links_on(&base.join("missing/../a/inner")), [base.join("a")]);
+        assert_eq!(links(&base.join("missing/../a/inner")), [base.join("a")]);
     }
 
-    #[test]
-    fn a_long_chain_is_followed_to_its_end() {
-        let dir = tempfile::tempdir().unwrap();
-        let base = resolve(dir.path());
+    fn chain(base: &Path, len: usize) {
         std::fs::create_dir(base.join("real")).unwrap();
         let mut next = base.join("real");
-        for i in (0..30).rev() {
+        for i in (0..len).rev() {
             let link = base.join(format!("l{i}"));
             std::os::unix::fs::symlink(&next, &link).unwrap();
             next = link;
         }
-        assert_eq!(links_on(&base.join("l0/ws")).len(), 30);
+    }
+
+    #[test]
+    fn a_chain_the_kernel_opens_is_followed_to_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = resolve(dir.path());
+        chain(&base, 30);
+        assert_eq!(links(&base.join("l0/ws")).len(), 30);
         assert_eq!(resolve(&base.join("l0/ws")), base.join("real/ws"));
+    }
+
+    #[test]
+    fn a_chain_longer_than_the_budget_is_not_followed() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = resolve(dir.path());
+        chain(&base, 45);
+        assert_eq!(links_on(&base.join("l0/ws")), None);
+        // The kernel stops before the end too; the link is left in place.
+        assert_eq!(resolve(&base.join("l0/ws")), base.join("l0/ws"));
     }
 
     #[test]
     fn a_link_through_itself_costs_a_bounded_walk() {
         let dir = tempfile::tempdir().unwrap();
         let base = resolve(dir.path());
-        std::os::unix::fs::symlink("a/../a", base.join("a")).unwrap();
+        std::os::unix::fs::symlink("a/../".repeat(150) + "a", base.join("a")).unwrap();
         let start = std::time::Instant::now();
-        let _ = resolve(&base.join("a/x"));
-        let _ = links_on(&base.join("a/x"));
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(resolve(&base.join("a/x")), base.join("a/x"));
+        assert_eq!(links_on(&base.join("a/x")), None);
+        assert!(start.elapsed() < std::time::Duration::from_millis(500));
     }
 }

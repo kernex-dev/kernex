@@ -44,14 +44,16 @@ those limits are stated.
   cache/state dirs; reads of credential stores (`~/.ssh`, `~/.aws`,
   `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, gh/gcloud configs,
   browser/keychain stores) are denied; the runtime's own database and config
-  are unreadable and unwritable. On macOS a write root, a symlink on the
-  path the host names a root or a protected path by, and every directory
-  between either of them and an enclosing write root cannot be created,
-  removed or renamed inside the sandbox (a directory root's contents,
-  timestamps and mode stay writable; a directory above a protected path
-  cannot be written at all), so a toolchain cache directory that does not
-  exist yet must be created outside it. A host path granted through
-  `allowed_paths` that is itself a symlink is ignored.
+  are unreadable and unwritable. On macOS a directory write root (or the
+  directory of a file root), a symlink on the way to a root or a protected
+  path, and every directory between either of them and an enclosing write
+  root cannot be created, removed or renamed inside the sandbox. A directory
+  root's contents, timestamps and mode stay writable; a directory above a
+  protected path or above another such path cannot be written at all. So a
+  toolchain cache directory that does not exist yet must be created outside
+  the sandbox. A host path granted through `allowed_paths` that is itself a
+  symlink is ignored, and a policy whose paths go through more symlinks than
+  the kernel follows allows nothing.
   Code-level checks
   (`is_read_blocked`/`is_write_blocked`) back this on all platforms.
 - **Network egress deny-by-default** — sandboxed tool subprocesses cannot open

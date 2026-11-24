@@ -272,6 +272,7 @@ use tracing::warn;
 
 mod env;
 mod gate;
+mod guards;
 mod paths;
 mod policy;
 mod process;

@@ -495,3 +495,71 @@ fn a_directory_above_protected_state_keeps_its_mode() {
     }
     assert_eq!(std::fs::metadata(&ws).unwrap().permissions(), before);
 }
+
+#[test]
+fn the_directory_of_a_granted_file_cannot_be_swapped() {
+    if !enforcement_or_skip("file_root_dir") {
+        return;
+    }
+    let (_guard, ws) = workspace("file-root-");
+    let (sub, victim) = (ws.join("sub"), ws.join("victim"));
+    std::fs::create_dir_all(&sub).unwrap();
+    std::fs::create_dir_all(&victim).unwrap();
+    std::fs::write(sub.join("granted.txt"), "x").unwrap();
+    let scope = SandboxScope::new(&ws, home().join(".kernex"));
+    let mut profile = SandboxProfile::default();
+    profile.allowed_paths.push(sub.join("granted.txt"));
+    let (s, v) = (sub.display(), victim.display());
+    let script = format!("mv '{s}' '{s}.old' && ln -s '{v}' '{s}'");
+    let out = sandboxed(&scope, &profile, &ws, "/bin/sh", &["-c", &script]);
+    assert!(!out.ok, "the directory was swapped");
+    assert!(std::fs::symlink_metadata(&sub).unwrap().is_dir());
+}
+
+#[test]
+fn a_link_to_protected_state_cannot_be_replaced() {
+    if !enforcement_or_skip("state_link") {
+        return;
+    }
+    // The data directory sits in the workspace and its `data` directory is
+    // a link to where the state really is. Replacing the link with a real
+    // directory would leave the state unprotected for the next sandbox.
+    let (_guard, ws) = workspace("state-link-");
+    let real = ws.join("elsewhere");
+    std::fs::create_dir_all(&real).unwrap();
+    std::fs::create_dir_all(ws.join(".agent")).unwrap();
+    let link = ws.join(".agent/data");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let scope = SandboxScope::new(&ws, ws.join(".agent"));
+    let profile = SandboxProfile::default();
+    let l = link.display();
+    let script = format!("rm '{l}' ; mv '{l}' '{l}.old' ; mkdir '{l}' ; true");
+    let out = sandboxed(&scope, &profile, &ws, "/bin/sh", &["-c", &script]);
+    assert_eq!(std::fs::read_link(&link).ok(), Some(real), "{}", out.stderr);
+}
+
+#[test]
+fn a_directory_above_a_write_root_keeps_its_mode() {
+    if !enforcement_or_skip("pin_mode") {
+        return;
+    }
+    // The workspace inside the temp dir: the directory between them stays
+    // closed to other accounts, which could otherwise move the workspace.
+    let base = tempfile::tempdir().expect("base");
+    let run = base.path().canonicalize().unwrap().join("run");
+    std::fs::create_dir_all(run.join("ws")).unwrap();
+    let scope = SandboxScope::new(run.join("ws"), home().join(".kernex"));
+    let before = std::fs::metadata(&run).unwrap().permissions();
+    let r = run.display();
+    let script = format!("chmod 777 '{r}' || chmod +a 'everyone allow delete_child' '{r}'");
+    let profile = SandboxProfile::default();
+    let out = sandboxed(
+        &scope,
+        &profile,
+        Path::new("/"),
+        "/bin/sh",
+        &["-c", &script],
+    );
+    assert!(!out.ok, "the mode was changed");
+    assert_eq!(std::fs::metadata(&run).unwrap().permissions(), before);
+}

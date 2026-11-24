@@ -30,7 +30,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::resolve::links_on;
 pub(crate) use crate::resolve::resolve;
 use crate::{SandboxProfile, SandboxScope};
 
@@ -135,7 +134,7 @@ impl Policy {
         profile: &SandboxProfile,
         host: &HostDirs,
     ) -> Self {
-        let invalid = first_relative(scope, profile);
+        let mut invalid = first_relative(scope, profile);
         let home = resolve(&host.home);
         let workspace = resolve(&scope.workspace);
 
@@ -237,25 +236,22 @@ impl Policy {
             push_unique(&mut write_roots, dir);
         }
 
-        let above_denied = write_deny.iter().chain(&read_deny);
-        let guards = guard_dirs(&write_roots, above_denied.filter_map(|d| d.parent()));
         // A link on the way to a root or a protected path, inside a root,
-        // could be repointed: it is pinned like a root. A file root is left
-        // out so it can be saved by renaming over it; a link put in its
-        // place is ignored by the next policy.
-        let toolchain = crate::write_allow_dirs(&home);
-        let named = [&scope.workspace, &scope.data_dir].into_iter();
-        let named = named.chain(scope.db_path.iter().chain(&scope.config_path));
-        let named = named.chain(&host.temp_dirs).chain(&toolchain);
-        let named = named
-            .chain(&profile.allowed_paths)
-            .chain(&profile.blocked_paths);
-        let links: Vec<PathBuf> = named
-            .filter(|p| p.is_absolute())
-            .flat_map(|p| links_on(p))
-            .collect();
-        let dir_roots = write_roots.iter().filter(|r| !r.is_file());
-        let pins = guard_dirs(&write_roots, dir_roots.chain(&links).map(PathBuf::as_path));
+        // could be repointed, so every path the policy is built from is
+        // walked for links.
+        let data = crate::paths::DATA_READ_ONLY
+            .iter()
+            .chain(crate::paths::AGENT_CLI_STATE);
+        let mut named: Vec<PathBuf> = data.map(|d| scope.data_dir.join(d)).collect();
+        named.extend(crate::credential_read_deny_dirs(&home));
+        named.extend(crate::paths::toolchain_exec_paths(&home));
+        named.extend(crate::write_allow_dirs(&home));
+        named.extend([scope.workspace.clone(), scope.data_dir.clone()]);
+        let given = host.temp_dirs.iter().chain(&profile.allowed_paths);
+        named.extend(given.chain(&profile.blocked_paths).chain(&state).cloned());
+        let denied = write_deny.iter().chain(&read_deny).map(PathBuf::as_path);
+        let (guards, pins, too_many) = crate::guards::guards_and_pins(&write_roots, denied, &named);
+        invalid = invalid.or(too_many);
 
         Self {
             write_roots,
@@ -286,19 +282,20 @@ impl Policy {
         &self.read_deny
     }
 
-    /// Directories above a protected path that sit inside a write root.
-    /// Renaming or removing one of them would move the protected path, and
-    /// a change of mode or ACL would let another account do it, so the OS
-    /// profile denies writes to these directories themselves (not to their
-    /// other contents). Read by the Seatbelt generator only.
+    /// Directories above a protected path or above a pin that sit inside a
+    /// write root. Renaming or removing one of them would move what is
+    /// below, and a change of mode or ACL would let another account do it,
+    /// so the OS profile denies writes to these directories themselves (not
+    /// to their other contents). Read by the Seatbelt generator only.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn guards(&self) -> &[PathBuf] {
         &self.guards
     }
 
-    /// The directory write roots, the symlinks met on the way to a root or
-    /// a protected path, and the directories between them and an enclosing
-    /// write root. Removing, renaming or replacing one of them would change
+    /// The directory write roots (a file root's directory), the symlinks
+    /// met on the way to a root or a protected path, and the directories
+    /// between them and an enclosing write root. A policy whose paths go
+    /// through more symlinks than can be followed is invalid. Removing, renaming or replacing one of them would change
     /// what the next policy resolves, so the OS profile denies creating and
     /// removing these paths; their contents, timestamps and mode stay
     /// writable. A write root that does not exist yet cannot be created
@@ -404,7 +401,7 @@ fn push_database(list: &mut Vec<PathBuf>, db: &Path) {
     }
 }
 
-fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
+pub(crate) fn push_unique(list: &mut Vec<PathBuf>, path: PathBuf) {
     if !list.contains(&path) {
         list.push(path);
     }
@@ -452,25 +449,6 @@ fn first_relative(scope: &SandboxScope, profile: &SandboxProfile) -> Option<Stri
         .filter_map(|(what, path)| path.map(|p| (what, p)))
         .find(|(_, path)| !path.is_absolute())
         .map(|(what, path)| format!("{what} is not an absolute path: {}", path.display()))
-}
-
-/// Every path from a write root down to one of `starts` that the root
-/// contains.
-fn guard_dirs<'a>(roots: &[PathBuf], starts: impl Iterator<Item = &'a Path>) -> Vec<PathBuf> {
-    let mut guards = Vec::new();
-    for start in starts {
-        for root in roots {
-            let mut dir = Some(start);
-            while let Some(current) = dir {
-                if !current.starts_with(root) {
-                    break;
-                }
-                push_unique(&mut guards, current.to_path_buf());
-                dir = current.parent();
-            }
-        }
-    }
-    guards
 }
 
 #[cfg(test)]
