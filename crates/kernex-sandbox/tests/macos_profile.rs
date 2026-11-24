@@ -407,9 +407,9 @@ fn a_link_on_the_way_to_a_write_root_cannot_be_repointed() {
     if !enforcement_or_skip("root_link") {
         return;
     }
-    // The workspace and an allowed path are named through a link that sits
-    // inside the temp dir. Repointing the link would move both roots for
-    // the next sandbox built from the same names.
+    // The workspace, an allowed path and the runtime's state are named
+    // through links that sit inside the temp dir. Repointing a link would
+    // move them for the next sandbox built from the same names.
     let base = tempfile::tempdir().expect("base");
     let base = base.path().canonicalize().unwrap();
     let real = base.join("real");
@@ -423,25 +423,30 @@ fn a_link_on_the_way_to_a_write_root_cannot_be_repointed() {
         std::fs::create_dir_all(dir).unwrap();
     }
     let link = base.join("link");
+    let state_link = base.join("state-link");
     std::os::unix::fs::symlink(&real, &link).unwrap();
-    let scope = SandboxScope::new(link.join("ws"), home().join(".kernex"));
+    std::os::unix::fs::symlink(&real, &state_link).unwrap();
+    let scope = SandboxScope::new(link.join("ws"), state_link.join(".kernex"));
     let mut profile = SandboxProfile::default();
     profile.allowed_paths.push(link.join("state"));
-    let (l, v) = (link.display(), victim.display());
-    let script = format!("cd / ; rm '{l}' ; ln -sfn '{v}' '{l}' ; mv '{l}' '{l}.old' ; true");
-    let out = sandboxed(
-        &scope,
-        &profile,
-        Path::new("/"),
-        "/bin/sh",
-        &["-c", &script],
-    );
-    assert_eq!(
-        std::fs::read_link(&link).ok(),
-        Some(real.clone()),
-        "the link was repointed: {}",
-        out.stderr
-    );
+    let v = victim.display();
+    for link in [&link, &state_link] {
+        let l = link.display();
+        let script = format!("cd / ; rm '{l}' ; ln -sfn '{v}' '{l}' ; mv '{l}' '{l}.old' ; true");
+        let out = sandboxed(
+            &scope,
+            &profile,
+            Path::new("/"),
+            "/bin/sh",
+            &["-c", &script],
+        );
+        assert_eq!(
+            std::fs::read_link(link).ok(),
+            Some(real.clone()),
+            "{l} was repointed: {}",
+            out.stderr
+        );
+    }
 }
 
 #[test]
@@ -456,8 +461,37 @@ fn a_write_root_keeps_its_own_metadata_and_files_writable() {
     let mut profile = SandboxProfile::default();
     profile.allowed_paths.push(file.clone());
     let (w, f) = (ws.display(), file.display());
-    let script = format!("touch '{w}' && chmod 700 '{w}' && printf new > '{f}'");
+    // An in-place write, then a save that renames over the granted file.
+    let script = format!(
+        "touch '{w}' && chmod 700 '{w}' && printf new > '{f}' && \
+         printf saved > '{w}/tmp' && mv '{w}/tmp' '{f}'"
+    );
     let out = sandboxed(&scope, &profile, &ws, "/bin/sh", &["-c", &script]);
     assert!(out.ok, "{}", out.stderr);
-    assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "saved");
+}
+
+#[test]
+fn a_directory_above_protected_state_keeps_its_mode() {
+    if !enforcement_or_skip("guard_mode") {
+        return;
+    }
+    // A blocked directory inside the workspace: the workspace is above it,
+    // so its mode and ACL stay as they are and no other account can be let
+    // in to move the blocked directory.
+    let (_guard, ws) = workspace("guard-mode-");
+    std::fs::create_dir(ws.join("secret")).unwrap();
+    let scope = SandboxScope::new(&ws, home().join(".kernex"));
+    let mut profile = SandboxProfile::default();
+    profile.blocked_paths.push(ws.join("secret"));
+    let before = std::fs::metadata(&ws).unwrap().permissions();
+    let w = ws.display();
+    for script in [
+        format!("chmod 777 '{w}'"),
+        format!("chmod +a 'everyone allow add_file,delete_child' '{w}'"),
+    ] {
+        let out = sandboxed(&scope, &profile, &ws, "/bin/sh", &["-c", &script]);
+        assert!(!out.ok, "{script} was allowed");
+    }
+    assert_eq!(std::fs::metadata(&ws).unwrap().permissions(), before);
 }

@@ -20,12 +20,13 @@
 //! last components do not exist yet.
 //!
 //! A protected path inside a write root could be reached by renaming one of
-//! the directories above it, and a write root replaced by a symlink, or a
-//! link on the way to it repointed, would carry the next sandbox's write
-//! access elsewhere. So the policy also lists the write roots, those links,
-//! and the directories above a protected path, a root or a link that sit
-//! inside a write root ([`Policy::guards`]): the OS profile denies
-//! creating, renaming or removing them.
+//! the directories above it, so the policy lists those directories
+//! ([`Policy::guards`]) and the OS profile denies writing them. A write root
+//! replaced by a symlink, or a link on the way to a root or a protected path
+//! repointed, would carry the next sandbox's access elsewhere, so the policy
+//! also lists the roots, those links and the directories between them and
+//! an enclosing root ([`Policy::pins`]): the OS profile denies creating,
+//! renaming or removing them.
 
 use std::path::{Path, PathBuf};
 
@@ -115,6 +116,7 @@ pub(crate) struct Policy {
     write_deny: Vec<PathBuf>,
     read_deny: Vec<PathBuf>,
     guards: Vec<PathBuf>,
+    pins: Vec<PathBuf>,
     tool_write_roots: Vec<PathBuf>,
     tool_read_roots: Vec<PathBuf>,
     workspace_rejection: Option<WorkspaceRejection>,
@@ -235,21 +237,32 @@ impl Policy {
             push_unique(&mut write_roots, dir);
         }
 
-        // A link on the way to a root, inside another root, could be
-        // repointed: it is guarded like a root.
-        let named = host.temp_dirs.iter().chain(&profile.allowed_paths);
+        let above_denied = write_deny.iter().chain(&read_deny);
+        let guards = guard_dirs(&write_roots, above_denied.filter_map(|d| d.parent()));
+        // A link on the way to a root or a protected path, inside a root,
+        // could be repointed: it is pinned like a root. A file root is left
+        // out so it can be saved by renaming over it; a link put in its
+        // place is ignored by the next policy.
+        let toolchain = crate::write_allow_dirs(&home);
+        let named = [&scope.workspace, &scope.data_dir].into_iter();
+        let named = named.chain(scope.db_path.iter().chain(&scope.config_path));
+        let named = named.chain(&host.temp_dirs).chain(&toolchain);
+        let named = named
+            .chain(&profile.allowed_paths)
+            .chain(&profile.blocked_paths);
         let links: Vec<PathBuf> = named
-            .chain([&scope.workspace])
             .filter(|p| p.is_absolute())
             .flat_map(|p| links_on(p))
             .collect();
-        let guards = guard_dirs(&write_roots, &write_deny, &read_deny, &links);
+        let dir_roots = write_roots.iter().filter(|r| !r.is_file());
+        let pins = guard_dirs(&write_roots, dir_roots.chain(&links).map(PathBuf::as_path));
 
         Self {
             write_roots,
             write_deny,
             read_deny,
             guards,
+            pins,
             tool_write_roots,
             tool_read_roots,
             workspace_rejection,
@@ -273,17 +286,26 @@ impl Policy {
         &self.read_deny
     }
 
-    /// The write roots, the symlinks met on the way to one, and the
-    /// directories above a protected path, a write root or such a link that
-    /// sit inside a write root. Renaming or removing one of them would move
-    /// the protected path or change what a root resolves to the next time a
-    /// policy is built, so the OS profile denies creating and removing
-    /// these paths themselves (not writes to them or to their contents). A
-    /// write root that does not exist yet cannot be created inside the
-    /// sandbox. Read by the Seatbelt generator only.
+    /// Directories above a protected path that sit inside a write root.
+    /// Renaming or removing one of them would move the protected path, and
+    /// a change of mode or ACL would let another account do it, so the OS
+    /// profile denies writes to these directories themselves (not to their
+    /// other contents). Read by the Seatbelt generator only.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn guards(&self) -> &[PathBuf] {
         &self.guards
+    }
+
+    /// The directory write roots, the symlinks met on the way to a root or
+    /// a protected path, and the directories between them and an enclosing
+    /// write root. Removing, renaming or replacing one of them would change
+    /// what the next policy resolves, so the OS profile denies creating and
+    /// removing these paths; their contents, timestamps and mode stay
+    /// writable. A write root that does not exist yet cannot be created
+    /// inside the sandbox. Read by the Seatbelt generator only.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub(crate) fn pins(&self) -> &[PathBuf] {
+        &self.pins
     }
 
     /// Set when the policy could not be built from its inputs. Nothing is
@@ -432,20 +454,13 @@ fn first_relative(scope: &SandboxScope, profile: &SandboxProfile) -> Option<Stri
         .map(|(what, path)| format!("{what} is not an absolute path: {}", path.display()))
 }
 
-/// Every path from a write root down to the parent of a deny path, or down
-/// to a write root or a link, that the root contains.
-fn guard_dirs(
-    roots: &[PathBuf],
-    write_deny: &[PathBuf],
-    read_deny: &[PathBuf],
-    links: &[PathBuf],
-) -> Vec<PathBuf> {
+/// Every path from a write root down to one of `starts` that the root
+/// contains.
+fn guard_dirs<'a>(roots: &[PathBuf], starts: impl Iterator<Item = &'a Path>) -> Vec<PathBuf> {
     let mut guards = Vec::new();
-    let above_denied = write_deny.iter().chain(read_deny).map(|d| d.parent());
-    let kept = roots.iter().chain(links).map(|r| Some(r.as_path()));
-    for start in above_denied.chain(kept) {
+    for start in starts {
         for root in roots {
-            let mut dir = start;
+            let mut dir = Some(start);
             while let Some(current) = dir {
                 if !current.starts_with(root) {
                     break;
@@ -889,8 +904,8 @@ mod tests {
         assert!(!policy.guards().contains(&p("code")));
 
         // State outside every root needs no guard. What remains guards the
-        // write roots and the toolchain directories that hold a read-only
-        // `bin` or a credential file.
+        // toolchain directories that hold a read-only `bin` or a credential
+        // file.
         let default_guards = self::policy().guards().to_vec();
         assert!(default_guards.contains(&p(".cargo")));
         assert!(!default_guards.iter().any(|g| g.starts_with(p(".kernex"))));
@@ -898,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn test_guards_keep_every_write_root_in_place() {
+    fn test_pins_keep_every_write_root_in_place() {
         // A workspace inside the temp dir: the workspace, and every
         // directory between it and the temp dir, cannot be swapped.
         let scope = SandboxScope::new("/kx-policy-test/tmp/run/ws", format!("{HOME}/.kernex"));
@@ -907,7 +922,7 @@ mod tests {
             ..Default::default()
         };
         let policy = Policy::with_host(&scope, &profile, &host());
-        let guards = policy.guards();
+        let guards = policy.pins();
         for dir in [
             "/kx-policy-test/tmp/run/ws",
             "/kx-policy-test/tmp/run",
@@ -923,7 +938,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn test_a_link_on_the_way_to_a_root_inside_a_root_is_guarded() {
+    fn test_a_link_on_the_way_to_a_root_inside_a_root_is_pinned() {
         let dir = tempfile::tempdir().unwrap();
         let tmp = resolve(dir.path());
         std::fs::create_dir_all(tmp.join("real/ws")).unwrap();
@@ -936,7 +951,7 @@ mod tests {
         let policy = Policy::with_host(&scope, &SandboxProfile::default(), &host);
         assert!(policy.write_roots().contains(&tmp.join("real/ws")));
         for guarded in [tmp.join("link"), tmp.join("real/ws"), tmp.join("real")] {
-            assert!(policy.guards().contains(&guarded), "{}", guarded.display());
+            assert!(policy.pins().contains(&guarded), "{}", guarded.display());
         }
     }
 

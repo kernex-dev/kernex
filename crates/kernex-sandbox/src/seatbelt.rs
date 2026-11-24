@@ -143,12 +143,13 @@ fn build_profile(policy: &Policy, profile: &crate::SandboxProfile) -> BuiltProfi
     let roots = built.filters("subpath", policy.write_roots());
     built.rule("allow", "file-write*", &roots);
 
-    let write_deny = built.filters("subpath", policy.write_deny());
+    let mut write_deny = built.filters("subpath", policy.write_deny());
+    write_deny.push_str(&built.filters("literal", policy.guards()));
     built.rule("deny", "file-write*", &write_deny);
-    // Creating, removing and renaming a guard; its contents, timestamps and
-    // mode stay writable.
-    let guards = built.filters("literal", policy.guards());
-    built.rule("deny", "file-write-create file-write-unlink", &guards);
+    // Creating, removing and renaming a pinned path; its contents,
+    // timestamps and mode stay writable.
+    let pins = built.filters("literal", policy.pins());
+    built.rule("deny", "file-write-create file-write-unlink", &pins);
 
     let read_deny = built.filters("subpath", policy.read_deny());
     built.rule("deny", "file-read*", &read_deny);
@@ -261,8 +262,7 @@ mod tests {
             );
         }
         // The directory above stays writable, and cannot be renamed.
-        let guards = last_rule(&profile, "(deny file-write-create file-write-unlink");
-        assert!(guards.contains(&format!("(literal \"{HOME}/.cargo\")")));
+        assert!(deny.contains(&format!("(literal \"{HOME}/.cargo\")")));
     }
 
     #[test]
@@ -360,12 +360,13 @@ mod tests {
         let profile_obj = SandboxProfile::default();
         let policy = Policy::with_host(&scope, &profile_obj, &host());
         let profile = rendered(&build_profile(&policy, &profile_obj));
-        let guards = last_rule(&profile, "(deny file-write-create file-write-unlink");
-        assert!(guards.contains(&format!("(literal \"{HOME}/code/proj\")")));
-        assert!(guards.contains(&format!("(literal \"{HOME}/code/proj/.agent\")")));
         let deny = last_rule(&profile, "(deny file-write*");
+        assert!(deny.contains(&format!("(literal \"{HOME}/code/proj\")")));
+        assert!(deny.contains(&format!("(literal \"{HOME}/code/proj/.agent\")")));
         assert!(!deny.contains(&format!("(subpath \"{HOME}/code/proj\")")));
-        assert!(!deny.contains(&format!("(literal \"{HOME}/code/proj\")")));
+        // The workspace is a write root, pinned as well.
+        let pins = last_rule(&profile, "(deny file-write-create file-write-unlink");
+        assert!(pins.contains(&format!("(literal \"{HOME}/code/proj\")")));
     }
 
     #[test]
