@@ -366,10 +366,13 @@ async fn a_timed_out_cli_is_ended_with_what_it_started() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("grandchild");
     let cli = root.path().join("slow-claude");
+    // The group is signalled one member at a time: the subshell can run a
+    // builtin after its `sleep` is killed and before its own signal lands.
+    // The second `sleep` makes the marker mean it survived a whole second.
     std::fs::write(
         &cli,
         format!(
-            "#!/bin/sh\n( sleep 2; : > '{}' ) &\nsleep 5\n",
+            "#!/bin/sh\n( sleep 2; sleep 1; : > '{}' ) &\nsleep 5\n",
             marker.display()
         ),
     )
@@ -384,7 +387,7 @@ async fn a_timed_out_cli_is_ended_with_what_it_started() {
         .with_program(cli.to_string_lossy());
     let err = provider.complete(&Context::new("hello")).await.unwrap_err();
     assert!(err.to_string().contains("timed out"), "{err}");
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
     assert!(
         !marker.exists(),
         "a process the CLI started outlived the call"
@@ -396,11 +399,14 @@ async fn a_background_job_ends_with_the_call() {
     let root = tempfile::tempdir().unwrap();
     let marker = root.path().join("background");
     let cli = root.path().join("quick-claude");
+    // The group is signalled one member at a time: the subshell can run a
+    // builtin after its `sleep` is killed and before its own signal lands.
+    // The second `sleep` makes the marker mean it survived a whole second.
     std::fs::write(
         &cli,
         format!(
             r#"#!/bin/sh
-( sleep 2; : > '{}' ) > /dev/null 2>&1 &
+( sleep 2; sleep 1; : > '{}' ) > /dev/null 2>&1 &
 printf '{{"type":"result","subtype":"success","result":"ok"}}'
 "#,
             marker.display()
@@ -417,7 +423,7 @@ printf '{{"type":"result","subtype":"success","result":"ok"}}'
         .with_program(cli.to_string_lossy());
     let reply = provider.complete(&Context::new("hello")).await.unwrap();
     assert_eq!(reply.text, "ok");
-    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
     assert!(
         !marker.exists(),
         "a job the CLI left running outlived the call"
