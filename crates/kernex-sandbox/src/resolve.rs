@@ -39,24 +39,40 @@ pub(crate) fn resolve_checked(path: &Path) -> Result<PathBuf, PathBuf> {
     }
 }
 
-/// Where the symlinks met while resolving `path` sit, each given by its
-/// own location, and the paths a `..` steps out of, whether they exist or
-/// not. A process that can repoint one of those links, or put a link at one
-/// of those paths, changes what `path` resolves to next time. The walk
-/// stops at a component that cannot be looked up (nothing below it can be
-/// planted by the same user either). `None` when `path` goes through more
+/// What [`links_on`] found on a path.
+pub(crate) struct Links {
+    /// Where the symlinks met sit, each given by its own location, and the
+    /// paths a `..` steps out of, whether they exist or not.
+    pub(crate) found: Vec<PathBuf>,
+    /// The component the walk stopped at because it could not be looked up
+    /// (a directory that cannot be searched, a name that is too long).
+    pub(crate) stopped_at: Option<PathBuf>,
+}
+
+/// The links and `..` steps met while resolving `path`. A process that can
+/// repoint one of those links, or put a link at one of those paths, changes
+/// what `path` resolves to next time. `None` when `path` goes through more
 /// links than can be followed.
-pub(crate) fn links_on(path: &Path) -> Option<Vec<PathBuf>> {
+pub(crate) fn links_on(path: &Path) -> Option<Links> {
     let mut walk = Walk::new(true);
     walk.run(PathBuf::new(), path);
     if walk.exhausted {
         return None;
     }
-    let located = walk.seen.iter().map(|p| match (p.parent(), p.file_name()) {
+    let mut unique = std::collections::HashSet::new();
+    walk.seen.retain(|p| unique.insert(p.clone()));
+    Some(Links {
+        found: walk.seen.iter().map(|p| located(p)).collect(),
+        stopped_at: walk.stopped_at.as_deref().map(located),
+    })
+}
+
+/// `path` under the stored case of its directory, its own name as written.
+fn located(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
         (Some(parent), Some(name)) => stored_case(parent).join(name),
-        _ => p.clone(),
-    });
-    Some(located.collect())
+        _ => path.to_path_buf(),
+    }
 }
 
 /// One walk over a path and the link targets it meets: one `lstat` per
@@ -68,6 +84,7 @@ struct Walk {
     exhausted: bool,
     record: bool,
     seen: Vec<PathBuf>,
+    stopped_at: Option<PathBuf>,
 }
 
 impl Walk {
@@ -78,6 +95,7 @@ impl Walk {
             exhausted: false,
             record,
             seen: Vec::new(),
+            stopped_at: None,
         }
     }
 
@@ -129,6 +147,7 @@ impl Walk {
             Ok(_) => current,
             Err(_) => {
                 self.complete = false;
+                self.stopped_at = Some(current.clone());
                 current
             }
         }
@@ -151,7 +170,14 @@ fn stored_case(path: &Path) -> PathBuf {
     for existing in path.ancestors() {
         if let Ok(real) = std::fs::canonicalize(existing) {
             let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
-            return outside_data_volume(real.join(rest));
+            // Joining an empty rest would add a trailing `/`, which a
+            // Seatbelt `literal` does not match.
+            let whole = if rest.as_os_str().is_empty() {
+                real
+            } else {
+                real.join(rest)
+            };
+            return outside_data_volume(whole);
         }
     }
     outside_data_volume(path.to_path_buf())
@@ -172,7 +198,7 @@ mod tests {
     use super::*;
 
     fn links(path: &Path) -> Vec<PathBuf> {
-        links_on(path).unwrap()
+        links_on(path).unwrap().found
     }
 
     #[test]
@@ -231,7 +257,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let base = resolve(dir.path());
         chain(&base, 45);
-        assert_eq!(links_on(&base.join("l0/ws")), None);
+        assert!(links_on(&base.join("l0/ws")).is_none());
     }
 
     #[test]
@@ -245,7 +271,7 @@ mod tests {
         std::os::unix::fs::symlink("loop/..", base.join("x")).unwrap();
         for path in ["loop/../h/f", "x/h/f"] {
             assert!(resolve_checked(&base.join(path)).is_err(), "{path}");
-            assert_eq!(links_on(&base.join(path)), None, "{path}");
+            assert!(links_on(&base.join(path)).is_none(), "{path}");
         }
         assert!(resolve_checked(&base.join("h/f")).is_ok());
     }
@@ -266,11 +292,22 @@ mod tests {
         // Root searches it anyway; there is nothing to check then.
         let enforced = std::fs::symlink_metadata(locked.join("sub")).is_err();
         let checked = resolve_checked(&below);
-        let found = links_on(&below);
+        let found = links_on(&below).map(|l| (l.found, l.stopped_at));
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         if enforced {
             assert!(checked.is_err());
-            assert_eq!(found, Some(Vec::new()));
+            assert_eq!(found, Some((Vec::new(), Some(locked.join("sub")))));
+        }
+    }
+
+    #[test]
+    fn a_resolved_directory_has_no_trailing_separator() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = resolve(dir.path());
+        std::fs::write(base.join("file"), "x").unwrap();
+        for path in ["nope/..", "file/.."] {
+            let resolved = resolve_checked(&base.join(path)).unwrap();
+            assert_eq!(resolved.as_os_str(), base.as_os_str(), "{path}");
         }
     }
 
@@ -294,7 +331,7 @@ mod tests {
             resolve_checked(&base.join("deep/x")),
             Ok(deep.join("real/x"))
         );
-        assert_eq!(links_on(&base.join("deep/x")).map(|l| l.len()), Some(40));
+        assert_eq!(links(&base.join("deep/x")).len(), 40);
         assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 
@@ -305,10 +342,7 @@ mod tests {
         let base = resolve(dir.path());
         let name = base.file_name().unwrap().to_string_lossy().to_uppercase();
         let shouted = base.with_file_name(name);
-        assert_eq!(
-            links_on(&shouted.join("missing/../x")),
-            Some(vec![base.join("missing")])
-        );
+        assert_eq!(links(&shouted.join("missing/../x")), [base.join("missing")]);
     }
 
     #[test]
@@ -332,7 +366,7 @@ mod tests {
         link("X41", "X41".to_string());
         let start = std::time::Instant::now();
         assert!(resolve_checked(&base.join("X1/x")).is_err());
-        assert_eq!(links_on(&base.join("X1/x")), None);
+        assert!(links_on(&base.join("X1/x")).is_none());
         assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 }

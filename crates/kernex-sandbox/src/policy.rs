@@ -987,6 +987,47 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn test_a_directory_closed_inside_a_root_invalidates_the_policy() {
+        use std::os::unix::fs::PermissionsExt;
+        // A blocked path named through a link in the workspace. Closing the
+        // directory that holds the link would hide where it points.
+        let dir = tempfile::tempdir().unwrap();
+        let base = resolve(dir.path());
+        let (ws, private) = (base.join("ws"), base.join("private"));
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        std::fs::create_dir_all(&private).unwrap();
+        std::os::unix::fs::symlink(&private, ws.join("sub/link")).unwrap();
+        let scope = SandboxScope::new(&ws, format!("{HOME}/.kernex"));
+        let mut profile = SandboxProfile::default();
+        profile.blocked_paths.push(ws.join("sub/link/secret"));
+        // Closed outside every root: the user cannot look there either.
+        let outside = base.join("closed");
+        std::fs::create_dir_all(outside.join("in")).unwrap();
+        let mut elsewhere = profile.clone();
+        elsewhere.blocked_paths = vec![outside.join("in/secret")];
+
+        let close = |dir: &Path, mode| {
+            std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        close(&ws.join("sub"), 0o000);
+        close(&outside, 0o000);
+        // Root searches it anyway; there is nothing to check then.
+        let enforced = std::fs::symlink_metadata(ws.join("sub/link")).is_err();
+        let inside = Policy::with_host(&scope, &profile, &host());
+        let other = Policy::with_host(&scope, &elsewhere, &host());
+        close(&ws.join("sub"), 0o755);
+        close(&outside, 0o755);
+        if enforced {
+            assert!(inside.invalid().is_some());
+            assert_eq!(other.invalid(), None);
+        }
+        let open = Policy::with_host(&scope, &profile, &host());
+        assert_eq!(open.invalid(), None);
+        assert!(open.check_read(&private.join("secret")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn test_a_dotdot_after_a_missing_component_is_pinned() {
         let dir = tempfile::tempdir().unwrap();
         let ws = resolve(dir.path());
