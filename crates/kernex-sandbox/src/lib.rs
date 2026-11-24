@@ -275,6 +275,7 @@ mod gate;
 mod paths;
 mod policy;
 mod process;
+mod resolve;
 mod scope;
 mod tool_access;
 

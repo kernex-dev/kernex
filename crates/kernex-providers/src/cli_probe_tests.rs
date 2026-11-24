@@ -424,6 +424,7 @@ printf '{{"type":"result","subtype":"success","result":"ok"}}'
     );
 }
 
+#[cfg(unix)]
 #[tokio::test]
 async fn a_cli_state_directory_replaced_by_a_link_is_refused() {
     let root = tempfile::tempdir().unwrap();

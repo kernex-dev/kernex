@@ -401,3 +401,63 @@ fn write_roots_cannot_be_swapped_for_a_symlink() {
         );
     }
 }
+
+#[test]
+fn a_link_on_the_way_to_a_write_root_cannot_be_repointed() {
+    if !enforcement_or_skip("root_link") {
+        return;
+    }
+    // The workspace and an allowed path are named through a link that sits
+    // inside the temp dir. Repointing the link would move both roots for
+    // the next sandbox built from the same names.
+    let base = tempfile::tempdir().expect("base");
+    let base = base.path().canonicalize().unwrap();
+    let real = base.join("real");
+    let victim = base.join("victim");
+    for dir in [
+        real.join("ws"),
+        real.join("state"),
+        victim.join("ws"),
+        victim.join("state"),
+    ] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let link = base.join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let scope = SandboxScope::new(link.join("ws"), home().join(".kernex"));
+    let mut profile = SandboxProfile::default();
+    profile.allowed_paths.push(link.join("state"));
+    let (l, v) = (link.display(), victim.display());
+    let script = format!("cd / ; rm '{l}' ; ln -sfn '{v}' '{l}' ; mv '{l}' '{l}.old' ; true");
+    let out = sandboxed(
+        &scope,
+        &profile,
+        Path::new("/"),
+        "/bin/sh",
+        &["-c", &script],
+    );
+    assert_eq!(
+        std::fs::read_link(&link).ok(),
+        Some(real.clone()),
+        "the link was repointed: {}",
+        out.stderr
+    );
+}
+
+#[test]
+fn a_write_root_keeps_its_own_metadata_and_files_writable() {
+    if !enforcement_or_skip("root_metadata") {
+        return;
+    }
+    let (_guard, ws) = workspace("metadata-");
+    let file = ws.join("granted.txt");
+    std::fs::write(&file, "old").unwrap();
+    let scope = SandboxScope::new(&ws, home().join(".kernex"));
+    let mut profile = SandboxProfile::default();
+    profile.allowed_paths.push(file.clone());
+    let (w, f) = (ws.display(), file.display());
+    let script = format!("touch '{w}' && chmod 700 '{w}' && printf new > '{f}'");
+    let out = sandboxed(&scope, &profile, &ws, "/bin/sh", &["-c", &script]);
+    assert!(out.ok, "{}", out.stderr);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "new");
+}

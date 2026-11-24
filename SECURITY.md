@@ -44,10 +44,11 @@ those limits are stated.
   cache/state dirs; reads of credential stores (`~/.ssh`, `~/.aws`,
   `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, gh/gcloud configs,
   browser/keychain stores) are denied; the runtime's own database and config
-  are unreadable and unwritable. On macOS a write root itself, and every
-  directory between it and an enclosing write root, cannot be created,
-  removed, renamed or replaced by a symlink inside the sandbox, so a toolchain
-  cache directory that does not exist yet must be created outside it; a host
+  are unreadable and unwritable. On macOS a write root, a symlink on the
+  path the host names it by, and every directory between either of them and
+  an enclosing write root cannot be created, removed or renamed inside the
+  sandbox (their contents, timestamps and mode stay writable), so a toolchain
+  cache directory that does not exist yet must be created outside it. A host
   path granted through `allowed_paths` that is itself a symlink is ignored.
   Code-level checks
   (`is_read_blocked`/`is_write_blocked`) back this on all platforms.

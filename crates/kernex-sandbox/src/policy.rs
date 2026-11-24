@@ -20,15 +20,17 @@
 //! last components do not exist yet.
 //!
 //! A protected path inside a write root could be reached by renaming one of
-//! the directories above it, and a write root replaced by a symlink would
-//! carry the next sandbox's write access wherever the link points. So the
-//! policy also lists the write roots themselves and the directories above a
-//! protected path or a write root that sit inside a write root
-//! ([`Policy::guards`]): the OS profile denies creating, renaming or
-//! removing them.
+//! the directories above it, and a write root replaced by a symlink, or a
+//! link on the way to it repointed, would carry the next sandbox's write
+//! access elsewhere. So the policy also lists the write roots, those links,
+//! and the directories above a protected path, a root or a link that sit
+//! inside a write root ([`Policy::guards`]): the OS profile denies
+//! creating, renaming or removing them.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
+use crate::resolve::links_on;
+pub(crate) use crate::resolve::resolve;
 use crate::{SandboxProfile, SandboxScope};
 
 /// System locations no tool call may write.
@@ -49,9 +51,6 @@ const SYSTEM_WRITE_DENY: &[&str] = &[
     "/etc",
     "/boot",
 ];
-
-/// Upper bound on chained dangling symlinks followed by [`resolve`].
-const MAX_LINK_DEPTH: u8 = 16;
 
 /// Why a path was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,7 +235,15 @@ impl Policy {
             push_unique(&mut write_roots, dir);
         }
 
-        let guards = guard_dirs(&write_roots, &write_deny, &read_deny);
+        // A link on the way to a root, inside another root, could be
+        // repointed: it is guarded like a root.
+        let named = host.temp_dirs.iter().chain(&profile.allowed_paths);
+        let links: Vec<PathBuf> = named
+            .chain([&scope.workspace])
+            .filter(|p| p.is_absolute())
+            .flat_map(|p| links_on(p))
+            .collect();
+        let guards = guard_dirs(&write_roots, &write_deny, &read_deny, &links);
 
         Self {
             write_roots,
@@ -266,13 +273,14 @@ impl Policy {
         &self.read_deny
     }
 
-    /// The write roots, and the directories above a protected path or a
-    /// write root that sit inside a write root. Renaming or removing one of
-    /// them would move the protected path or let a symlink take the root's
-    /// place, so the OS profile denies writes to these directories
-    /// themselves (not to their other contents). A write root that does not
-    /// exist yet cannot be created inside the sandbox. Read by the Seatbelt
-    /// generator only.
+    /// The write roots, the symlinks met on the way to one, and the
+    /// directories above a protected path, a write root or such a link that
+    /// sit inside a write root. Renaming or removing one of them would move
+    /// the protected path or change what a root resolves to the next time a
+    /// policy is built, so the OS profile denies creating and removing
+    /// these paths themselves (not writes to them or to their contents). A
+    /// write root that does not exist yet cannot be created inside the
+    /// sandbox. Read by the Seatbelt generator only.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn guards(&self) -> &[PathBuf] {
         &self.guards
@@ -424,12 +432,18 @@ fn first_relative(scope: &SandboxScope, profile: &SandboxProfile) -> Option<Stri
         .map(|(what, path)| format!("{what} is not an absolute path: {}", path.display()))
 }
 
-/// Every directory from a write root down to the parent of a deny path, or
-/// down to a write root, that the root contains.
-fn guard_dirs(roots: &[PathBuf], write_deny: &[PathBuf], read_deny: &[PathBuf]) -> Vec<PathBuf> {
+/// Every path from a write root down to the parent of a deny path, or down
+/// to a write root or a link, that the root contains.
+fn guard_dirs(
+    roots: &[PathBuf],
+    write_deny: &[PathBuf],
+    read_deny: &[PathBuf],
+    links: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut guards = Vec::new();
     let above_denied = write_deny.iter().chain(read_deny).map(|d| d.parent());
-    for start in above_denied.chain(roots.iter().map(|r| Some(r.as_path()))) {
+    let kept = roots.iter().chain(links).map(|r| Some(r.as_path()));
+    for start in above_denied.chain(kept) {
         for root in roots {
             let mut dir = start;
             while let Some(current) = dir {
@@ -442,56 +456,6 @@ fn guard_dirs(roots: &[PathBuf], write_deny: &[PathBuf], read_deny: &[PathBuf]) 
         }
     }
     guards
-}
-
-/// Resolve symlinks in `path`, including when its last components do not
-/// exist yet.
-///
-/// An existing path is canonicalized. Otherwise the path is walked one
-/// component at a time: every component that exists is canonicalized, so a
-/// symlinked parent of a file that is about to be created is followed, and a
-/// dangling symlink is followed to the place it would create. Components that
-/// do not exist are appended as written.
-pub(crate) fn resolve(path: &Path) -> PathBuf {
-    let resolved = resolve_at_depth(path, 0);
-    // macOS mounts the data volume at this path and firmlinks it into `/`,
-    // so both spellings name the same file and neither is a symlink.
-    #[cfg(target_os = "macos")]
-    if let Ok(rest) = resolved.strip_prefix("/System/Volumes/Data") {
-        return Path::new("/").join(rest);
-    }
-    resolved
-}
-
-fn resolve_at_depth(path: &Path, depth: u8) -> PathBuf {
-    if let Ok(real) = std::fs::canonicalize(path) {
-        return real;
-    }
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(_) | Component::RootDir => current.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                current.pop();
-            }
-            Component::Normal(name) => {
-                let parent = current.clone();
-                current.push(name);
-                if current.symlink_metadata().is_err() {
-                    continue;
-                }
-                if let Ok(real) = std::fs::canonicalize(&current) {
-                    current = real;
-                } else if let Ok(target) = std::fs::read_link(&current) {
-                    if depth < MAX_LINK_DEPTH {
-                        current = resolve_at_depth(&parent.join(target), depth + 1);
-                    }
-                }
-            }
-        }
-    }
-    current
 }
 
 #[cfg(test)]
@@ -955,6 +919,25 @@ mod tests {
         assert!(guards.contains(&p(".npm")));
         assert!(!guards.contains(&PathBuf::from("/kx-policy-test")));
         assert!(!guards.contains(&p(".kernex/cli")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_link_on_the_way_to_a_root_inside_a_root_is_guarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = resolve(dir.path());
+        std::fs::create_dir_all(tmp.join("real/ws")).unwrap();
+        std::os::unix::fs::symlink(tmp.join("real"), tmp.join("link")).unwrap();
+        let host = HostDirs {
+            home: PathBuf::from(HOME),
+            temp_dirs: vec![tmp.clone()],
+        };
+        let scope = SandboxScope::new(tmp.join("link/ws"), format!("{HOME}/.kernex"));
+        let policy = Policy::with_host(&scope, &SandboxProfile::default(), &host);
+        assert!(policy.write_roots().contains(&tmp.join("real/ws")));
+        for guarded in [tmp.join("link"), tmp.join("real/ws"), tmp.join("real")] {
+            assert!(policy.guards().contains(&guarded), "{}", guarded.display());
+        }
     }
 
     #[cfg(unix)]
