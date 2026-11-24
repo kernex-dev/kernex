@@ -544,6 +544,21 @@ mod tests {
     }
 
     #[test]
+    fn test_installed_programs_under_local_share_are_not_writable() {
+        for path in [
+            ".local/share/claude/versions/9.9.9",
+            ".local/share/uv/tools/x/bin/y",
+            ".local/share/pipx/venvs/x/bin/y",
+        ] {
+            assert_eq!(
+                policy().check_write(&p(path)),
+                Err(Denial::OutsideWriteRoots),
+                "{path}"
+            );
+        }
+    }
+
+    #[test]
     fn test_runtime_state_is_write_denied() {
         let policy = policy();
         for path in [
@@ -862,7 +877,6 @@ mod tests {
         // file.
         let default_guards = self::policy().guards().to_vec();
         assert!(default_guards.contains(&p(".cargo")));
-        assert!(default_guards.contains(&p(".local/share/fish")));
         assert!(!default_guards.iter().any(|g| g.starts_with(p(".kernex"))));
         assert!(!default_guards.contains(&p("code/proj")));
     }

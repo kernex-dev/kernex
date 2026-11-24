@@ -70,6 +70,9 @@ pub fn credential_read_deny_dirs(home: &Path) -> Vec<PathBuf> {
 /// read-only, so a tool call cannot replace something the host runs later.
 /// `~/.rustup` is not on the list for that reason: it holds the compiler
 /// itself, so a toolchain cannot be installed from inside the sandbox.
+/// `~/.local/share` is not on it either: installers put programs there that
+/// run later outside the sandbox (the Claude CLI, whose `~/.local/bin` entry
+/// is a link into it, and the tools of uv, pipx and mise).
 ///
 /// **Fallback tuning point:** if a real toolchain writes somewhere outside
 /// this list and breaks, the fix is to extend this list or to pass the
@@ -85,7 +88,6 @@ pub fn write_allow_dirs(home: &Path) -> Vec<PathBuf> {
         ".deno",
         ".bun",
         ".local/state",
-        ".local/share",
         ".gradle",
         ".m2",
         ".gem",
