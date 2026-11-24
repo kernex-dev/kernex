@@ -11,12 +11,12 @@ const MAX_LINKS: u8 = 40;
 /// exist yet.
 ///
 /// An existing path is canonicalized. Otherwise the path is walked one
-/// component at a time: an existing directory or file is taken under its
-/// real name, a symlink is read and followed, a dangling symlink to the
-/// place it would create, and components that do not exist are appended as
-/// written. When a path cannot be resolved completely (too many links, or a
-/// component that cannot be looked up) the result is what was resolved
-/// before that point; use [`resolve_checked`] to tell.
+/// component at a time: a symlink is read and followed from the directory
+/// it sits in, a dangling symlink to the place it would create, and
+/// components that do not exist are appended as written. When a path cannot
+/// be resolved completely (too many links, or a component that cannot be
+/// looked up) the result is what was resolved before that point; use
+/// [`resolve_checked`] to tell.
 pub(crate) fn resolve(path: &Path) -> PathBuf {
     match resolve_checked(path) {
         Ok(resolved) | Err(resolved) => resolved,
@@ -27,25 +27,111 @@ pub(crate) fn resolve(path: &Path) -> PathBuf {
 /// resolved completely. A check must refuse such a path: what the kernel
 /// opens through it is unknown.
 pub(crate) fn resolve_checked(path: &Path) -> Result<PathBuf, PathBuf> {
-    let (resolved, complete) = match std::fs::canonicalize(path) {
-        Ok(real) => (real, true),
-        Err(_) => {
-            let (mut budget, mut complete) = (MAX_LINKS, true);
-            let resolved = resolve_within(path, &mut budget, &mut complete);
-            (resolved, complete)
-        }
-    };
-    // macOS mounts the data volume at this path and firmlinks it into `/`,
-    // so both spellings name the same file and neither is a symlink.
-    #[cfg(target_os = "macos")]
-    let resolved = match resolved.strip_prefix("/System/Volumes/Data") {
-        Ok(rest) => Path::new("/").join(rest),
-        Err(_) => resolved,
-    };
-    if complete {
-        Ok(resolved)
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return Ok(outside_data_volume(real));
+    }
+    let mut walk = Walk::new(false);
+    let resolved = walk.run(PathBuf::new(), path);
+    if walk.complete {
+        Ok(stored_case(&resolved))
     } else {
-        Err(resolved)
+        Err(outside_data_volume(resolved))
+    }
+}
+
+/// Where the symlinks met while resolving `path` sit, each given by its
+/// own location, and the paths a `..` steps out of, whether they exist or
+/// not. A process that can repoint one of those links, or put a link at one
+/// of those paths, changes what `path` resolves to next time. The walk
+/// stops at a component that cannot be looked up (nothing below it can be
+/// planted by the same user either). `None` when `path` goes through more
+/// links than can be followed.
+pub(crate) fn links_on(path: &Path) -> Option<Vec<PathBuf>> {
+    let mut walk = Walk::new(true);
+    walk.run(PathBuf::new(), path);
+    if walk.exhausted {
+        return None;
+    }
+    let located = walk.seen.iter().map(|p| match (p.parent(), p.file_name()) {
+        (Some(parent), Some(name)) => stored_case(parent).join(name),
+        _ => p.clone(),
+    });
+    Some(located.collect())
+}
+
+/// One walk over a path and the link targets it meets: one `lstat` per
+/// component and one read per link, each target continued from the
+/// directory the link sits in.
+struct Walk {
+    budget: u8,
+    complete: bool,
+    exhausted: bool,
+    record: bool,
+    seen: Vec<PathBuf>,
+}
+
+impl Walk {
+    fn new(record: bool) -> Self {
+        Self {
+            budget: MAX_LINKS,
+            complete: true,
+            exhausted: false,
+            record,
+            seen: Vec::new(),
+        }
+    }
+
+    /// Walk `path` from `current`, a path with no link left in it.
+    fn run(&mut self, mut current: PathBuf, path: &Path) -> PathBuf {
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) | Component::RootDir => current.push(component.as_os_str()),
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if self.record && self.complete && current.parent().is_some() {
+                        self.seen.push(current.clone());
+                    }
+                    current.pop();
+                }
+                Component::Normal(name) => {
+                    let parent = current.clone();
+                    current.push(name);
+                    if self.complete {
+                        current = self.step(parent, current);
+                    }
+                }
+            }
+        }
+        current
+    }
+
+    fn step(&mut self, parent: PathBuf, current: PathBuf) -> PathBuf {
+        match current.symlink_metadata() {
+            Err(e) if is_absent(&e) => current,
+            Ok(meta) if meta.is_symlink() => {
+                if self.record {
+                    self.seen.push(current.clone());
+                }
+                if self.budget == 0 {
+                    self.complete = false;
+                    self.exhausted = true;
+                    return current;
+                }
+                self.budget -= 1;
+                match std::fs::read_link(&current) {
+                    Ok(target) => self.run(parent, &target),
+                    Err(_) => {
+                        self.complete = false;
+                        current
+                    }
+                }
+            }
+            Ok(_) => current,
+            Err(_) => {
+                self.complete = false;
+                current
+            }
+        }
     }
 }
 
@@ -58,103 +144,27 @@ fn is_absent(e: &std::io::Error) -> bool {
     e.kind() == std::io::ErrorKind::NotFound
 }
 
-/// One `lstat` per component and one read per link, so the work grows with
-/// the length of the path and its link targets, never with how the kernel
-/// would expand a link.
-fn resolve_within(path: &Path, budget: &mut u8, complete: &mut bool) -> PathBuf {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(_) | Component::RootDir => current.push(component.as_os_str()),
-            Component::CurDir => {}
-            Component::ParentDir => {
-                current.pop();
-            }
-            Component::Normal(name) => {
-                let parent = current.clone();
-                current.push(name);
-                if !*complete {
-                    continue;
-                }
-                match current.symlink_metadata() {
-                    Err(e) if is_absent(&e) => {}
-                    Err(_) => *complete = false,
-                    Ok(meta) if meta.is_symlink() => match std::fs::read_link(&current) {
-                        Ok(target) if *budget > 0 => {
-                            *budget -= 1;
-                            current = resolve_within(&parent.join(target), budget, complete);
-                        }
-                        _ => *complete = false,
-                    },
-                    // No link up to here, so this is cheap; it gives the
-                    // name as stored.
-                    Ok(_) => match std::fs::canonicalize(&current) {
-                        Ok(real) => current = real,
-                        Err(_) => *complete = false,
-                    },
-                }
-            }
+/// `path`, which has no link in it, with its existing part under the name
+/// the filesystem stores (a case-insensitive volume keeps the caller's
+/// spelling otherwise). One canonicalize for the whole path.
+fn stored_case(path: &Path) -> PathBuf {
+    for existing in path.ancestors() {
+        if let Ok(real) = std::fs::canonicalize(existing) {
+            let rest = path.strip_prefix(existing).unwrap_or(Path::new(""));
+            return outside_data_volume(real.join(rest));
         }
     }
-    current
+    outside_data_volume(path.to_path_buf())
 }
 
-/// Where the symlinks met while resolving `path` sit, each given by its
-/// own location (its parent resolved, its name as written), and the paths
-/// a `..` steps out of, whether they exist or not. A process that can
-/// repoint one of those links, or put a link at one of those paths, changes
-/// what `path` resolves to next time. `None` when the path cannot be
-/// resolved completely.
-pub(crate) fn links_on(path: &Path) -> Option<Vec<PathBuf>> {
-    let (mut links, mut budget) = (Vec::new(), MAX_LINKS);
-    collect_links(path, &mut budget, &mut links).then_some(links)
-}
-
-/// Returns false when `path` cannot be resolved completely.
-fn collect_links(path: &Path, budget: &mut u8, links: &mut Vec<PathBuf>) -> bool {
-    let mut current = PathBuf::new();
-    for component in path.components() {
-        match component {
-            // As `resolve` does: a component that does not exist is taken
-            // as written, so `..` after it goes back lexically.
-            Component::ParentDir => {
-                if current.parent().is_some() {
-                    links.push(current.clone());
-                }
-                current.pop();
-                continue;
-            }
-            Component::CurDir => continue,
-            _ => current.push(component.as_os_str()),
-        }
-        let meta = match current.symlink_metadata() {
-            Ok(meta) => meta,
-            Err(e) if is_absent(&e) => continue,
-            Err(_) => return false,
-        };
-        if !meta.is_symlink() {
-            continue;
-        }
-        let Ok(target) = std::fs::read_link(&current) else {
-            return false;
-        };
-        let parent = current.parent().map(resolve).unwrap_or_default();
-        if let Some(name) = current.file_name() {
-            links.push(parent.join(name));
-        }
-        if *budget == 0 {
-            return false;
-        }
-        *budget -= 1;
-        if !collect_links(&parent.join(target), budget, links) {
-            return false;
-        }
-        match resolve_checked(&current) {
-            Ok(resolved) => current = resolved,
-            Err(_) => return false,
-        }
+/// macOS mounts the data volume at `/System/Volumes/Data` and firmlinks it
+/// into `/`, so both spellings name the same file and neither is a symlink.
+fn outside_data_volume(path: PathBuf) -> PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Ok(rest) = path.strip_prefix("/System/Volumes/Data") {
+        return Path::new("/").join(rest);
     }
-    true
+    path
 }
 
 #[cfg(all(test, unix))]
@@ -242,11 +252,63 @@ mod tests {
 
     #[test]
     fn a_component_that_cannot_be_looked_up_is_not_resolved() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let base = resolve(dir.path());
         let long = base.join("n".repeat(300)).join("f");
         assert!(resolve_checked(&long).is_err());
-        assert_eq!(links_on(&long), None);
+        // A directory that cannot be searched: checks refuse what is below
+        // it, while walking a named path for links just stops there.
+        let locked = base.join("locked");
+        std::fs::create_dir_all(locked.join("sub")).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let below = locked.join("sub/f");
+        // Root searches it anyway; there is nothing to check then.
+        let enforced = std::fs::symlink_metadata(locked.join("sub")).is_err();
+        let checked = resolve_checked(&below);
+        let found = links_on(&below);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        if enforced {
+            assert!(checked.is_err());
+            assert_eq!(found, Some(Vec::new()));
+        }
+    }
+
+    #[test]
+    fn a_deep_chain_costs_a_walk_proportional_to_its_parts() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = resolve(dir.path());
+        let deep = base.join("d/".repeat(300));
+        std::fs::create_dir_all(deep.join("real")).unwrap();
+        for i in 0..39 {
+            let next = if i == 38 {
+                "real".to_string()
+            } else {
+                format!("L{}", i + 1)
+            };
+            std::os::unix::fs::symlink(next, deep.join(format!("L{i}"))).unwrap();
+        }
+        std::os::unix::fs::symlink(deep.join("L0"), base.join("deep")).unwrap();
+        let start = std::time::Instant::now();
+        assert_eq!(
+            resolve_checked(&base.join("deep/x")),
+            Ok(deep.join("real/x"))
+        );
+        assert_eq!(links_on(&base.join("deep/x")).map(|l| l.len()), Some(40));
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_dotdot_is_named_under_the_stored_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = resolve(dir.path());
+        let name = base.file_name().unwrap().to_string_lossy().to_uppercase();
+        let shouted = base.with_file_name(name);
+        assert_eq!(
+            links_on(&shouted.join("missing/../x")),
+            Some(vec![base.join("missing")])
+        );
     }
 
     #[test]
