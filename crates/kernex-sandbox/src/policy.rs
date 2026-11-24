@@ -31,6 +31,7 @@
 use std::path::{Path, PathBuf};
 
 pub(crate) use crate::resolve::resolve;
+use crate::resolve::resolve_checked;
 use crate::{SandboxProfile, SandboxScope};
 
 /// System locations no tool call may write.
@@ -325,7 +326,10 @@ impl Policy {
         if self.invalid.is_some() {
             return Err(Denial::InvalidPolicy);
         }
-        if under_any_deny(&resolve(path), &self.read_deny) {
+        // A path that cannot be resolved completely is refused: what the
+        // kernel opens through it is unknown.
+        let resolved = resolve_checked(path).map_err(|_| Denial::Protected)?;
+        if under_any_deny(&resolved, &self.read_deny) {
             return Err(Denial::Protected);
         }
         Ok(())
@@ -355,7 +359,7 @@ impl Policy {
         if self.invalid.is_some() {
             return Err(Denial::InvalidPolicy);
         }
-        let resolved = resolve(path);
+        let resolved = resolve_checked(path).map_err(|_| Denial::Protected)?;
         if under_any_deny(&resolved, deny) {
             return Err(Denial::Protected);
         }
@@ -381,7 +385,7 @@ impl Policy {
         if self.invalid.is_some() {
             return Err(Denial::InvalidPolicy);
         }
-        let resolved = resolve(path);
+        let resolved = resolve_checked(path).map_err(|_| Denial::Protected)?;
         if under_any_deny(&resolved, &self.write_deny) {
             return Err(Denial::Protected);
         }
@@ -956,6 +960,42 @@ mod tests {
         }
         // Pins stay pins: the workspace above them keeps its metadata.
         assert!(!policy.guards().contains(&tmp.join("ws")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_path_that_cannot_be_resolved_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = resolve(dir.path());
+        std::fs::create_dir(ws.join("secret")).unwrap();
+        std::fs::write(ws.join("secret/key"), "x").unwrap();
+        std::os::unix::fs::symlink("loop", ws.join("loop")).unwrap();
+        std::os::unix::fs::symlink("loop/..", ws.join("x")).unwrap();
+        let scope = SandboxScope::new(&ws, format!("{HOME}/.kernex"));
+        let mut profile = SandboxProfile::default();
+        profile.blocked_paths.push(ws.join("secret"));
+        let policy = Policy::with_host(&scope, &profile, &host());
+        for path in ["loop/../secret/key", "x/secret/key", "x/new"] {
+            let path = ws.join(path);
+            assert_eq!(policy.check_read(&path), Err(Denial::Protected));
+            assert_eq!(policy.check_write(&path), Err(Denial::Protected));
+            assert_eq!(policy.check_tool_read(&path), Err(Denial::Protected));
+            assert_eq!(policy.check_tool_write(&path), Err(Denial::Protected));
+        }
+        assert!(policy.check_tool_write(&ws.join("new")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_a_dotdot_after_a_missing_component_is_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = resolve(dir.path());
+        std::fs::create_dir(ws.join("secret")).unwrap();
+        let scope = SandboxScope::new(&ws, format!("{HOME}/.kernex"));
+        let mut profile = SandboxProfile::default();
+        profile.blocked_paths.push(ws.join("missing/../secret"));
+        let policy = Policy::with_host(&scope, &profile, &host());
+        assert!(policy.pins().contains(&ws.join("missing")));
     }
 
     #[cfg(unix)]
