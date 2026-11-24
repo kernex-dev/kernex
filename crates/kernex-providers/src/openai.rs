@@ -394,7 +394,8 @@ impl Provider for OpenAiProvider {
                     .with_sandbox_dirs(&self.sandbox_dirs)
                     .with_web_fetch_policy(self.web_fetch.clone())
                     .with_hook_runner_opt(context.hook_runner.clone())
-                    .with_permission_rules_opt(context.permission_rules.clone());
+                    .with_permission_rules_opt(context.permission_rules.clone())
+                    .with_allowed_tools(context.allowed_tools.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 

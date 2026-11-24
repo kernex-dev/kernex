@@ -199,7 +199,8 @@ impl Provider for OllamaProvider {
                     .with_sandbox_dirs(&self.sandbox_dirs)
                     .with_web_fetch_policy(self.web_fetch.clone())
                     .with_hook_runner_opt(context.hook_runner.clone())
-                    .with_permission_rules_opt(context.permission_rules.clone());
+                    .with_permission_rules_opt(context.permission_rules.clone())
+                    .with_allowed_tools(context.allowed_tools.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 
@@ -616,6 +617,152 @@ mod tests {
             1,
             "budget must stop the loop after the first turn"
         );
+    }
+
+    /// A stub that records every request body. Its first answer asks for
+    /// `bash` to create `marker`; every later answer is plain text.
+    async fn spawn_recording_stub(
+        marker: std::path::PathBuf,
+    ) -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let bodies_srv = bodies.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let bodies = bodies_srv.clone();
+                let marker = marker.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 262_144];
+                    let mut read = 0usize;
+                    let mut body_start = 0usize;
+                    loop {
+                        let n = sock.read(&mut buf[read..]).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        read += n;
+                        let s = String::from_utf8_lossy(&buf[..read]);
+                        if let Some(h_end) = s.find("\r\n\r\n") {
+                            body_start = h_end + 4;
+                            let cl = s.lines().find_map(|l| {
+                                let low = l.to_ascii_lowercase();
+                                low.strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            });
+                            if read - body_start >= cl.unwrap_or(0) {
+                                break;
+                            }
+                        }
+                        if read == buf.len() {
+                            break;
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&buf[body_start..read]).into_owned();
+                    let first = {
+                        let mut seen = bodies.lock().unwrap();
+                        seen.push(request);
+                        seen.len() == 1
+                    };
+                    let body = if first {
+                        serde_json::json!({
+                            "model": "stub",
+                            "message": {"role": "assistant", "tool_calls": [{"function": {
+                                "name": "bash",
+                                "arguments": {"command": format!("touch '{}'", marker.display())},
+                            }}]},
+                            "eval_count": 1,
+                            "prompt_eval_count": 1,
+                        })
+                    } else {
+                        serde_json::json!({
+                            "model": "stub",
+                            "message": {"role": "assistant", "content": "done"},
+                            "eval_count": 1,
+                            "prompt_eval_count": 1,
+                        })
+                    }
+                    .to_string();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        (addr, bodies)
+    }
+
+    #[tokio::test]
+    async fn disallowed_tool_is_neither_offered_nor_run() {
+        let ws = tempfile::tempdir().unwrap();
+        let marker = ws.path().join("marker");
+        let (addr, bodies) = spawn_recording_stub(marker.clone()).await;
+        let provider = OllamaProvider::from_config(
+            format!("http://{addr}"),
+            "stub".into(),
+            Some(ws.path().to_path_buf()),
+        )
+        .unwrap();
+        let mut ctx = Context::new("run the command");
+        ctx.max_turns = Some(4);
+        ctx.allowed_tools = Some(vec!["Read".to_string()]);
+
+        let resp = provider.complete(&ctx).await.unwrap();
+        assert_eq!(resp.text, "done");
+
+        let bodies = bodies.lock().unwrap();
+        assert!(
+            bodies.len() >= 2,
+            "the tool result must go back to the model"
+        );
+        // Offered: `read` and nothing else.
+        let first: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+        let offered: Vec<String> = first["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(offered, vec!["read".to_string()]);
+        // Run: the `bash` call the model made anyway was refused.
+        assert!(!marker.exists(), "a tool outside the allowlist ran");
+        assert!(
+            bodies[1].contains("is not allowed in this session"),
+            "{}",
+            bodies[1]
+        );
+    }
+
+    #[tokio::test]
+    async fn allowed_tool_runs_through_the_same_loop() {
+        // The control for the test above: with `bash` allowed, the same
+        // model answer creates the marker.
+        let ws = tempfile::tempdir().unwrap();
+        let marker = ws.path().join("marker");
+        let (addr, _bodies) = spawn_recording_stub(marker.clone()).await;
+        let provider = OllamaProvider::from_config(
+            format!("http://{addr}"),
+            "stub".into(),
+            Some(ws.path().to_path_buf()),
+        )
+        .unwrap();
+        let mut ctx = Context::new("run the command");
+        ctx.max_turns = Some(4);
+        ctx.allowed_tools = Some(vec!["Bash".to_string()]);
+
+        let resp = provider.complete(&ctx).await.unwrap();
+        assert_eq!(resp.text, "done");
+        assert!(marker.exists(), "the allowed tool did not run");
     }
 
     #[tokio::test]

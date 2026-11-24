@@ -63,6 +63,8 @@ pub struct ToolExecutor {
     hook_runner: Option<std::sync::Arc<dyn kernex_core::hooks::HookRunner>>,
     permission_rules: Option<std::sync::Arc<kernex_core::permissions::PermissionRules>>,
     web_fetch: WebFetchPolicy,
+    /// `None` offers every tool, `Some(list)` exactly the tools it names.
+    allowed_tools: Option<Vec<String>>,
     /// Lets a test fetch from a server on loopback over plain http.
     #[cfg(test)]
     fetch_allows_local: bool,
@@ -87,6 +89,7 @@ impl ToolExecutor {
             hook_runner: None,
             permission_rules: None,
             web_fetch: WebFetchPolicy::default(),
+            allowed_tools: None,
             #[cfg(test)]
             fetch_allows_local: false,
         }
@@ -107,6 +110,41 @@ impl ToolExecutor {
     pub fn with_web_fetch_policy(mut self, policy: WebFetchPolicy) -> Self {
         self.web_fetch = policy;
         self
+    }
+
+    /// Restrict the executor to the tools `allowed` names: built-in,
+    /// toolbox and MCP tools alike, compared without regard to case.
+    /// `None` (the default) allows every tool and `Some(vec![])` none. A
+    /// tool that is not allowed is neither offered to the model nor run.
+    pub fn with_allowed_tools(mut self, allowed: Option<Vec<String>>) -> Self {
+        self.allowed_tools = allowed;
+        self
+    }
+
+    /// Whether the allowlist admits `tool_name`.
+    fn tool_allowed(&self, tool_name: &str) -> bool {
+        match &self.allowed_tools {
+            None => true,
+            Some(list) => list.iter().any(|name| name.eq_ignore_ascii_case(tool_name)),
+        }
+    }
+
+    /// What the permission rules match for this call. A file tool's path is
+    /// made absolute against the workspace first, so a rule written for a
+    /// directory cannot be sidestepped with a relative path or `..`.
+    fn rule_subject(&self, tool_name: &str, args: &Value) -> String {
+        use kernex_core::permissions::PermissionRules;
+        match tool_name.to_ascii_lowercase().as_str() {
+            "read" | "write" | "edit" | "grep" | "glob" => {
+                let given = PermissionRules::subject(tool_name, args);
+                if given.is_empty() {
+                    self.workspace_path.to_string_lossy().into_owned()
+                } else {
+                    self.resolve_path(&given).to_string_lossy().into_owned()
+                }
+            }
+            _ => PermissionRules::subject(tool_name, args),
+        }
     }
 
     /// Set a custom sandbox profile.
@@ -208,6 +246,7 @@ impl ToolExecutor {
         if !self.web_fetch.is_enabled() {
             defs.retain(|def| def.name != "web_fetch");
         }
+        defs.retain(|def| self.tool_allowed(&def.name));
         defs
     }
 
@@ -218,6 +257,15 @@ impl ToolExecutor {
     ///
     /// [`HookRunner`]: kernex_core::hooks::HookRunner
     pub async fn execute(&mut self, tool_name: &str, args: &Value) -> ToolResult {
+        // The allowlist comes first: a tool the host did not allow reaches
+        // neither the hooks nor the rules.
+        if !self.tool_allowed(tool_name) {
+            return ToolResult {
+                content: format!("Tool '{tool_name}' is not allowed in this session"),
+                is_error: true,
+            };
+        }
+
         // Pre-tool hook.
         if let Some(runner) = &self.hook_runner.clone() {
             match runner.pre_tool(tool_name, args).await {
@@ -234,7 +282,7 @@ impl ToolExecutor {
         // Permission rules check.
         if let Some(rules) = &self.permission_rules {
             if let kernex_core::permissions::PermissionOutcome::Deny(reason) =
-                rules.check(tool_name, args)
+                rules.check_subject(tool_name, &self.rule_subject(tool_name, args))
             {
                 return ToolResult {
                     content: format!("Tool call denied: {reason}"),
@@ -985,6 +1033,83 @@ mod tests {
         let executor = ToolExecutor::new(PathBuf::from("/tmp"));
         assert!(executor.mcp_tool_map.is_empty());
         assert!(executor.mcp_clients.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_allowlist_limits_what_is_offered_and_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().canonicalize().unwrap();
+        std::fs::write(ws.join("a.txt"), "content").unwrap();
+
+        let mut open = ToolExecutor::new(ws.clone());
+        assert_eq!(open.all_tool_defs().len(), 6);
+        assert!(
+            !open
+                .execute("read", &serde_json::json!({"file_path": "a.txt"}))
+                .await
+                .is_error
+        );
+
+        let mut limited =
+            ToolExecutor::new(ws.clone()).with_allowed_tools(Some(vec!["Read".to_string()]));
+        let names: Vec<String> = limited
+            .all_tool_defs()
+            .into_iter()
+            .map(|d| d.name)
+            .collect();
+        assert_eq!(names, vec!["read".to_string()]);
+        assert!(
+            !limited
+                .execute("read", &serde_json::json!({"file_path": "a.txt"}))
+                .await
+                .is_error
+        );
+        let refused = limited
+            .execute(
+                "write",
+                &serde_json::json!({"file_path": "b.txt", "content": "x"}),
+            )
+            .await;
+        assert!(refused.is_error && refused.content.contains("not allowed"));
+        assert!(!ws.join("b.txt").exists());
+
+        let mut none = ToolExecutor::new(ws).with_allowed_tools(Some(Vec::new()));
+        assert!(none.all_tool_defs().is_empty());
+        assert!(
+            none.execute("read", &serde_json::json!({"file_path": "a.txt"}))
+                .await
+                .is_error
+        );
+    }
+
+    #[tokio::test]
+    async fn test_permission_rule_sees_the_resolved_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(ws.join("private")).unwrap();
+        std::fs::write(ws.join("private/key"), "k").unwrap();
+        std::fs::write(ws.join("public.txt"), "p").unwrap();
+        let rules = kernex_core::permissions::PermissionRules {
+            allow: vec![],
+            deny: vec![format!("Read({}/private/*)", ws.display())],
+        };
+        let mut tools = ToolExecutor::new(ws.clone())
+            .with_permission_rules_opt(Some(std::sync::Arc::new(rules)));
+        // The rule names the absolute directory; relative spellings of a
+        // path inside it are denied all the same.
+        for path in ["private/key", "./private/key", "sub/../private/key"] {
+            let result = tools
+                .execute("read", &serde_json::json!({"file_path": path}))
+                .await;
+            assert!(
+                result.is_error && result.content.contains("denied by rule"),
+                "{path}"
+            );
+        }
+        let public = tools
+            .execute("read", &serde_json::json!({"file_path": "public.txt"}))
+            .await;
+        assert!(!public.is_error, "{}", public.content);
     }
 
     #[tokio::test]
