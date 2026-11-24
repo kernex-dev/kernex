@@ -39,32 +39,67 @@ pub(crate) fn resolve_checked(path: &Path) -> Result<PathBuf, PathBuf> {
     }
 }
 
-/// What [`links_on`] found on a path.
-pub(crate) struct Links {
+/// The paths a policy is built from, each resolved once: what it resolves
+/// to, the links and `..` steps on the way, and whether it can be trusted,
+/// all from the same walk, so a change between two walks cannot split them.
+#[derive(Default)]
+pub(crate) struct Named {
     /// Where the symlinks met sit, each given by its own location, and the
-    /// paths a `..` steps out of, whether they exist or not.
-    pub(crate) found: Vec<PathBuf>,
-    /// The component the walk stopped at because it could not be looked up
-    /// (a directory that cannot be searched, a name that is too long).
-    pub(crate) stopped_at: Option<PathBuf>,
+    /// paths a `..` steps out of, whether they exist or not. A process that
+    /// can repoint one of those links, or put a link at one of those paths,
+    /// changes what a path resolves to next time.
+    pub(crate) links: Vec<PathBuf>,
+    /// Why a path cannot be resolved, for the first one that cannot.
+    pub(crate) problem: Option<String>,
 }
 
-/// The links and `..` steps met while resolving `path`. A process that can
-/// repoint one of those links, or put a link at one of those paths, changes
-/// what `path` resolves to next time. `None` when `path` goes through more
-/// links than can be followed.
-pub(crate) fn links_on(path: &Path) -> Option<Links> {
-    let mut walk = Walk::new(true);
-    walk.run(PathBuf::new(), path);
-    if walk.exhausted {
-        return None;
+impl Named {
+    /// Resolve `path` as [`resolve`] does, and record what was met.
+    pub(crate) fn resolve(&mut self, path: &Path) -> PathBuf {
+        let mut walk = Walk::new(true);
+        let result = walk.run(PathBuf::new(), path);
+        let why = if walk.exhausted {
+            Some("it goes through more symlinks than can be followed".to_string())
+        } else {
+            // A stop the sandboxed process could have caused (its own
+            // directory or link closed to lookups) would hide what is
+            // below it. One at another user's directory it cannot cause.
+            let ours = walk.stopped_at.as_deref().filter(|stop| owned_by_us(stop));
+            ours.map(|stop| format!("{} cannot be looked up", stop.display()))
+        };
+        if self.problem.is_none() {
+            self.problem = why.map(|why| format!("{} cannot be resolved: {why}", path.display()));
+        }
+        let mut unique = std::collections::HashSet::new();
+        walk.seen.retain(|p| unique.insert(p.clone()));
+        self.links.extend(walk.seen.iter().map(|p| located(p)));
+        if walk.complete {
+            stored_case(&result)
+        } else {
+            outside_data_volume(result)
+        }
     }
-    let mut unique = std::collections::HashSet::new();
-    walk.seen.retain(|p| unique.insert(p.clone()));
-    Some(Links {
-        found: walk.seen.iter().map(|p| located(p)).collect(),
-        stopped_at: walk.stopped_at.as_deref().map(located),
-    })
+}
+
+/// Whether `stop`, or the directory it is in, belongs to this process's
+/// user, who could change its mode. Unknown counts as yes.
+fn owned_by_us(stop: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: `geteuid` takes no arguments, cannot fail and touches no
+        // memory of ours.
+        let us = unsafe { libc::geteuid() };
+        let mine = |p: &Path| p.symlink_metadata().map_or(true, |m| m.uid() == us);
+        let parent_mine = stop.parent().map_or(true, mine);
+        let stop_mine = stop.symlink_metadata().is_ok_and(|m| m.uid() == us);
+        parent_mine || stop_mine
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = stop;
+        true
+    }
 }
 
 /// `path` under the stored case of its directory, its own name as written.
@@ -140,6 +175,7 @@ impl Walk {
                     Ok(target) => self.run(parent, &target),
                     Err(_) => {
                         self.complete = false;
+                        self.stopped_at = Some(current.clone());
                         current
                     }
                 }
@@ -197,8 +233,16 @@ fn outside_data_volume(path: PathBuf) -> PathBuf {
 mod tests {
     use super::*;
 
+    fn walked(path: &Path) -> Named {
+        let mut named = Named::default();
+        named.resolve(path);
+        named
+    }
+
     fn links(path: &Path) -> Vec<PathBuf> {
-        links_on(path).unwrap().found
+        let named = walked(path);
+        assert_eq!(named.problem, None);
+        named.links
     }
 
     #[test]
@@ -257,7 +301,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let base = resolve(dir.path());
         chain(&base, 45);
-        assert!(links_on(&base.join("l0/ws")).is_none());
+        assert!(walked(&base.join("l0/ws")).problem.is_some());
     }
 
     #[test]
@@ -271,7 +315,7 @@ mod tests {
         std::os::unix::fs::symlink("loop/..", base.join("x")).unwrap();
         for path in ["loop/../h/f", "x/h/f"] {
             assert!(resolve_checked(&base.join(path)).is_err(), "{path}");
-            assert!(links_on(&base.join(path)).is_none(), "{path}");
+            assert!(walked(&base.join(path)).problem.is_some(), "{path}");
         }
         assert!(resolve_checked(&base.join("h/f")).is_ok());
     }
@@ -292,12 +336,47 @@ mod tests {
         // Root searches it anyway; there is nothing to check then.
         let enforced = std::fs::symlink_metadata(locked.join("sub")).is_err();
         let checked = resolve_checked(&below);
-        let found = links_on(&below).map(|l| (l.found, l.stopped_at));
+        let problem = walked(&below).problem;
         std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
         if enforced {
             assert!(checked.is_err());
-            assert_eq!(found, Some((Vec::new(), Some(locked.join("sub")))));
+            // Closed by its own user, who could open it again.
+            assert!(problem.unwrap().contains("cannot be looked up"));
         }
+    }
+
+    #[test]
+    fn a_stop_at_another_users_directory_is_accepted() {
+        // A directory of root's that this user cannot search, if there is
+        // one and this is not root.
+        let closed = ["/private/var/root", "/root"]
+            .into_iter()
+            .map(Path::new)
+            .find(|d| d.exists() && std::fs::read_dir(d).is_err());
+        let Some(closed) = closed else {
+            return;
+        };
+        let named = walked(&closed.join("x/y"));
+        assert_eq!(named.problem, None);
+    }
+
+    #[test]
+    fn a_link_that_cannot_be_read_is_a_stop() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = resolve(dir.path());
+        std::fs::create_dir(base.join("real")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("l")).unwrap();
+        // macOS lets a link's own mode deny reading it while lookups still
+        // follow it.
+        let closed = std::process::Command::new("chmod")
+            .args(["-h", "000"])
+            .arg(base.join("l"))
+            .status()
+            .is_ok_and(|s| s.success());
+        if !closed || std::fs::read_link(base.join("l")).is_ok() {
+            return;
+        }
+        assert!(walked(&base.join("l/secret")).problem.is_some());
     }
 
     #[test]
@@ -366,7 +445,7 @@ mod tests {
         link("X41", "X41".to_string());
         let start = std::time::Instant::now();
         assert!(resolve_checked(&base.join("X1/x")).is_err());
-        assert!(links_on(&base.join("X1/x")).is_none());
+        assert!(walked(&base.join("X1/x")).problem.is_some());
         assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 }

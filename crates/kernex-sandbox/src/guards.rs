@@ -3,42 +3,17 @@
 use std::path::{Path, PathBuf};
 
 use crate::policy::push_unique;
-use crate::resolve::links_on;
 
 /// The guards and pins of a policy (see [`crate::policy::Policy::guards`]
-/// and [`crate::policy::Policy::pins`]), and an error when one of `named`
-/// cannot be resolved: more symlinks than can be followed, or a directory
-/// inside a write root that cannot be searched.
-///
-/// `denied` are the protected paths; `named` are the paths the policy was
-/// built from, as the host gave them.
+/// and [`crate::policy::Policy::pins`]). `denied` are the protected paths;
+/// `links` the links and `..` steps met on the paths the policy was built
+/// from ([`crate::resolve::Named`]).
 pub(crate) fn guards_and_pins<'a>(
     roots: &[PathBuf],
     denied: impl Iterator<Item = &'a Path>,
-    named: &[PathBuf],
-) -> (Vec<PathBuf>, Vec<PathBuf>, Option<String>) {
+    links: &[PathBuf],
+) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let guards = guard_dirs(roots, denied.filter_map(Path::parent));
-    let (mut links, mut unresolved) = (Vec::new(), None);
-    for path in named.iter().filter(|p| p.is_absolute()) {
-        let why = match links_on(path) {
-            None => Some("it goes through more symlinks than can be followed"),
-            Some(found) => {
-                links.extend(found.found);
-                // Outside the roots the walk stops where the user cannot
-                // look either. Inside one, a sandboxed process could have
-                // closed the directory to hide what is below it.
-                let inside = |stop: &PathBuf| roots.iter().any(|r| stop.starts_with(r));
-                found
-                    .stopped_at
-                    .filter(inside)
-                    .map(|_| "a directory on it inside a write root cannot be searched")
-            }
-        };
-        if let Some(why) = why {
-            let what = format!("{} cannot be resolved: {why}", path.display());
-            unresolved = unresolved.or(Some(what));
-        }
-    }
     // A file root itself is left out, so it can be saved by renaming over
     // it (a link put in its place is ignored by the next policy); its
     // directory is pinned.
@@ -52,7 +27,7 @@ pub(crate) fn guards_and_pins<'a>(
     let starts = root_dirs
         .flatten()
         .chain(links.iter().map(PathBuf::as_path));
-    (guards, guard_dirs(roots, starts), unresolved)
+    (guards, guard_dirs(roots, starts))
 }
 
 /// Every path from a write root down to one of `starts` that the root

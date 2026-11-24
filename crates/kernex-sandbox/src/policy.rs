@@ -136,8 +136,11 @@ impl Policy {
         host: &HostDirs,
     ) -> Self {
         let mut invalid = first_relative(scope, profile);
-        let home = resolve(&host.home);
-        let workspace = resolve(&scope.workspace);
+        // Every path the policy is built from is resolved through this,
+        // which also records the links on the way for the pins.
+        let mut named = crate::resolve::Named::default();
+        let home = named.resolve(&host.home);
+        let workspace = named.resolve(&scope.workspace);
 
         // Locations holding the runtime's own state. Both lists are prefixes:
         // a directory entry covers everything below it.
@@ -155,11 +158,12 @@ impl Policy {
         let mut write_deny: Vec<PathBuf> = SYSTEM_WRITE_DENY.iter().map(PathBuf::from).collect();
         let mut read_deny: Vec<PathBuf> = Vec::new();
         for path in state.iter().chain(blocked) {
-            push_unique(&mut write_deny, resolve(path));
-            push_unique(&mut read_deny, resolve(path));
+            let path = named.resolve(path);
+            push_unique(&mut write_deny, path.clone());
+            push_unique(&mut read_deny, path);
         }
         for dir in crate::paths::DATA_READ_ONLY {
-            push_unique(&mut write_deny, resolve(&scope.data_dir.join(dir)));
+            push_unique(&mut write_deny, named.resolve(&scope.data_dir.join(dir)));
         }
         let allowed: Vec<PathBuf> = profile
             .allowed_paths
@@ -167,12 +171,12 @@ impl Policy {
             .filter(|p| p.is_absolute())
             // A link put in place of the entry would carry the grant elsewhere.
             .filter(|p| !p.symlink_metadata().is_ok_and(|m| m.is_symlink()))
-            .map(|p| resolve(p))
+            .map(|p| named.resolve(p))
             // Like a misplaced temp dir: it would make the whole home writable.
             .filter(|p| !home.starts_with(p))
             .collect();
         for cred in crate::credential_read_deny_dirs(&home) {
-            let cred = resolve(&cred);
+            let cred = named.resolve(&cred);
             // A host that hands a credential location to the subprocess
             // (an agent CLI's own state) has decided it may use it.
             if !allowed.contains(&cred) {
@@ -181,14 +185,14 @@ impl Policy {
             }
         }
         for dir in crate::paths::AGENT_CLI_STATE {
-            let dir = resolve(&scope.data_dir.join(dir));
+            let dir = named.resolve(&scope.data_dir.join(dir));
             if !allowed.contains(&dir) {
                 push_unique(&mut write_deny, dir.clone());
                 push_unique(&mut read_deny, dir);
             }
         }
         for dir in crate::paths::toolchain_exec_paths(&home) {
-            push_unique(&mut write_deny, resolve(&dir));
+            push_unique(&mut write_deny, named.resolve(&dir));
         }
 
         let workspace_rejection = if home.starts_with(&workspace) {
@@ -201,7 +205,7 @@ impl Policy {
 
         let mut write_roots: Vec<PathBuf> = Vec::new();
         if workspace_rejection.is_none() && scope.workspace.is_absolute() {
-            push_unique(&mut write_roots, workspace);
+            push_unique(&mut write_roots, workspace.clone());
         }
         // In-process file tools: the workspace and the host's explicit
         // paths only, not the temp and toolchain directories.
@@ -214,45 +218,35 @@ impl Policy {
         // say) can still be read, and so can the skills and projects the
         // runtime points the model at.
         if scope.workspace.is_absolute() {
-            push_unique(&mut tool_read_roots, resolve(&scope.workspace));
+            push_unique(&mut tool_read_roots, workspace.clone());
         }
         for dir in ["skills", "projects"] {
-            push_unique(&mut tool_read_roots, resolve(&scope.data_dir.join(dir)));
+            push_unique(
+                &mut tool_read_roots,
+                named.resolve(&scope.data_dir.join(dir)),
+            );
         }
         for dir in profile.read_paths.iter().filter(|p| p.is_absolute()) {
-            push_unique(&mut tool_read_roots, resolve(dir));
+            push_unique(&mut tool_read_roots, named.resolve(dir));
         }
         for dir in &host.temp_dirs {
             // A temp dir that contains the home directory (a misplaced
             // `TMPDIR`) would make the whole home writable.
-            let dir = resolve(dir);
+            let dir = named.resolve(dir);
             if dir.is_absolute() && !home.starts_with(&dir) {
                 push_unique(&mut write_roots, dir);
             }
         }
         for dir in crate::write_allow_dirs(&home) {
-            push_unique(&mut write_roots, resolve(&dir));
+            push_unique(&mut write_roots, named.resolve(&dir));
         }
         for dir in allowed {
             push_unique(&mut write_roots, dir);
         }
 
-        // A link on the way to a root or a protected path, inside a root,
-        // could be repointed, so every path the policy is built from is
-        // walked for links.
-        let data = crate::paths::DATA_READ_ONLY
-            .iter()
-            .chain(crate::paths::AGENT_CLI_STATE);
-        let mut named: Vec<PathBuf> = data.map(|d| scope.data_dir.join(d)).collect();
-        named.extend(crate::credential_read_deny_dirs(&home));
-        named.extend(crate::paths::toolchain_exec_paths(&home));
-        named.extend(crate::write_allow_dirs(&home));
-        named.extend([scope.workspace.clone(), scope.data_dir.clone()]);
-        let given = host.temp_dirs.iter().chain(&profile.allowed_paths);
-        named.extend(given.chain(&profile.blocked_paths).chain(&state).cloned());
         let denied = write_deny.iter().chain(&read_deny).map(PathBuf::as_path);
-        let (guards, pins, too_many) = crate::guards::guards_and_pins(&write_roots, denied, &named);
-        invalid = invalid.or(too_many);
+        let (guards, pins) = crate::guards::guards_and_pins(&write_roots, denied, &named.links);
+        invalid = invalid.or(named.problem);
 
         Self {
             write_roots,
@@ -1000,7 +994,9 @@ mod tests {
         let scope = SandboxScope::new(&ws, format!("{HOME}/.kernex"));
         let mut profile = SandboxProfile::default();
         profile.blocked_paths.push(ws.join("sub/link/secret"));
-        // Closed outside every root: the user cannot look there either.
+        // Closed outside every root, by the same user: still a stop the
+        // sandboxed process could have caused (Landlock does not restrict
+        // `chmod`).
         let outside = base.join("closed");
         std::fs::create_dir_all(outside.join("in")).unwrap();
         let mut elsewhere = profile.clone();
@@ -1019,7 +1015,7 @@ mod tests {
         close(&outside, 0o755);
         if enforced {
             assert!(inside.invalid().is_some());
-            assert_eq!(other.invalid(), None);
+            assert!(other.invalid().is_some());
         }
         let open = Policy::with_host(&scope, &profile, &host());
         assert_eq!(open.invalid(), None);
