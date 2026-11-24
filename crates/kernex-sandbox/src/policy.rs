@@ -282,20 +282,21 @@ impl Policy {
         &self.read_deny
     }
 
-    /// Directories above a protected path or above a pin that sit inside a
-    /// write root. Renaming or removing one of them would move what is
-    /// below, and a change of mode or ACL would let another account do it,
-    /// so the OS profile denies writes to these directories themselves (not
-    /// to their other contents). Read by the Seatbelt generator only.
+    /// Directories above a protected path that sit inside a write root.
+    /// Renaming or removing one of them would move the protected path, and
+    /// a change of mode or ACL would let another account do it, so the OS
+    /// profile denies writes to these directories themselves (not to their
+    /// other contents). Read by the Seatbelt generator only.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub(crate) fn guards(&self) -> &[PathBuf] {
         &self.guards
     }
 
     /// The directory write roots (a file root's directory), the symlinks
-    /// met on the way to a root or a protected path, and the directories
-    /// between them and an enclosing write root. A policy whose paths go
-    /// through more symlinks than can be followed is invalid. Removing, renaming or replacing one of them would change
+    /// met on the way to a root or a protected path and the directories a
+    /// `..` steps out of there, and the directories between them and an
+    /// enclosing write root. A policy whose paths go through more symlinks
+    /// than can be followed is invalid. Removing, renaming or replacing one of them would change
     /// what the next policy resolves, so the OS profile denies creating and
     /// removing these paths; their contents, timestamps and mode stay
     /// writable. A write root that does not exist yet cannot be created
@@ -931,6 +932,30 @@ mod tests {
         for guarded in [tmp.join("link"), tmp.join("real/ws"), tmp.join("real")] {
             assert!(policy.pins().contains(&guarded), "{}", guarded.display());
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_the_directory_a_dotdot_leaves_is_pinned() {
+        let dir = tempfile::tempdir().unwrap();
+        let tmp = resolve(dir.path());
+        std::fs::create_dir_all(tmp.join("a/b")).unwrap();
+        std::fs::create_dir_all(tmp.join("ws")).unwrap();
+        std::os::unix::fs::symlink(tmp.join("a/b"), tmp.join("ws/l")).unwrap();
+        let host = HostDirs {
+            home: PathBuf::from(HOME),
+            temp_dirs: vec![tmp.clone()],
+        };
+        let scope = SandboxScope::new(tmp.join("ws"), format!("{HOME}/.kernex"));
+        let mut profile = SandboxProfile::default();
+        profile.allowed_paths.push(tmp.join("ws/l/../state"));
+        let policy = Policy::with_host(&scope, &profile, &host);
+        assert!(policy.write_roots().contains(&tmp.join("a/state")));
+        for pinned in [tmp.join("ws/l"), tmp.join("a/b"), tmp.join("a")] {
+            assert!(policy.pins().contains(&pinned), "{}", pinned.display());
+        }
+        // Pins stay pins: the workspace above them keeps its metadata.
+        assert!(!policy.guards().contains(&tmp.join("ws")));
     }
 
     #[cfg(unix)]

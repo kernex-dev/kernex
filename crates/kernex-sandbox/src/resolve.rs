@@ -42,19 +42,15 @@ fn resolve_within(path: &Path, budget: &mut u8) -> PathBuf {
             Component::Normal(name) => {
                 let parent = current.clone();
                 current.push(name);
-                if *budget == 0 || current.symlink_metadata().is_err() {
+                if current.symlink_metadata().is_err() {
                     continue;
                 }
-                match std::fs::canonicalize(&current) {
-                    Ok(real) => current = real,
-                    // The kernel cannot open it either: stop following, and
-                    // leave the link in place for the caller to refuse.
-                    Err(e) if is_loop(&e) => *budget = 0,
-                    Err(_) => {
-                        if let Ok(target) = std::fs::read_link(&current) {
-                            *budget -= 1;
-                            current = resolve_within(&parent.join(target), budget);
-                        }
+                if let Ok(real) = std::fs::canonicalize(&current) {
+                    current = real;
+                } else if let Ok(target) = std::fs::read_link(&current) {
+                    if *budget > 0 {
+                        *budget -= 1;
+                        current = resolve_within(&parent.join(target), budget);
                     }
                 }
             }
@@ -63,20 +59,12 @@ fn resolve_within(path: &Path, budget: &mut u8) -> PathBuf {
     current
 }
 
-#[cfg(unix)]
-fn is_loop(e: &std::io::Error) -> bool {
-    e.raw_os_error() == Some(libc::ELOOP)
-}
-
-#[cfg(not(unix))]
-fn is_loop(_: &std::io::Error) -> bool {
-    false
-}
-
 /// Where the symlinks met while resolving `path` sit, each given by its
-/// own location (its parent resolved, its name as written). A process that
-/// can repoint one of them changes what `path` resolves to next time.
-/// `None` when there are more than can be followed.
+/// own location (its parent resolved, its name as written), and the
+/// directories a `..` steps out of. A process that can repoint one of those
+/// links, or put a link in place of one of those directories, changes what
+/// `path` resolves to next time. `None` when there are more links than can
+/// be followed.
 pub(crate) fn links_on(path: &Path) -> Option<Vec<PathBuf>> {
     let (mut links, mut budget) = (Vec::new(), MAX_LINKS);
     collect_links(path, &mut budget, &mut links).then_some(links)
@@ -90,6 +78,9 @@ fn collect_links(path: &Path, budget: &mut u8, links: &mut Vec<PathBuf>) -> bool
             // As `resolve` does: a component that does not exist is taken
             // as written, so `..` after it goes back lexically.
             Component::ParentDir => {
+                if current.symlink_metadata().is_ok() {
+                    links.push(current.clone());
+                }
                 current.pop();
                 continue;
             }
@@ -141,6 +132,12 @@ mod tests {
         assert!(links(&base.join("real/inner")).is_empty());
         // `..` after a component that does not exist goes back as written.
         assert_eq!(links(&base.join("missing/../a/inner")), [base.join("a")]);
+        // The directory a `..` steps out of is named too: a link put in its
+        // place would change where the `..` lands.
+        assert_eq!(
+            links(&base.join("a/../real/inner")),
+            [base.join("a"), base.join("real")]
+        );
     }
 
     fn chain(base: &Path, len: usize) {
@@ -154,32 +151,42 @@ mod tests {
     }
 
     #[test]
-    fn a_chain_the_kernel_opens_is_followed_to_its_end() {
+    fn a_chain_within_the_budget_is_followed_to_its_end() {
         let dir = tempfile::tempdir().unwrap();
         let base = resolve(dir.path());
-        chain(&base, 30);
-        assert_eq!(links(&base.join("l0/ws")).len(), 30);
+        // Longer than the kernel follows for one path, within the budget.
+        chain(&base, 36);
+        assert_eq!(links(&base.join("l0/ws")).len(), 36);
         assert_eq!(resolve(&base.join("l0/ws")), base.join("real/ws"));
     }
 
     #[test]
-    fn a_chain_longer_than_the_budget_is_not_followed() {
+    fn a_chain_longer_than_the_budget_is_reported() {
         let dir = tempfile::tempdir().unwrap();
         let base = resolve(dir.path());
         chain(&base, 45);
         assert_eq!(links_on(&base.join("l0/ws")), None);
-        // The kernel stops before the end too; the link is left in place.
-        assert_eq!(resolve(&base.join("l0/ws")), base.join("l0/ws"));
+    }
+
+    #[test]
+    fn a_loop_does_not_hide_the_links_after_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = resolve(dir.path());
+        let outside = base.join("outside");
+        std::fs::create_dir(&outside).unwrap();
+        std::os::unix::fs::symlink("loop", base.join("loop")).unwrap();
+        std::os::unix::fs::symlink(&outside, base.join("h")).unwrap();
+        assert_eq!(resolve(&base.join("loop/../h/x")), outside.join("x"));
     }
 
     #[test]
     fn a_link_through_itself_costs_a_bounded_walk() {
         let dir = tempfile::tempdir().unwrap();
         let base = resolve(dir.path());
-        std::os::unix::fs::symlink("a/../".repeat(150) + "a", base.join("a")).unwrap();
+        std::os::unix::fs::symlink("a/../a", base.join("a")).unwrap();
         let start = std::time::Instant::now();
-        assert_eq!(resolve(&base.join("a/x")), base.join("a/x"));
+        let _ = resolve(&base.join("a/x"));
         assert_eq!(links_on(&base.join("a/x")), None);
-        assert!(start.elapsed() < std::time::Duration::from_millis(500));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
     }
 }

@@ -16,7 +16,7 @@ pub(crate) fn guards_and_pins<'a>(
     denied: impl Iterator<Item = &'a Path>,
     named: &[PathBuf],
 ) -> (Vec<PathBuf>, Vec<PathBuf>, Option<String>) {
-    let mut guards = guard_dirs(roots, denied.filter_map(Path::parent));
+    let guards = guard_dirs(roots, denied.filter_map(Path::parent));
     let (mut links, mut too_many) = (Vec::new(), None);
     for path in named.iter().filter(|p| p.is_absolute()) {
         match links_on(path) {
@@ -40,16 +40,7 @@ pub(crate) fn guards_and_pins<'a>(
     let starts = root_dirs
         .flatten()
         .chain(links.iter().map(PathBuf::as_path));
-    let pins = guard_dirs(roots, starts);
-    // A pin above another pin could be opened to another account, which
-    // could then move the one below.
-    for pin in pins
-        .iter()
-        .filter(|p| pins.iter().any(|q| q != *p && q.starts_with(p)))
-    {
-        push_unique(&mut guards, pin.clone());
-    }
-    (guards, pins, too_many)
+    (guards, guard_dirs(roots, starts), too_many)
 }
 
 /// Every path from a write root down to one of `starts` that the root

@@ -458,8 +458,12 @@ fn a_write_root_keeps_its_own_metadata_and_files_writable() {
     let file = ws.join("granted.txt");
     std::fs::write(&file, "old").unwrap();
     let scope = SandboxScope::new(&ws, home().join(".kernex"));
+    // A granted file one level down pins its directory, not the root.
+    std::fs::create_dir(ws.join("sub")).unwrap();
+    std::fs::write(ws.join("sub/nested.txt"), "x").unwrap();
     let mut profile = SandboxProfile::default();
     profile.allowed_paths.push(file.clone());
+    profile.allowed_paths.push(ws.join("sub/nested.txt"));
     let (w, f) = (ws.display(), file.display());
     // An in-place write, then a save that renames over the granted file.
     let script = format!(
@@ -536,30 +540,4 @@ fn a_link_to_protected_state_cannot_be_replaced() {
     let script = format!("rm '{l}' ; mv '{l}' '{l}.old' ; mkdir '{l}' ; true");
     let out = sandboxed(&scope, &profile, &ws, "/bin/sh", &["-c", &script]);
     assert_eq!(std::fs::read_link(&link).ok(), Some(real), "{}", out.stderr);
-}
-
-#[test]
-fn a_directory_above_a_write_root_keeps_its_mode() {
-    if !enforcement_or_skip("pin_mode") {
-        return;
-    }
-    // The workspace inside the temp dir: the directory between them stays
-    // closed to other accounts, which could otherwise move the workspace.
-    let base = tempfile::tempdir().expect("base");
-    let run = base.path().canonicalize().unwrap().join("run");
-    std::fs::create_dir_all(run.join("ws")).unwrap();
-    let scope = SandboxScope::new(run.join("ws"), home().join(".kernex"));
-    let before = std::fs::metadata(&run).unwrap().permissions();
-    let r = run.display();
-    let script = format!("chmod 777 '{r}' || chmod +a 'everyone allow delete_child' '{r}'");
-    let profile = SandboxProfile::default();
-    let out = sandboxed(
-        &scope,
-        &profile,
-        Path::new("/"),
-        "/bin/sh",
-        &["-c", &script],
-    );
-    assert!(!out.ok, "the mode was changed");
-    assert_eq!(std::fs::metadata(&run).unwrap().permissions(), before);
 }
