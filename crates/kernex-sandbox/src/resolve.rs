@@ -103,15 +103,15 @@ fn caused_by_us(stop: &Path, meta: Option<&std::fs::Metadata>) -> bool {
             return true;
         };
         // A parent that is not a directory now is not the one the walk met.
-        if parent
-            .symlink_metadata()
-            .map_or(true, |m| m.uid() == us || !m.is_dir())
-        {
+        let Ok(dir) = parent.symlink_metadata() else {
+            return true;
+        };
+        if dir.uid() == us || !dir.is_dir() {
             return true;
         }
         match meta {
             Some(meta) => meta.uid() == us,
-            None => searchable(parent),
+            None => searchable(parent, &dir),
         }
     }
     #[cfg(not(unix))]
@@ -121,19 +121,27 @@ fn caused_by_us(stop: &Path, meta: Option<&std::fs::Metadata>) -> bool {
     }
 }
 
-/// Whether this process's user can search `dir`. Unknown counts as yes.
+/// Whether this process's user can search `dir`, the directory `before`
+/// describes. Unknown counts as yes, and so does a `dir` that is no longer
+/// that directory after the check.
 #[cfg(unix)]
-fn searchable(dir: &Path) -> bool {
+fn searchable(dir: &Path, before: &std::fs::Metadata) -> bool {
     use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::MetadataExt;
     let Ok(name) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
         return true;
     };
     // SAFETY: `name` is a valid NUL-terminated string that outlives the
     // call, which only reads it.
-    let found =
-        unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
+    let flags = libc::AT_EACCESS | libc::AT_SYMLINK_NOFOLLOW;
+    let found = unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), libc::X_OK, flags) };
     // Only a refusal says it cannot be searched; any other error is unknown.
-    found == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES)
+    if found == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES) {
+        return true;
+    }
+    let same =
+        |m: std::fs::Metadata| m.is_dir() && m.dev() == before.dev() && m.ino() == before.ino();
+    !dir.symlink_metadata().is_ok_and(same)
 }
 
 /// `path` under the stored case of its directory, its own name as written.
@@ -462,6 +470,26 @@ mod tests {
             return;
         }
         assert!(walked(&base.join("l/secret")).problem.is_some());
+    }
+
+    #[test]
+    fn an_unknown_answer_about_a_stops_directory_counts_as_ours() {
+        let dir = tempfile::tempdir().unwrap();
+        let before = dir.path().symlink_metadata().unwrap();
+        // Gone, or a file in its place: not the directory that was checked.
+        assert!(searchable(&dir.path().join("missing"), &before));
+        let file = dir.path().join("file");
+        std::fs::write(&file, "x").unwrap();
+        assert!(searchable(&file, &before));
+        assert!(caused_by_us(&dir.path().join("missing/x"), None));
+        // A file of root's as the stop's directory.
+        let hosts = ["/private/etc/hosts", "/etc/hosts"]
+            .into_iter()
+            .map(Path::new)
+            .find(|p| p.is_file());
+        if let Some(hosts) = hosts {
+            assert!(caused_by_us(&hosts.join("x"), None));
+        }
     }
 
     #[test]
