@@ -8,6 +8,10 @@ trigger = "file|read file|write file|list files|directory|folder"
 [mcp.filesystem]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+
+[permissions]
+commands = ["npx"]
+network = ["registry.npmjs.org"]
 ---
 
 # Filesystem

@@ -8,6 +8,10 @@ trigger = "sqlite|database|sql|query|table"
 [mcp.sqlite]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-sqlite", "./data.db"]
+
+[permissions]
+commands = ["npx"]
+network = ["registry.npmjs.org"]
 ---
 
 # SQLite

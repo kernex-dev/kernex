@@ -70,6 +70,17 @@ pub struct McpServer {
     /// Environment variables passed to the server process.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub env: HashMap<String, String>,
+    /// Whether the server process may open network connections. Defaults to
+    /// `false`: a server that downloads itself (`npx -y ...`) or calls an
+    /// API has to say so. Enforced at the OS sandbox layer.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub network: bool,
+    /// Command allow-list that `command` must satisfy before the server is
+    /// started, carried from the owning skill's declared permissions. Unlike
+    /// a toolbox, an empty list starts nothing: see
+    /// [`mcp_command_allowed`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_commands: Vec<String>,
 }
 
 /// A simple script-based tool that runs without a full MCP server.
@@ -116,9 +127,21 @@ pub struct Toolbox {
     pub search_hints: Vec<String>,
 }
 
-/// Does `command` satisfy a declared command allow-list?
+/// May an MCP server be started with `command`?
+///
+/// Only when `allowed` is not empty and `command` matches it, by the rules
+/// of [`command_matches_allowlist`]. An MCP server is a long-lived process
+/// that speaks for itself to the model, so "nothing declared" means "nothing
+/// started". This is a separate function from the toolbox rule on purpose:
+/// the two answers differ for an empty list.
+pub fn mcp_command_allowed(allowed: &[String], command: &str) -> bool {
+    !allowed.is_empty() && command_matches_allowlist(allowed, command)
+}
+
+/// Does a toolbox `command` satisfy a declared command allow-list?
 ///
 /// - An empty `allowed` list means no restriction was declared: `true`.
+///   (For an MCP server use [`mcp_command_allowed`], which answers `false`.)
 /// - Entries containing `/` are full paths and must equal `command` exactly.
 /// - Entries without `/` are basenames and match any command whose final
 ///   path segment equals the entry (`npx` permits `/usr/bin/npx`).
@@ -353,11 +376,33 @@ mod tests {
             command: "npx".into(),
             args: vec!["@playwright/mcp".into(), "--headless".into()],
             env: HashMap::new(),
+            network: true,
+            allowed_commands: vec!["npx".into()],
         };
         let json = serde_json::to_string(&server).unwrap();
         let deserialized: McpServer = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.name, "playwright");
         assert_eq!(deserialized.args, vec!["@playwright/mcp", "--headless"]);
+        assert!(deserialized.network);
+        assert_eq!(deserialized.allowed_commands, vec!["npx"]);
+
+        // Declarations written before these fields existed still load, with
+        // no network and nothing allowed.
+        let old: McpServer =
+            serde_json::from_str(r#"{"name":"a","command":"npx","args":[]}"#).unwrap();
+        assert!(!old.network && old.allowed_commands.is_empty());
+    }
+
+    #[test]
+    fn test_mcp_command_needs_a_declared_allow_list() {
+        let npx = vec!["npx".to_string()];
+        assert!(mcp_command_allowed(&npx, "npx"));
+        assert!(mcp_command_allowed(&npx, "/usr/bin/npx"));
+        assert!(!mcp_command_allowed(&npx, "uvx"));
+        // The toolbox rule treats an empty list as "no restriction"; the MCP
+        // rule does not.
+        assert!(command_matches_allowlist(&[], "npx"));
+        assert!(!mcp_command_allowed(&[], "npx"));
     }
 
     #[test]

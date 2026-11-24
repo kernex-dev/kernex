@@ -8,6 +8,10 @@ trigger = "keyword1|keyword2|keyword3"
 [mcp.my-server]
 command = "npx"
 args = ["-y", "@scope/mcp-server-name"]
+
+[permissions]
+commands = ["npx"]
+network = ["registry.npmjs.org"]
 ---
 
 # My Skill

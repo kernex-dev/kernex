@@ -8,6 +8,10 @@ trigger = "git|commit|branch|diff|blame|log"
 [mcp.git]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-git"]
+
+[permissions]
+commands = ["npx"]
+network = ["registry.npmjs.org"]
 ---
 
 # Git

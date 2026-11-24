@@ -8,6 +8,10 @@ trigger = "search|web search|find online|look up|google"
 [mcp.brave-search]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-brave-search"]
+
+[permissions]
+commands = ["npx"]
+network = ["registry.npmjs.org", "api.search.brave.com"]
 ---
 
 # Brave Search

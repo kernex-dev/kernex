@@ -8,6 +8,10 @@ trigger = "browse|website|click|scrape|web page|navigate|screenshot"
 [mcp.playwright]
 command = "npx"
 args = ["@playwright/mcp@latest", "--headless"]
+
+[permissions]
+commands = ["npx"]
+network = ["*"]
 ---
 
 # Playwright

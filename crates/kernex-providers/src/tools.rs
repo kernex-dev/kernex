@@ -167,8 +167,7 @@ impl ToolExecutor {
     /// Connect to MCP servers and discover their tools.
     pub async fn connect_mcp_servers(&mut self, servers: &[McpServer]) {
         for server in servers {
-            match McpClient::connect(&server.name, &server.command, &server.args, &server.env).await
-            {
+            match McpClient::connect(server, &self.scope, &self.sandbox_profile).await {
                 Ok(client) => {
                     // Map each tool name to this server.
                     for tool in &client.tools {

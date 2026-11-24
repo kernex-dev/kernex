@@ -8,6 +8,10 @@ trigger = "github|issue|pull request|PR|repo|repository"
 [mcp.github]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
+
+[permissions]
+commands = ["npx"]
+network = ["registry.npmjs.org", "api.github.com"]
 ---
 
 # GitHub

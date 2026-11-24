@@ -4,6 +4,8 @@
 //! No external MCP crate — just raw protocol using tokio + serde.
 
 use futures_util::StreamExt;
+use kernex_core::context::McpServer;
+use kernex_sandbox::{SandboxProfile, SandboxScope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::process::Stdio;
@@ -43,6 +45,12 @@ pub enum McpError {
         #[source]
         source: std::io::Error,
     },
+    /// The server's command is not in its declared command allow-list, or
+    /// no allow-list was declared.
+    #[error(
+        "mcp: '{server}' not started: command {command:?} is not in a declared command allow-list"
+    )]
+    NotAllowed { server: String, command: String },
     /// stdin/stdout pipe was missing on the spawned child.
     #[error("mcp: '{server}' missing {channel} pipe")]
     MissingPipe {
@@ -145,7 +153,13 @@ struct JsonRpcError {
 }
 
 impl McpClient {
-    /// Connect to an MCP server by spawning its process.
+    /// Connect to an MCP server by spawning its process inside the sandbox.
+    ///
+    /// The server runs under the same scope as a tool subprocess: it writes
+    /// to the workspace and nowhere in the runtime data directory, and does
+    /// not read credential stores. It gets network access only when its
+    /// declaration (or the host's profile) grants it. A server whose command
+    /// is not in a non-empty declared allow-list is not started.
     ///
     /// Performs the full initialization handshake:
     /// 1. Spawn process with piped stdin/stdout
@@ -153,27 +167,43 @@ impl McpClient {
     /// 3. Send `notifications/initialized` notification
     /// 4. Send `tools/list` to discover available tools
     pub async fn connect(
-        name: &str,
-        command: &str,
-        args: &[String],
-        env: &std::collections::HashMap<String, String>,
+        server: &McpServer,
+        scope: &SandboxScope,
+        profile: &SandboxProfile,
     ) -> Result<Self, McpError> {
+        let name = server.name.as_str();
+        let command = server.command.as_str();
+        if !kernex_core::context::mcp_command_allowed(&server.allowed_commands, command) {
+            return Err(McpError::NotAllowed {
+                server: name.to_string(),
+                command: command.to_string(),
+            });
+        }
         debug!(
             "mcp: connecting to server '{name}' via: {command} {}",
-            args.join(" ")
+            server.args.join(" ")
         );
 
-        let mut cmd = tokio::process::Command::new(command);
-        cmd.args(args)
+        // The sandbox wrappers leave stdio alone (`sandbox-exec` passes it
+        // through, the Landlock hook runs before exec), so the JSON-RPC
+        // framing is unaffected. The wrapper also clears the inherited
+        // environment (provider API keys included); the server's configured
+        // env below is the explicit opt-in.
+        let profile = server_profile(profile, server);
+        let mut cmd =
+            kernex_sandbox::try_protected_command(command, scope, &profile).map_err(|e| {
+                McpError::Spawn {
+                    command: command.to_string(),
+                    source: e,
+                }
+            })?;
+        cmd.args(&server.args)
+            .current_dir(&scope.workspace)
+            .kill_on_drop(true)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        // MCP servers run unwrapped (stdio framing), so apply env isolation
-        // directly: clear the inherited environment (provider API keys
-        // included) and re-add the base allowlist. The server's configured
-        // env below is the explicit opt-in.
-        kernex_sandbox::hardened_env(&mut cmd);
-        let (safe_env, dropped) = kernex_core::spawn::filter_unsafe_env(env);
+        let (safe_env, dropped) = kernex_core::spawn::filter_unsafe_env(&server.env);
         for k in &dropped {
             tracing::warn!(
                 server = name,
@@ -403,6 +433,14 @@ impl McpClient {
 }
 
 /// Parse the `tools/list` response into `McpToolDef` items.
+/// The sandbox profile one server runs under: the executor's profile, with
+/// network access when the server's declaration grants it.
+fn server_profile(base: &SandboxProfile, server: &McpServer) -> SandboxProfile {
+    let mut profile = base.clone();
+    profile.allow_network = profile.allow_network || server.network;
+    profile
+}
+
 fn parse_tools_list(result: &Value) -> Vec<McpToolDef> {
     result
         .get("tools")
@@ -440,6 +478,176 @@ fn parse_tool_result(result: &Value) -> McpToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stdio MCP server in POSIX shell: answers the handshake and offers
+    /// `cat_file` (print a file) and `put_file` (create one). Each replies
+    /// `DENIED` when the operating system refuses.
+    const ECHO_SERVER: &str = r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  path=$(printf '%s' "$line" | sed -n 's/.*"path":"\([^"]*\)".*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"cat_file","description":"print a file","inputSchema":{"type":"object"}},{"name":"put_file","description":"create a file","inputSchema":{"type":"object"}}]}}\n' "$id" ;;
+    *'"name":"cat_file"'*)
+      if text=$(cat "$path" 2>/dev/null); then :; else text=DENIED; fi
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s"}]}}\n' "$id" "$text" ;;
+    *'"name":"put_file"'*)
+      if (printf made > "$path") 2>/dev/null; then text=WROTE; else text=DENIED; fi
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"%s"}]}}\n' "$id" "$text" ;;
+  esac
+done
+"#;
+
+    /// A directory beside the test binary. The system temp directory is
+    /// writable by policy and would hide a write denial.
+    fn fixture_dir(name: &str) -> std::path::PathBuf {
+        let exe = std::env::current_exe().unwrap();
+        let dir = exe
+            .parent()
+            .unwrap()
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    fn echo_server(script: &std::path::Path, allowed: &[&str]) -> McpServer {
+        McpServer {
+            name: "echo".into(),
+            command: "sh".into(),
+            args: vec![script.to_string_lossy().into_owned()],
+            allowed_commands: allowed.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    async fn call(client: &mut McpClient, tool: &str, path: &std::path::Path) -> String {
+        client
+            .call_tool(tool, &serde_json::json!({ "path": path }))
+            .await
+            .unwrap()
+            .content
+    }
+
+    /// A real MCP server started by the client runs inside the sandbox: it
+    /// serves requests, and cannot read a protected file or the memory
+    /// database, nor write outside the workspace.
+    #[tokio::test]
+    async fn test_server_runs_inside_the_sandbox() {
+        let root = fixture_dir("mcp-sandbox");
+        let workspace = root.join("proj");
+        let data_dir = root.join("data");
+        let secret = root.join("secrets/token");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::create_dir_all(secret.parent().unwrap()).unwrap();
+        std::fs::write(workspace.join("server.sh"), ECHO_SERVER).unwrap();
+        std::fs::write(workspace.join("note.txt"), "workspace-note").unwrap();
+        std::fs::write(&secret, "credential-fixture").unwrap();
+        std::fs::write(data_dir.join("memory.db"), "memory-fixture").unwrap();
+
+        let scope = SandboxScope::new(&workspace, &data_dir);
+        let profile = SandboxProfile::default()
+            .with_blocked_paths(vec![secret.parent().unwrap().to_path_buf()]);
+        let script = workspace.join("server.sh");
+
+        // Nothing declared, or another command declared: not started.
+        for allowed in [&[][..], &["npx"][..]] {
+            let refused =
+                McpClient::connect(&echo_server(&script, allowed), &scope, &profile).await;
+            assert!(matches!(refused, Err(McpError::NotAllowed { .. })));
+        }
+
+        let mut client = McpClient::connect(&echo_server(&script, &["sh"]), &scope, &profile)
+            .await
+            .unwrap();
+        let names: Vec<&str> = client.tools.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["cat_file", "put_file"]);
+        assert_eq!(
+            call(&mut client, "cat_file", &workspace.join("note.txt")).await,
+            "workspace-note"
+        );
+        assert_eq!(
+            call(&mut client, "put_file", &workspace.join("out.txt")).await,
+            "WROTE"
+        );
+
+        let required =
+            std::env::var("KERNEX_TEST_REQUIRE_SANDBOX").is_ok_and(|v| !v.is_empty() && v != "0");
+        if !kernex_sandbox::os_enforcement_available() {
+            assert!(!required, "no OS-level sandbox enforcement on this host");
+            eprintln!("skipping the denial probes: no OS-level sandbox enforcement");
+        } else {
+            assert_eq!(call(&mut client, "cat_file", &secret).await, "DENIED");
+            assert_eq!(
+                call(&mut client, "cat_file", &data_dir.join("memory.db")).await,
+                "DENIED"
+            );
+            for outside in [root.join("outside.txt"), data_dir.join("planted.txt")] {
+                assert_eq!(call(&mut client, "put_file", &outside).await, "DENIED");
+                assert!(!outside.exists(), "{}", outside.display());
+            }
+        }
+        client.shutdown().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Manual probe of a published server started the way the example
+    /// skills start one. Downloads an npm package, so it is not part of the
+    /// suite: `cargo test -p kernex-providers real_npx -- --ignored --nocapture`.
+    #[tokio::test]
+    #[ignore = "downloads an npm package; run by hand"]
+    async fn real_npx_server_starts_inside_the_sandbox() {
+        let root = fixture_dir("mcp-npx");
+        let workspace = root.join("proj");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let scope = SandboxScope::new(&workspace, root.join("data"));
+        let mut server = McpServer {
+            name: "filesystem".into(),
+            command: "npx".into(),
+            args: vec![
+                "-y".into(),
+                "@modelcontextprotocol/server-filesystem".into(),
+                ".".into(),
+            ],
+            allowed_commands: vec!["npx".into()],
+            ..Default::default()
+        };
+        let offline = McpClient::connect(&server, &scope, &SandboxProfile::default()).await;
+        eprintln!(
+            "without the network (starts only from the npm cache): {:?}",
+            offline
+                .as_ref()
+                .map(|c| c.tools.len())
+                .map_err(|e| e.to_string())
+        );
+        if let Ok(client) = offline {
+            client.shutdown().await;
+        }
+        server.network = true;
+        let client = McpClient::connect(&server, &scope, &SandboxProfile::default())
+            .await
+            .unwrap();
+        eprintln!("with the network: {} tools", client.tools.len());
+        assert!(!client.tools.is_empty());
+        client.shutdown().await;
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn test_server_network_follows_its_declaration() {
+        let base = SandboxProfile::default();
+        let mut server = McpServer::default();
+        assert!(!server_profile(&base, &server).allow_network);
+        server.network = true;
+        assert!(server_profile(&base, &server).allow_network);
+        // A host profile that already allows the network keeps it.
+        let open = SandboxProfile::default().with_allow_network(true);
+        assert!(server_profile(&open, &McpServer::default()).allow_network);
+    }
 
     #[test]
     fn test_jsonrpc_request_serialization() {

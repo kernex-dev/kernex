@@ -8,6 +8,10 @@ trigger = "postgres|database|sql|query|table|schema"
 [mcp.postgres]
 command = "npx"
 args = ["-y", "@modelcontextprotocol/server-postgres", "postgresql://localhost/mydb"]
+
+[permissions]
+commands = ["npx"]
+network = ["registry.npmjs.org", "localhost"]
 ---
 
 # PostgreSQL

@@ -402,7 +402,7 @@ fn load_mcp_json(skill_dir: &Path, permissions: &Permissions) -> Vec<McpServer> 
                 );
                 return None;
             }
-            if !permissions.allows_command(&entry.command) {
+            if !permissions.allows_mcp_command(&entry.command) {
                 warn!(
                     "skills: MCP command {:?} not in permissions.commands allow-list ({:?}) in {}",
                     entry.command,
@@ -434,6 +434,8 @@ fn load_mcp_json(skill_dir: &Path, permissions: &Permissions) -> Vec<McpServer> 
                 command: entry.command,
                 args: entry.args,
                 env: entry.env,
+                network: !permissions.network.is_empty(),
+                allowed_commands: permissions.commands.clone(),
             })
         })
         .collect()
@@ -519,7 +521,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                     );
                     return None;
                 }
-                if !fm.permissions.allows_command(&mfm.command) {
+                if !fm.permissions.allows_mcp_command(&mfm.command) {
                     warn!(
                         "skills: MCP command {:?} not in permissions.commands allow-list ({:?}) in {}",
                         mfm.command,
@@ -541,6 +543,10 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                     name,
                     command: mfm.command,
                     args: mfm.args,
+                    // A declared network host list is the skill-level grant;
+                    // the OS sandbox is all-or-nothing.
+                    network: !fm.permissions.network.is_empty(),
+                    allowed_commands: fm.permissions.commands.clone(),
                     ..Default::default()
                 })
             })
@@ -1395,7 +1401,7 @@ description = \"No trigger or MCP.\"
         std::fs::create_dir_all(&skill_dir).unwrap();
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname = \"pw\"\ndescription = \"Browser.\"\nrequires = [\"ls\"]\ntrigger = \"browse\"\n\n[mcp.playwright]\ncommand = \"npx\"\nargs = [\"@playwright/mcp\"]\n---\n",
+            "---\nname = \"pw\"\ndescription = \"Browser.\"\nrequires = [\"ls\"]\ntrigger = \"browse\"\n\n[mcp.playwright]\ncommand = \"npx\"\nargs = [\"@playwright/mcp\"]\n\n[permissions]\ncommands = [\"npx\"]\n---\n",
         )
         .unwrap();
 
@@ -1455,6 +1461,79 @@ Body text.
         assert!(!is_safe_mcp_command(&fm.mcp["pwned"].command));
     }
 
+    fn npx_permissions() -> Permissions {
+        Permissions {
+            commands: vec!["npx".into()],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_mcp_server_needs_a_declared_command() {
+        let tmp_dir = tempfile::TempDir::new().unwrap();
+        let tmp = tmp_dir.path();
+        std::fs::write(
+            tmp.join("mcp.json"),
+            r#"{"mcpServers":{"playwright":{"command":"npx","args":["@playwright/mcp"]}}}"#,
+        )
+        .unwrap();
+        // No `permissions.commands`: a toolbox would load, an MCP server
+        // does not.
+        assert!(load_mcp_json(tmp, &Permissions::default()).is_empty());
+        let other = Permissions {
+            commands: vec!["uvx".into()],
+            ..Default::default()
+        };
+        assert!(load_mcp_json(tmp, &other).is_empty());
+
+        // The declaration travels with the server, and a declared network
+        // host list is what grants it the network.
+        let servers = load_mcp_json(tmp, &npx_permissions());
+        assert_eq!(servers[0].allowed_commands, vec!["npx"]);
+        assert!(!servers[0].network);
+        let online = Permissions {
+            commands: vec!["npx".into()],
+            network: vec!["registry.npmjs.org".into()],
+            ..Default::default()
+        };
+        assert!(load_mcp_json(tmp, &online)[0].network);
+
+        // The same holds for a server declared in frontmatter.
+        let skill_dir = tmp.join("skills/pw");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname = \"pw\"\ndescription = \"Browser.\"\n\n[mcp.playwright]\ncommand = \"npx\"\nargs = [\"@playwright/mcp\"]\n---\n",
+        )
+        .unwrap();
+        let skills = load_skills(tmp.to_str().unwrap());
+        assert_eq!(skills.len(), 1);
+        assert!(skills[0].mcp_servers.is_empty());
+    }
+
+    /// The example skills shipped with the repository declare what their
+    /// MCP server needs, so each server survives loading.
+    #[test]
+    fn test_example_skills_keep_their_mcp_servers() {
+        let examples = concat!(env!("CARGO_MANIFEST_DIR"), "/../../examples");
+        let skills = load_skills(examples);
+        let with_mcp: Vec<&Skill> = skills
+            .iter()
+            .filter(|s| !s.mcp_servers.is_empty())
+            .collect();
+        assert!(
+            with_mcp.len() >= 7,
+            "{} skills kept a server",
+            with_mcp.len()
+        );
+        for skill in with_mcp {
+            for server in &skill.mcp_servers {
+                assert_eq!(server.allowed_commands, vec!["npx"], "{}", skill.name);
+                assert!(server.network, "{}", skill.name);
+            }
+        }
+    }
+
     #[test]
     fn test_load_mcp_json_basic() {
         let tmp_dir = tempfile::TempDir::new().unwrap();
@@ -1465,7 +1544,7 @@ Body text.
         )
         .unwrap();
 
-        let servers = load_mcp_json(tmp, &Permissions::default());
+        let servers = load_mcp_json(tmp, &npx_permissions());
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "playwright");
         assert_eq!(servers[0].command, "npx");
@@ -1483,7 +1562,7 @@ Body text.
         )
         .unwrap();
 
-        let servers = load_mcp_json(tmp, &Permissions::default());
+        let servers = load_mcp_json(tmp, &npx_permissions());
         assert_eq!(servers.len(), 1);
         assert_eq!(servers[0].name, "postgres");
         assert_eq!(
@@ -1535,7 +1614,7 @@ Body text.
         )
         .unwrap();
 
-        let servers = load_mcp_json(tmp, &Permissions::default());
+        let servers = load_mcp_json(tmp, &npx_permissions());
         assert_eq!(servers.len(), 2);
     }
 
@@ -1549,7 +1628,7 @@ Body text.
         // Frontmatter declares one server.
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname = \"my-skill\"\ndescription = \"Test.\"\nrequires = [\"ls\"]\ntrigger = \"test\"\n\n[mcp.from-frontmatter]\ncommand = \"npx\"\nargs = [\"@fm/mcp\"]\n---\n",
+            "---\nname = \"my-skill\"\ndescription = \"Test.\"\nrequires = [\"ls\"]\ntrigger = \"test\"\n\n[mcp.from-frontmatter]\ncommand = \"npx\"\nargs = [\"@fm/mcp\"]\n\n[permissions]\ncommands = [\"npx\"]\n---\n",
         )
         .unwrap();
 
@@ -1589,7 +1668,7 @@ Body text.
         // Frontmatter declares "shared" server.
         std::fs::write(
             skill_dir.join("SKILL.md"),
-            "---\nname = \"my-skill\"\ndescription = \"Test.\"\n\n[mcp.shared]\ncommand = \"npx\"\nargs = [\"@old/mcp\"]\n---\n",
+            "---\nname = \"my-skill\"\ndescription = \"Test.\"\n\n[mcp.shared]\ncommand = \"npx\"\nargs = [\"@old/mcp\"]\n\n[permissions]\ncommands = [\"npx\"]\n---\n",
         )
         .unwrap();
 

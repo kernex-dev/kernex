@@ -141,6 +141,7 @@ fn test_config_includes_mcp_servers() {
         command: "npx".into(),
         args: vec!["-y".into(), "server-fs".into()],
         env,
+        ..Default::default()
     }];
     let cfg: Value = serde_json::from_str(&build_config(&[], false, &servers)).unwrap();
     let fs = &cfg["mcp"]["fs"];

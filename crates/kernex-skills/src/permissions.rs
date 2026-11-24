@@ -75,6 +75,13 @@ impl Permissions {
         // check here and the executor's run-time check cannot drift apart.
         kernex_core::context::command_matches_allowlist(&self.commands, command)
     }
+
+    /// Does this permission set allow an MCP server to be started with
+    /// `command`? Same matching as [`Permissions::allows_command`], except
+    /// that an empty `commands` list allows nothing.
+    pub fn allows_mcp_command(&self, command: &str) -> bool {
+        kernex_core::context::mcp_command_allowed(&self.commands, command)
+    }
 }
 
 /// Trust level assigned to a skill based on its source.
