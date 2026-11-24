@@ -78,11 +78,28 @@ pub(super) struct SystemPromptContext<'a> {
     pub lessons: &'a [(String, String, String)],
     pub language: &'a str,
     pub onboarding_hint: Option<u8>,
+    /// A summary of the oldest messages, made when the history overflowed.
+    pub compact_summary: Option<&'a str>,
 }
 
-/// Build a dynamic system prompt enriched with facts, conversation history, and recalled messages.
+/// Build a dynamic system prompt: the base rules, then everything recalled
+/// from memory inside one block marked as reference data
+/// ([`super::recalled`]), then the language and onboarding instructions.
 pub(super) fn build_system_prompt(ctx: &SystemPromptContext<'_>) -> String {
     let mut prompt = String::from(ctx.base_rules);
+    prompt.push_str(&super::recalled::block(&recalled_sections(ctx)));
+    instructions(&mut prompt, ctx);
+    prompt
+}
+
+/// The sections recalled from memory, each starting with a blank line.
+fn recalled_sections(ctx: &SystemPromptContext<'_>) -> String {
+    let mut prompt = String::new();
+
+    if let Some(summary) = ctx.compact_summary {
+        prompt.push_str("\n\n[Earlier conversation summary]\n");
+        prompt.push_str(summary);
+    }
 
     let profile = format_user_profile(ctx.facts);
     if !profile.is_empty() {
@@ -159,13 +176,22 @@ pub(super) fn build_system_prompt(ctx: &SystemPromptContext<'_>) -> String {
         }
     }
 
-    prompt.push_str(&format!(
-        "\n\nIMPORTANT: Always respond in {}.",
+    prompt
+}
+
+/// The runtime's own instructions after the recalled block.
+fn instructions(prompt: &mut String, ctx: &SystemPromptContext<'_>) {
+    // The language can come from a stored fact, and these lines are outside
+    // the recalled block: only a plain language name goes in.
+    let language = if is_language_name(ctx.language) {
         ctx.language
-    ));
+    } else {
+        "English"
+    };
+    prompt.push_str(&format!("\n\nIMPORTANT: Always respond in {language}."));
 
     if let Some(stage) = ctx.onboarding_hint {
-        if let Some(hint) = onboarding_hint_text(stage, ctx.language) {
+        if let Some(hint) = onboarding_hint_text(stage, language) {
             prompt.push_str(&hint);
         }
     }
@@ -175,8 +201,16 @@ pub(super) fn build_system_prompt(ctx: &SystemPromptContext<'_>) -> String {
          respond in the requested language. Include LANG_SWITCH: <language> on its own line \
          at the END of your response.",
     );
+}
 
-    prompt
+/// Whether `name` reads as a language name: letters, spaces and hyphens,
+/// at most 40 characters.
+fn is_language_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().count() <= 40
+        && name
+            .chars()
+            .all(|c| c.is_alphabetic() || c == ' ' || c == '-')
 }
 
 /// Detect the most likely language of a text using stop-word heuristics.

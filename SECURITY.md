@@ -130,6 +130,13 @@ those limits are stated.
 - **Path traversal guards** — validates topology names, skill paths, and
   project paths.
 - **FTS5 injection prevention** — sanitizes full-text search queries.
+- **Recalled memory is marked as data.** Past messages, summaries, facts,
+  tasks, lessons and outcomes go into the system prompt inside one
+  `<recalled_memory>` block that says they are reference data, with the tag
+  removed from the recalled text first. This lowers the risk that an
+  instruction stored in memory is followed; it does not remove it. A call
+  with `ContextNeeds::store` set to `false` leaves memory as it was: nothing
+  is stored and no conversation or fact is created.
 
 ### Extension seams (not active protections by themselves)
 

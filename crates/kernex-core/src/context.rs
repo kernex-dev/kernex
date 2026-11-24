@@ -34,6 +34,11 @@ pub struct ContextNeeds {
     pub outcomes: bool,
     /// How to handle history overflow (default: silently drop oldest).
     pub compact: CompactionStrategy,
+    /// Write to memory: the exchange after the call, and the conversation and
+    /// facts the context building would otherwise create or update. Off for a
+    /// call that must leave memory as it found it (a one-off job, a session
+    /// without memory).
+    pub store: bool,
 }
 
 impl Default for ContextNeeds {
@@ -45,6 +50,7 @@ impl Default for ContextNeeds {
             summaries: true,
             outcomes: true,
             compact: CompactionStrategy::default(),
+            store: true,
         }
     }
 }

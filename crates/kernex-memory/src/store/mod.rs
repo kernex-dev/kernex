@@ -16,6 +16,7 @@ mod facts;
 mod messages;
 mod observations;
 mod outcomes;
+mod recalled;
 mod sessions;
 mod tasks;
 mod usage;
