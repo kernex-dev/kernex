@@ -147,11 +147,8 @@ impl ToolExecutor {
         let requested = given
             .map(|p| self.resolve_path(p))
             .unwrap_or_else(|| self.workspace_path.clone());
-        let root = kernex_sandbox::tool_read_path(&requested, &self.scope, &self.sandbox_profile)
-            .map_err(|_| denied(given.unwrap_or(".")))?;
-        let excluded =
-            kernex_sandbox::tool_search_exclusions(&root, &self.scope, &self.sandbox_profile);
-        Ok((root, excluded))
+        kernex_sandbox::tool_search_root(&requested, &self.scope, &self.sandbox_profile)
+            .map_err(|_| denied(given.unwrap_or(".")))
     }
 
     pub(super) async fn exec_read(&self, args: &Value) -> ToolResult {

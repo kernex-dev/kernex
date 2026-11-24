@@ -64,20 +64,26 @@ pub fn tool_write_path(
         .map_err(|_| ToolPathDenied)
 }
 
-/// The read-deny paths at or below `root`, resolved.
+/// Resolve `path` as the root of a search tool (`grep`, `glob`), and return
+/// it with the read-deny paths at or below it, which the search leaves out
+/// of its results.
 ///
-/// A search tool that walks `root` leaves these out of its results.
-pub fn tool_search_exclusions(
-    root: &Path,
+/// The root is checked as [`tool_read_path`] checks it, and the exclusions
+/// come from the same policy, so the two cannot disagree.
+pub fn tool_search_root(
+    path: &Path,
     scope: &SandboxScope,
     profile: &SandboxProfile,
-) -> Vec<PathBuf> {
-    Policy::new(scope, profile)
+) -> Result<(PathBuf, Vec<PathBuf>), ToolPathDenied> {
+    let policy = Policy::new(scope, profile);
+    let root = policy.check_tool_read(path).map_err(|_| ToolPathDenied)?;
+    let excluded = policy
         .read_deny()
         .iter()
-        .filter(|denied| denied.starts_with(root))
+        .filter(|denied| denied.starts_with(&root))
         .cloned()
-        .collect()
+        .collect();
+    Ok((root, excluded))
 }
 
 /// `path` with its symlinks resolved, the way the tool checks resolve it:
@@ -266,10 +272,22 @@ mod tests {
             Err(ToolPathDenied)
         );
 
-        let exclusions = tool_search_exclusions(&root.join("ws"), &scope, &profile);
+        let (search, exclusions) = tool_search_root(&root.join("ws"), &scope, &profile).unwrap();
+        assert_eq!(search, root.join("ws"));
         assert!(exclusions.contains(&root.join("ws/secrets")));
         assert!(exclusions.contains(&root.join("ws/.agent/memory.db")));
         assert!(exclusions.iter().all(|p| p.starts_with(root.join("ws"))));
+    }
+
+    #[test]
+    fn test_a_search_root_from_an_unusable_policy_is_refused() {
+        let (_dir, root, scope) = fixture();
+        // A relative path makes the policy unusable.
+        let profile = SandboxProfile::new().with_blocked_paths(vec![PathBuf::from("secrets")]);
+        assert_eq!(
+            tool_search_root(&root.join("ws"), &scope, &profile),
+            Err(ToolPathDenied)
+        );
     }
 
     #[cfg(unix)]

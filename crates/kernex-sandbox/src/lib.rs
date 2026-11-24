@@ -285,8 +285,7 @@ pub use paths::{credential_read_deny_dirs, write_allow_dirs};
 pub use process::kill_process_group;
 pub use scope::SandboxScope;
 pub use tool_access::{
-    no_follow, resolved_path, tool_read_path, tool_search_exclusions, tool_write_path,
-    ToolPathDenied,
+    no_follow, resolved_path, tool_read_path, tool_search_root, tool_write_path, ToolPathDenied,
 };
 
 use gate::check_workspace;
