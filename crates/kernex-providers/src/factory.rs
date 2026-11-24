@@ -25,6 +25,17 @@ pub struct ProviderConfig {
     pub max_tokens: Option<u32>,
     pub workspace_path: Option<PathBuf>,
     pub sandbox_profile: Option<kernex_sandbox::SandboxProfile>,
+    /// The runtime data directory, already expanded (for example the value
+    /// of `Runtime::data_dir`). Tool calls cannot write it. When `None` the
+    /// sandbox protects the default location (`$KERNEX_DATA_DIR`, or
+    /// `~/.kernex`).
+    pub data_dir: Option<PathBuf>,
+    /// The configuration file, when it lives outside `{data_dir}/config.toml`.
+    /// Tool calls can neither read nor write it.
+    pub config_path: Option<PathBuf>,
+    /// The memory database, when it lives outside `{data_dir}/memory.db`.
+    /// Tool calls can neither read nor write it.
+    pub db_path: Option<PathBuf>,
     /// Performance/cost tier used to select a model when `model` is `None`.
     pub tier: Option<ModelTier>,
     /// HTTP request timeout in seconds (default: 120). Applies to all HTTP-based providers.
@@ -40,6 +51,9 @@ impl Default for ProviderConfig {
             max_tokens: None,
             workspace_path: None,
             sandbox_profile: None,
+            data_dir: None,
+            config_path: None,
+            db_path: None,
             tier: None,
             timeout_secs: 120,
         }
@@ -55,6 +69,9 @@ impl std::fmt::Debug for ProviderConfig {
             .field("max_tokens", &self.max_tokens)
             .field("workspace_path", &self.workspace_path)
             .field("sandbox_profile", &self.sandbox_profile)
+            .field("data_dir", &self.data_dir)
+            .field("config_path", &self.config_path)
+            .field("db_path", &self.db_path)
             .field("tier", &self.tier)
             .field("timeout_secs", &self.timeout_secs)
             .finish()
@@ -169,6 +186,7 @@ impl ProviderFactory {
         provider: &str,
         config: ProviderConfig,
     ) -> Result<Box<dyn Provider>, KernexError> {
+        let sandbox_dirs = crate::SandboxDirs::from_config(&config);
         match provider.to_lowercase().as_str() {
             "openai" => {
                 require_https_for_keyed_provider("openai", config.base_url.as_deref())?;
@@ -183,7 +201,8 @@ impl ProviderFactory {
                     config.workspace_path,
                 )?
                 .with_timeout(config.timeout_secs)
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "anthropic" => {
@@ -196,7 +215,8 @@ impl ProviderFactory {
                     config.workspace_path,
                 )?
                 .with_timeout(config.timeout_secs)
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "gemini" => {
@@ -208,7 +228,8 @@ impl ProviderFactory {
                     config.workspace_path,
                 )?
                 .with_timeout(config.timeout_secs)
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "ollama" => {
@@ -222,7 +243,8 @@ impl ProviderFactory {
                     config.workspace_path,
                 )?
                 .with_timeout(config.timeout_secs)
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "openrouter" => {
@@ -234,7 +256,8 @@ impl ProviderFactory {
                     config.workspace_path,
                 )?
                 .with_timeout(config.timeout_secs)
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "claude-code" => {
@@ -247,7 +270,8 @@ impl ProviderFactory {
                     config.model.unwrap_or_default(),
                     None, // oauth token
                 )
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "opencode" => {
@@ -256,7 +280,8 @@ impl ProviderFactory {
                     config.workspace_path,
                     config.model.unwrap_or_default(),
                 )
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             // OpenAI-compatible third-party providers.
@@ -274,7 +299,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("groq")
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "mistral" => {
@@ -291,7 +317,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("mistral")
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "deepseek" => {
@@ -308,7 +335,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("deepseek")
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "fireworks" => {
@@ -325,7 +353,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("fireworks")
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             "xai" => {
@@ -342,7 +371,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("xai")
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             #[cfg(feature = "bedrock")]
@@ -362,7 +392,8 @@ impl ProviderFactory {
                     config.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS),
                     config.workspace_path,
                 )?
-                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default());
+                .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
+                .with_sandbox_dirs(sandbox_dirs);
                 Ok(Box::new(p))
             }
             _ => Err(ProviderError::Logic(format!("Unknown provider type: {provider}")).into()),
@@ -490,6 +521,9 @@ mod tests {
             max_tokens: Some(4096),
             workspace_path: Some(PathBuf::from("/tmp")),
             sandbox_profile: None,
+            data_dir: Some(PathBuf::from("/var/lib/agent")),
+            config_path: None,
+            db_path: None,
             tier: None,
             timeout_secs: 60,
         };

@@ -211,10 +211,7 @@ fn test_parse_empty() {
 
 #[tokio::test]
 async fn test_required_enforcement_without_workdir_errors() {
-    let profile = kernex_sandbox::SandboxProfile {
-        require_os_enforcement: true,
-        ..Default::default()
-    };
+    let profile = kernex_sandbox::SandboxProfile::new().with_require_os_enforcement(true);
     let p = OpenCodeProvider::new().with_sandbox_profile(profile);
     let err = p.run_cli(&["--version".into()], "{}").await.unwrap_err();
     assert!(err.to_string().contains("unsandboxed"));

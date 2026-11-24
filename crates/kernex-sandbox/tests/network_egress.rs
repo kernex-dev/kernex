@@ -42,12 +42,10 @@ fn spawn_local_http(max_conns: usize) -> u16 {
 }
 
 /// `curl` connect probe against the local listener, under the sandbox.
-fn probe_cmd(data_dir: &Path, port: u16, allow_network: bool) -> tokio::process::Command {
-    let profile = kernex_sandbox::SandboxProfile {
-        allow_network,
-        ..Default::default()
-    };
-    let mut cmd = kernex_sandbox::protected_command("curl", data_dir, &profile);
+fn probe_cmd(root: &Path, port: u16, allow_network: bool) -> tokio::process::Command {
+    let profile = kernex_sandbox::SandboxProfile::new().with_allow_network(allow_network);
+    let scope = kernex_sandbox::SandboxScope::new(root.join("ws"), root.join("state"));
+    let mut cmd = kernex_sandbox::protected_command("curl", &scope, &profile);
     cmd.arg("--silent")
         .arg("--show-error")
         .arg("--max-time")
@@ -84,12 +82,12 @@ fn network_egress_denied_by_default_allowed_on_opt_in() {
     }
 
     let ws = tempfile::tempdir().expect("temp workspace");
-    let data_dir = ws.path().canonicalize().expect("canonicalize temp dir");
+    let root = ws.path().canonicalize().expect("canonicalize temp dir");
     let port = spawn_local_http(8);
 
     // 1. Opt-in first: proves the listener + curl harness works under the
     //    sandbox before anything is asserted about denial.
-    let allowed = run(probe_cmd(&data_dir, port, true));
+    let allowed = run(probe_cmd(&root, port, true));
     let allowed_stdout = String::from_utf8_lossy(&allowed.stdout);
     assert!(
         allowed.status.success() && allowed_stdout.contains("ok"),
@@ -101,7 +99,7 @@ fn network_egress_denied_by_default_allowed_on_opt_in() {
     // 2. Default profile: the connect must be denied wherever the platform
     //    can enforce it.
     if network_denial_enforceable() {
-        let denied = run(probe_cmd(&data_dir, port, false));
+        let denied = run(probe_cmd(&root, port, false));
         let denied_stdout = String::from_utf8_lossy(&denied.stdout);
         assert!(
             !denied.status.success() && !denied_stdout.contains("ok"),

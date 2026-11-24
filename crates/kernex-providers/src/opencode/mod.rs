@@ -64,6 +64,7 @@ pub struct OpenCodeProvider {
     extra_env: Vec<String>,
     /// System sandbox restrictions.
     sandbox_profile: kernex_sandbox::SandboxProfile,
+    sandbox_dirs: crate::SandboxDirs,
 }
 
 impl OpenCodeProvider {
@@ -75,6 +76,7 @@ impl OpenCodeProvider {
             model: String::new(),
             extra_env: vec![],
             sandbox_profile: Default::default(),
+            sandbox_dirs: Default::default(),
         }
     }
 
@@ -89,12 +91,19 @@ impl OpenCodeProvider {
             model,
             extra_env: vec![],
             sandbox_profile: Default::default(),
+            sandbox_dirs: Default::default(),
         }
     }
 
     /// Set a custom sandbox profile.
     pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
         self.sandbox_profile = profile;
+        self
+    }
+
+    /// Set the runtime directories the sandbox protects from tool calls.
+    pub fn with_sandbox_dirs(mut self, dirs: crate::SandboxDirs) -> Self {
+        self.sandbox_dirs = dirs;
         self
     }
 

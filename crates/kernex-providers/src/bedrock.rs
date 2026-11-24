@@ -59,6 +59,8 @@ pub struct BedrockProvider {
     #[allow(dead_code)]
     workspace_path: Option<PathBuf>,
     sandbox_profile: kernex_sandbox::SandboxProfile,
+    #[allow(dead_code)]
+    sandbox_dirs: crate::SandboxDirs,
 }
 
 impl BedrockProvider {
@@ -88,6 +90,7 @@ impl BedrockProvider {
             max_tokens,
             workspace_path,
             sandbox_profile: Default::default(),
+            sandbox_dirs: Default::default(),
         })
     }
 
@@ -127,6 +130,12 @@ impl BedrockProvider {
     /// Set a custom sandbox profile.
     pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
         self.sandbox_profile = profile;
+        self
+    }
+
+    /// Set the runtime directories the sandbox protects from tool calls.
+    pub fn with_sandbox_dirs(mut self, dirs: crate::SandboxDirs) -> Self {
+        self.sandbox_dirs = dirs;
         self
     }
 }

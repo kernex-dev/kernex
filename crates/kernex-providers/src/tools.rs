@@ -48,8 +48,7 @@ pub struct ToolResult {
 /// Executes built-in tools, script-based toolboxes, and MCP tool calls.
 pub struct ToolExecutor {
     workspace_path: PathBuf,
-    data_dir: PathBuf,
-    config_path: Option<PathBuf>,
+    scope: kernex_sandbox::SandboxScope,
     sandbox_profile: kernex_sandbox::SandboxProfile,
     mcp_clients: HashMap<String, McpClient>,
     mcp_tool_map: HashMap<String, String>,
@@ -61,18 +60,15 @@ pub struct ToolExecutor {
 impl ToolExecutor {
     /// Create a new tool executor.
     ///
-    /// `workspace_path` is the working directory.
-    /// `data_dir` is derived as the parent of `workspace_path`.
+    /// `workspace_path` is the working directory and the only directory in
+    /// the sandbox scope that tools may write. The runtime data directory
+    /// defaults to the runtime's default location until
+    /// [`with_sandbox_dirs`](Self::with_sandbox_dirs) names the real one.
     pub fn new(workspace_path: PathBuf) -> Self {
-        // data_dir = parent of workspace
-        let data_dir = workspace_path
-            .parent()
-            .unwrap_or(&workspace_path)
-            .to_path_buf();
+        let scope = crate::SandboxDirs::default().build_scope(&workspace_path);
         Self {
             workspace_path,
-            data_dir,
-            config_path: None,
+            scope,
             sandbox_profile: Default::default(),
             mcp_clients: HashMap::new(),
             mcp_tool_map: HashMap::new(),
@@ -82,14 +78,13 @@ impl ToolExecutor {
         }
     }
 
-    /// Set the config file path for read protection.
+    /// Set the runtime directories the sandbox protects.
     ///
-    /// When set, the sandbox will block AI tool reads to this path,
-    /// protecting API keys and secrets even when config lives outside `data_dir`.
-    /// Standard `{data_dir}/config.toml` is always protected regardless.
-    #[allow(dead_code)]
-    pub fn with_config_path(mut self, config_path: PathBuf) -> Self {
-        self.config_path = Some(config_path);
+    /// Tool calls cannot write the data directory's database, skills,
+    /// projects or configuration, and cannot read the database or the
+    /// configuration file, wherever the host keeps them.
+    pub fn with_sandbox_dirs(mut self, dirs: &crate::SandboxDirs) -> Self {
+        self.scope = dirs.scope(&self.workspace_path);
         self
     }
 
@@ -313,19 +308,17 @@ impl ToolExecutor {
 
         debug!("tool/bash: {command}");
 
-        let mut cmd = match kernex_sandbox::try_protected_command(
-            "bash",
-            &self.data_dir,
-            &self.sandbox_profile,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                return ToolResult {
-                    content: format!("Refusing to run bash: {e}"),
-                    is_error: true,
+        let mut cmd =
+            match kernex_sandbox::try_protected_command("bash", &self.scope, &self.sandbox_profile)
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return ToolResult {
+                        content: format!("Refusing to run bash: {e}"),
+                        is_error: true,
+                    }
                 }
-            }
-        };
+            };
         cmd.arg("-c").arg(command);
         cmd.current_dir(&self.workspace_path);
         // Kill the child process when the handle is dropped (e.g. on timeout).
@@ -383,12 +376,7 @@ impl ToolExecutor {
         // Resolve relative paths against workspace to prevent sandbox bypass.
         let path = self.resolve_path(path_str);
         let path = path.as_path();
-        if kernex_sandbox::is_read_blocked(
-            path,
-            &self.data_dir,
-            self.config_path.as_deref(),
-            Some(&self.sandbox_profile),
-        ) {
+        if kernex_sandbox::is_read_blocked(path, &self.scope, &self.sandbox_profile) {
             return ToolResult {
                 content: format!("Read denied: {} is a protected path", path.display()),
                 is_error: true,
@@ -422,9 +410,12 @@ impl ToolExecutor {
         // Resolve relative paths against workspace to prevent sandbox bypass.
         let path = self.resolve_path(path_str);
         let path = path.as_path();
-        if kernex_sandbox::is_write_blocked(path, &self.data_dir, Some(&self.sandbox_profile)) {
+        if kernex_sandbox::is_write_blocked(path, &self.scope, &self.sandbox_profile) {
             return ToolResult {
-                content: format!("Write denied: {} is a protected path", path.display(),),
+                content: format!(
+                    "Write denied: {} is outside the workspace or protected",
+                    path.display(),
+                ),
                 is_error: true,
             };
         }
@@ -478,7 +469,7 @@ impl ToolExecutor {
         profile.allow_network = profile.allow_network || tb.network;
 
         let mut cmd =
-            match kernex_sandbox::try_protected_command(&tb.command, &self.data_dir, &profile) {
+            match kernex_sandbox::try_protected_command(&tb.command, &self.scope, &profile) {
                 Ok(c) => c,
                 Err(e) => {
                     return ToolResult {
@@ -620,9 +611,12 @@ impl ToolExecutor {
         // Resolve relative paths against workspace to prevent sandbox bypass.
         let path = self.resolve_path(path_str);
         let path = path.as_path();
-        if kernex_sandbox::is_write_blocked(path, &self.data_dir, Some(&self.sandbox_profile)) {
+        if kernex_sandbox::is_write_blocked(path, &self.scope, &self.sandbox_profile) {
             return ToolResult {
-                content: format!("Write denied: {} is a protected path", path.display(),),
+                content: format!(
+                    "Write denied: {} is outside the workspace or protected",
+                    path.display(),
+                ),
                 is_error: true,
             };
         }
@@ -737,7 +731,7 @@ impl ToolExecutor {
 
         let mut cmd = match kernex_sandbox::try_protected_command(
             cmd_name,
-            &self.data_dir,
+            &self.scope,
             &self.sandbox_profile,
         ) {
             Ok(c) => c,
@@ -819,19 +813,17 @@ impl ToolExecutor {
             ("-name", pattern.to_string())
         };
 
-        let mut cmd = match kernex_sandbox::try_protected_command(
-            "find",
-            &self.data_dir,
-            &self.sandbox_profile,
-        ) {
-            Ok(c) => c,
-            Err(e) => {
-                return ToolResult {
-                    content: format!("Refusing to run find: {e}"),
-                    is_error: true,
+        let mut cmd =
+            match kernex_sandbox::try_protected_command("find", &self.scope, &self.sandbox_profile)
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    return ToolResult {
+                        content: format!("Refusing to run find: {e}"),
+                        is_error: true,
+                    }
                 }
-            }
-        };
+            };
         cmd.arg(base.as_os_str())
             .arg(flag)
             .arg(&pat)
@@ -1370,10 +1362,7 @@ mod tests {
         // outright (host cannot enforce). It must never silently fall back
         // to an unsandboxed run.
         let executor = ToolExecutor::new(PathBuf::from("/tmp")).with_sandbox_profile(
-            kernex_sandbox::SandboxProfile {
-                require_os_enforcement: true,
-                ..Default::default()
-            },
+            kernex_sandbox::SandboxProfile::new().with_require_os_enforcement(true),
         );
         let result = executor
             .exec_bash(&serde_json::json!({"command": "echo enforced-run"}))
@@ -1450,7 +1439,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_read_denied_protected_path() {
-        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"));
+        let executor = kernex_home_executor();
         let result = executor
             .exec_read(&serde_json::json!({"file_path": "/home/user/.kernex/data/memory.db"}))
             .await;
@@ -1460,7 +1449,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_read_denied_config() {
-        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"));
+        let executor = kernex_home_executor();
         let result = executor
             .exec_read(&serde_json::json!({"file_path": "/home/user/.kernex/config.toml"}))
             .await;
@@ -1470,7 +1459,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_write_denied_protected_path() {
-        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"));
+        let executor = kernex_home_executor();
         let result = executor
             .exec_write(&serde_json::json!({"file_path": "/home/user/.kernex/data/memory.db", "content": "x"}))
             .await;
@@ -1757,14 +1746,14 @@ mod tests {
 
     #[test]
     fn test_resolve_path_absolute() {
-        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"));
+        let executor = kernex_home_executor();
         let resolved = executor.resolve_path("/tmp/test.txt");
         assert_eq!(resolved, PathBuf::from("/tmp/test.txt"));
     }
 
     #[test]
     fn test_resolve_path_relative() {
-        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"));
+        let executor = kernex_home_executor();
         let resolved = executor.resolve_path("test.txt");
         assert_eq!(
             resolved,
@@ -1774,7 +1763,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_traversal_normalized() {
-        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"));
+        let executor = kernex_home_executor();
         let resolved = executor.resolve_path("../data/memory.db");
         assert_eq!(resolved, PathBuf::from("/home/user/.kernex/data/memory.db"));
 
@@ -1784,7 +1773,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_read_denied_relative_traversal() {
-        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"));
+        let executor = kernex_home_executor();
         let result = executor
             .exec_read(&serde_json::json!({"file_path": "../data/memory.db"}))
             .await;
@@ -1794,7 +1783,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_exec_write_denied_config_toml() {
-        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"));
+        let executor = kernex_home_executor();
         let result = executor
             .exec_write(
                 &serde_json::json!({"file_path": "/home/user/.kernex/config.toml", "content": "x"}),
@@ -1804,12 +1793,75 @@ mod tests {
         assert!(result.content.contains("denied"));
     }
 
+    /// An executor whose workspace sits inside its data dir, the layout the
+    /// path-denial tests below describe.
+    fn kernex_home_executor() -> ToolExecutor {
+        let dirs = crate::SandboxDirs::new().with_data_dir("/home/user/.kernex");
+        ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace")).with_sandbox_dirs(&dirs)
+    }
+
+    #[tokio::test]
+    async fn test_exec_write_denied_outside_workspace() {
+        let executor = kernex_home_executor();
+        for file_path in [
+            "/home/user/.kernex/other/file.txt",
+            "/home/user/.kernex/workspace-old/file.txt",
+            "../sibling/file.txt",
+            "/home/user/.zshrc",
+        ] {
+            let result = executor
+                .exec_write(&serde_json::json!({"file_path": file_path, "content": "x"}))
+                .await;
+            assert!(result.is_error, "{file_path}");
+            assert!(result.content.contains("denied"), "{file_path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_exec_write_and_edit_denied_in_skills_dir() {
+        let executor = kernex_home_executor();
+        let skill = "/home/user/.kernex/skills/review/SKILL.md";
+        let write = executor
+            .exec_write(&serde_json::json!({"file_path": skill, "content": "x"}))
+            .await;
+        assert!(write.is_error);
+        assert!(write.content.contains("denied"));
+
+        let edit = executor
+            .exec_edit(&serde_json::json!({
+                "file_path": skill,
+                "old_string": "a",
+                "new_string": "b"
+            }))
+            .await;
+        assert!(edit.is_error);
+        assert!(edit.content.contains("denied"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_read_denied_custom_database() {
+        let dirs = crate::SandboxDirs::new()
+            .with_data_dir("/home/user/.kernex")
+            .with_db_path("/var/lib/agent/memory.db");
+        let executor = ToolExecutor::new(PathBuf::from("/home/user/.kernex/workspace"))
+            .with_sandbox_dirs(&dirs);
+        let result = executor
+            .exec_read(&serde_json::json!({"file_path": "/var/lib/agent/memory.db"}))
+            .await;
+        assert!(result.is_error);
+        assert!(result.content.contains("denied"));
+    }
+
     #[test]
-    fn test_with_config_path() {
-        let executor = ToolExecutor::new(PathBuf::from("/tmp"))
-            .with_config_path(PathBuf::from("/opt/kernex/config.toml"));
+    fn test_with_sandbox_dirs_sets_the_scope() {
+        let dirs = crate::SandboxDirs::new()
+            .with_data_dir("/opt/kernex/state")
+            .with_config_path("/opt/kernex/config.toml");
+        let executor = ToolExecutor::new(PathBuf::from("/tmp")).with_sandbox_dirs(&dirs);
+        assert_eq!(executor.scope.workspace, PathBuf::from("/tmp"));
+        assert_eq!(executor.scope.data_dir, PathBuf::from("/opt/kernex/state"));
         assert_eq!(
-            executor.config_path,
+            executor.scope.config_path,
             Some(PathBuf::from("/opt/kernex/config.toml"))
         );
     }

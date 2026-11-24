@@ -107,6 +107,7 @@ pub struct AnthropicProvider {
     max_tokens: u32,
     workspace_path: Option<PathBuf>,
     sandbox_profile: kernex_sandbox::SandboxProfile,
+    sandbox_dirs: crate::SandboxDirs,
 }
 
 impl AnthropicProvider {
@@ -127,6 +128,7 @@ impl AnthropicProvider {
             max_tokens,
             workspace_path,
             sandbox_profile: Default::default(),
+            sandbox_dirs: Default::default(),
         })
     }
 
@@ -144,6 +146,12 @@ impl AnthropicProvider {
     /// Set a custom sandbox profile.
     pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
         self.sandbox_profile = profile;
+        self
+    }
+
+    /// Set the runtime directories the sandbox protects from tool calls.
+    pub fn with_sandbox_dirs(mut self, dirs: crate::SandboxDirs) -> Self {
+        self.sandbox_dirs = dirs;
         self
     }
 }
@@ -371,6 +379,7 @@ impl Provider for AnthropicProvider {
             if let Some(ref ws) = self.workspace_path {
                 let mut executor = ToolExecutor::new(ws.clone())
                     .with_sandbox_profile(self.sandbox_profile.clone())
+                    .with_sandbox_dirs(&self.sandbox_dirs)
                     .with_hook_runner_opt(context.hook_runner.clone())
                     .with_permission_rules_opt(context.permission_rules.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;

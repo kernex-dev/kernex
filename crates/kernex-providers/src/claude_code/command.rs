@@ -218,15 +218,15 @@ impl ClaudeCodeProvider {
     fn base_command(&self) -> Result<Command, KernexError> {
         let mut cmd = match self.working_dir {
             Some(ref dir) => {
-                // Protection blocks writes to data dir (parent of workspace)
-                // so memory.db is safe, but skills, projects, etc. are writable.
-                let data_dir = dir.parent().unwrap_or(dir);
+                // The working directory is the only writable part of the
+                // scope; the runtime data dir stays out of the CLI's reach.
+                let scope = self.sandbox_dirs.scope(dir);
                 // The Claude CLI IS the provider: it must reach the API, so
                 // it is exempt from the subprocess egress deny-by-default
                 // that governs agent tool subprocesses.
                 let mut profile = self.sandbox_profile.clone();
                 profile.allow_network = true;
-                let mut c = kernex_sandbox::try_protected_command("claude", data_dir, &profile)
+                let mut c = kernex_sandbox::try_protected_command("claude", &scope, &profile)
                     .map_err(|e| {
                         ProviderError::Logic(format!("refusing to run claude CLI: {e}"))
                     })?;
@@ -244,7 +244,7 @@ impl ClaudeCodeProvider {
                     .into());
                 }
                 let mut c = Command::new("claude");
-                // No data_dir means no sandbox wrapper; apply the env
+                // No working dir means no sandbox wrapper; apply the env
                 // isolation directly so this branch matches the wrapped one.
                 kernex_sandbox::hardened_env(&mut c);
                 c

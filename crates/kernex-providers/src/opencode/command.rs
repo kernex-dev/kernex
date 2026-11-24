@@ -98,17 +98,17 @@ impl OpenCodeProvider {
     fn base_command(&self) -> Result<Command, KernexError> {
         let mut cmd = match self.working_dir {
             Some(ref dir) => {
-                // Writes to the data dir (parent of the workspace) are
-                // blocked, so memory.db stays out of the agent's reach.
-                let data_dir = dir.parent().unwrap_or(dir);
+                // The working directory is the only writable part of the
+                // scope; the runtime data dir stays out of the CLI's reach.
+                let scope = self.sandbox_dirs.scope(dir);
                 // OpenCode IS the provider: it must reach the model API, so
                 // it is exempt from the subprocess egress deny-by-default.
                 let mut profile = self.sandbox_profile.clone();
                 profile.allow_network = true;
-                let mut c = kernex_sandbox::try_protected_command("opencode", data_dir, &profile)
+                let mut c = kernex_sandbox::try_protected_command("opencode", &scope, &profile)
                     .map_err(|e| {
-                    ProviderError::Logic(format!("refusing to run opencode CLI: {e}"))
-                })?;
+                        ProviderError::Logic(format!("refusing to run opencode CLI: {e}"))
+                    })?;
                 c.current_dir(dir);
                 c
             }

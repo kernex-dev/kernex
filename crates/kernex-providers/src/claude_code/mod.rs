@@ -39,6 +39,7 @@ pub struct ClaudeCodeProvider {
     oauth_token: Option<String>,
     /// System sandbox restrictions.
     sandbox_profile: kernex_sandbox::SandboxProfile,
+    sandbox_dirs: crate::SandboxDirs,
 }
 
 /// JSON response from `claude -p --output-format json`.
@@ -75,6 +76,7 @@ impl ClaudeCodeProvider {
             model: String::new(),
             oauth_token: None,
             sandbox_profile: Default::default(),
+            sandbox_dirs: Default::default(),
         }
     }
 
@@ -97,12 +99,19 @@ impl ClaudeCodeProvider {
             model,
             oauth_token,
             sandbox_profile: Default::default(),
+            sandbox_dirs: Default::default(),
         }
     }
 
     /// Set a custom sandbox profile.
     pub fn with_sandbox_profile(mut self, profile: kernex_sandbox::SandboxProfile) -> Self {
         self.sandbox_profile = profile;
+        self
+    }
+
+    /// Set the runtime directories the sandbox protects from tool calls.
+    pub fn with_sandbox_dirs(mut self, dirs: crate::SandboxDirs) -> Self {
+        self.sandbox_dirs = dirs;
         self
     }
 

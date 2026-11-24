@@ -20,7 +20,9 @@ pub mod ollama;
 pub mod openai;
 pub mod opencode;
 pub mod openrouter;
+mod sandbox_dirs;
 pub mod tool_params;
 pub(crate) mod tools;
 
 pub use error::ProviderError;
+pub use sandbox_dirs::SandboxDirs;

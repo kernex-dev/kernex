@@ -1,10 +1,9 @@
 //! Linux Landlock LSM enforcement — broad allowlist approach.
 //!
 //! Landlock uses a broad allowlist: read-only on `/` (covers system dirs),
-//! full access to `$HOME`, `/tmp`, `/var/tmp`, `/opt`, `/srv`, `/run`,
-//! `/media`, `/mnt`. Then applies restrictive rules to `{data_dir}/data/`
-//! and `{data_dir}/config.toml` (Refer-only access blocks both reads and
-//! writes via Landlock's intersection semantics).
+//! full access to the shared policy's write roots plus `/opt`, `/srv`,
+//! `/run`, `/media`, `/mnt`. Then applies restrictive rules to the policy's
+//! read-deny paths.
 //!
 //! ## Kernel Version Requirements
 //!
@@ -45,6 +44,8 @@
 
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+use crate::policy::Policy;
 use tokio::process::Command;
 use tracing::warn;
 
@@ -67,7 +68,7 @@ fn full_access() -> BitFlags<AccessFs> {
 ///
 /// The child process will have:
 /// - Read and execute access to the entire filesystem (`/`)
-/// - Full access to `$HOME`, `/tmp`, `/var/tmp`, `/opt`, `/srv`, `/run`, `/media`, `/mnt`
+/// - Full access to the policy's write roots and `/opt`, `/srv`, `/run`, `/media`, `/mnt`
 /// - Restricted access to `{data_dir}/data/` and `{data_dir}/config.toml` (Refer-only,
 ///   which blocks both reads and writes via Landlock intersection semantics)
 ///
@@ -88,7 +89,7 @@ fn full_access() -> BitFlags<AccessFs> {
 /// deadlock the child indefinitely.
 pub(crate) fn protected_command(
     program: &str,
-    data_dir: &std::path::Path,
+    policy: &Policy,
     profile: &crate::SandboxProfile,
 ) -> Command {
     if !landlock_available() {
@@ -101,7 +102,7 @@ pub(crate) fn protected_command(
     // Build the ruleset in the parent. Filesystem probes, allocations, and any
     // landlock-internal bookkeeping happen here, where no fork-after-allocator
     // hazard exists.
-    let prepared = match build_ruleset(data_dir, profile) {
+    let prepared = match build_ruleset(policy, profile) {
         Ok(r) => r,
         Err(e) => {
             warn!(error = %e, "landlock: ruleset construction failed; falling back to code-level protection");
@@ -148,16 +149,13 @@ pub(crate) fn protected_command(
 /// [`restrict_self`](RulesetCreated::restrict_self) on it later (post-fork)
 /// applies the policy via a single syscall with no further allocation.
 fn build_ruleset(
-    data_dir: &std::path::Path,
+    policy: &Policy,
     profile: &crate::SandboxProfile,
 ) -> Result<RulesetCreated, anyhow::Error> {
-    let home_dir = crate::resolved_home();
-
     // Broad read on `/`, but NOT blanket write on `$HOME`. Writes are
-    // granted only to the workspace/data dir, the system temp dirs, the
-    // toolchain cache/state dirs, and `$KERNEX_DATA_DIR`. Landlock is
-    // most-specific-rule-wins, so the credential refer_only rules and the
-    // data/ + config refer_only rules below override these for their subtrees.
+    // granted only to the policy's write roots (the workspace, the system
+    // temp dirs, the toolchain cache/state dirs, `allowed_paths`). The data
+    // dir is not among them.
     let base = Ruleset::default().handle_access(full_access())?;
 
     // Network egress deny-by-default: handling the TCP access rights without
@@ -187,17 +185,19 @@ fn build_ruleset(
 
     let mut ruleset = base
         .create()?
-        .add_rules(path_beneath_rules(&[PathBuf::from("/")], read_access()))?
-        .add_rules(path_beneath_rules(&[PathBuf::from("/tmp")], full_access()))?;
+        .add_rules(path_beneath_rules(&[PathBuf::from("/")], read_access()))?;
 
-    // The workspace/data dir is writable (its `data/` subdir is refer_only
-    // below). Replaces the prior blanket `$HOME` write grant.
-    if data_dir.exists() {
-        ruleset =
-            ruleset.add_rules(path_beneath_rules(&[data_dir.to_path_buf()], full_access()))?;
+    // Write roots come from the shared policy. A rule needs an existing path.
+    for root in policy.write_roots() {
+        if root.exists() {
+            ruleset = ruleset.add_rules(path_beneath_rules(
+                std::slice::from_ref(root),
+                full_access(),
+            ))?;
+        }
     }
 
-    let optional_paths = ["/var/tmp", "/opt", "/srv", "/run", "/media", "/mnt"];
+    let optional_paths = ["/opt", "/srv", "/run", "/media", "/mnt"];
     for path in &optional_paths {
         let p = PathBuf::from(path);
         if p.exists() {
@@ -205,57 +205,12 @@ fn build_ruleset(
         }
     }
 
-    // Toolchain cache/state dirs and $KERNEX_DATA_DIR stay writable so real
-    // tools (cargo/npm/...) keep working under the lockdown.
-    for dir in crate::write_allow_dirs(&home_dir) {
-        if dir.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(&[dir], full_access()))?;
-        }
-    }
-    if let Some(kdd) = std::env::var_os("KERNEX_DATA_DIR").map(PathBuf::from) {
-        if kdd.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(&[kdd], full_access()))?;
-        }
-    }
-
-    for allowed in &profile.allowed_paths {
-        if allowed.exists() {
+    // Read-deny list (credential stores, the memory database, the config
+    // file, `blocked_paths`): a refer_only rule on each path that exists.
+    for denied in policy.read_deny() {
+        if denied.exists() {
             ruleset = ruleset.add_rules(path_beneath_rules(
-                std::slice::from_ref(allowed),
-                full_access(),
-            ))?;
-        }
-    }
-
-    // Credential read-deny list: refer_only blocks reads and writes;
-    // most-specific-rule-wins makes this override the broad `/` read for these
-    // subtrees, so SSH keys / cloud creds / tokens are unreadable.
-    for cred in crate::credential_read_deny_dirs(&home_dir) {
-        if cred.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(&[cred], refer_only()))?;
-        }
-    }
-
-    // Ensure the directory exists so the Landlock rule is always applied.
-    // Without this, a first-run scenario where the data dir hasn't been
-    // created yet would skip the restriction entirely.
-    let data_data = data_dir.join("data");
-    let _ = std::fs::create_dir_all(&data_data);
-    if data_data.exists() {
-        ruleset = ruleset.add_rules(path_beneath_rules(&[data_data], refer_only()))?;
-    }
-
-    // Cannot safely pre-create config.toml (empty file breaks TOML parser).
-    // Code-level enforcement provides protection when it doesn't exist yet.
-    let config_file = data_dir.join("config.toml");
-    if config_file.exists() {
-        ruleset = ruleset.add_rules(path_beneath_rules(&[config_file], refer_only()))?;
-    }
-
-    for blocked in &profile.blocked_paths {
-        if blocked.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(
-                std::slice::from_ref(blocked),
+                std::slice::from_ref(denied),
                 refer_only(),
             ))?;
         }
@@ -324,11 +279,15 @@ mod tests {
         assert!(!flags.contains(AccessFs::WriteFile));
     }
 
+    fn test_policy(profile: &crate::SandboxProfile) -> Policy {
+        let scope = crate::SandboxScope::new("/tmp/ws", "/tmp/state");
+        Policy::new(&scope, profile)
+    }
+
     #[test]
     fn test_command_structure() {
-        let data_dir = PathBuf::from("/tmp/ws");
         let profile = crate::SandboxProfile::default();
-        let cmd = protected_command("claude", &data_dir, &profile);
+        let cmd = protected_command("claude", &test_policy(&profile), &profile);
         let program = cmd.as_std().get_program().to_string_lossy().to_string();
         assert_eq!(program, "claude");
     }
@@ -351,13 +310,9 @@ mod tests {
         if !landlock_available() {
             return;
         }
-        let data_dir = PathBuf::from("/tmp/ws");
         let profile = crate::SandboxProfile::default();
-        assert!(build_ruleset(&data_dir, &profile).is_ok());
-        let opt_in = crate::SandboxProfile {
-            allow_network: true,
-            ..Default::default()
-        };
-        assert!(build_ruleset(&data_dir, &opt_in).is_ok());
+        assert!(build_ruleset(&test_policy(&profile), &profile).is_ok());
+        let opt_in = crate::SandboxProfile::new().with_allow_network(true);
+        assert!(build_ruleset(&test_policy(&opt_in), &opt_in).is_ok());
     }
 }

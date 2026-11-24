@@ -4,18 +4,34 @@
 //!
 //! OS-level system protection for AI agent subprocesses.
 //!
-//! Uses a **blocklist** approach: everything is allowed by default, then
-//! dangerous system directories and the runtime's core data are blocked.
+//! Every check starts from a [`SandboxScope`]: the workspace a tool call
+//! works in and the runtime data directory it must not change. One path
+//! policy is derived from the scope and the [`SandboxProfile`], and both the
+//! OS profile and the code-level checks read it:
 //!
-//! - **macOS**: Apple Seatbelt via `sandbox-exec -p <profile>` — denies reads
-//!   and writes to `{data_dir}/data/` (memory.db) and `config.toml`; denies
-//!   writes to `/System`, `/bin`, `/sbin`, `/usr/{bin,sbin,lib,libexec}`,
-//!   `/private/etc`, `/Library`.
+//! - **Writes** are allowed under the workspace, the system temp
+//!   directories, the per-user toolchain cache directories
+//!   ([`write_allow_dirs`]) and `SandboxProfile::allowed_paths`. The data
+//!   directory is not a write root, and its memory database, `skills/`,
+//!   `projects/` and configuration file stay denied even when the data
+//!   directory sits inside the workspace.
+//! - **Reads** stay broad, minus the credential stores
+//!   ([`credential_read_deny_dirs`]), the memory database, the configuration
+//!   file and `SandboxProfile::blocked_paths`.
+//! - A workspace that is the home directory, one of its ancestors or `/` is
+//!   not accepted as a write root. [`try_protected_command`] refuses to spawn
+//!   when enforcement is required; otherwise writes fall back to the temp
+//!   directories and a warning is printed once.
+//!
+//! Platform back ends:
+//!
+//! - **macOS**: Apple Seatbelt via `sandbox-exec -p <profile>`. Writes inside
+//!   `$HOME` are denied outside the write roots, and writes to `/System`,
+//!   `/bin`, `/sbin`, `/usr/{bin,sbin,lib,libexec}`, `/private/etc` and
+//!   `/Library` are denied.
 //! - **Linux**: Landlock LSM via `pre_exec` hook (kernel 5.13+ minimum, 6.12+
 //!   for full ABI::V5 enforcement; older kernels apply best-effort protection
-//!   using only the rights they support) — broad read-only on `/` with full
-//!   access to `$HOME`, `/tmp`, `/var/tmp`, `/opt`, `/srv`, `/run`, `/media`,
-//!   `/mnt`; restricted access to `{data_dir}/data/` and `config.toml`.
+//!   using only the rights they support).
 //! - **Other**: Falls back to a plain command with a warning.
 //!
 //! [`protected_command`] is best-effort and never fails: when the host
@@ -64,8 +80,9 @@
 //! it has its own request-level validation.
 //!
 //! Also provides [`is_write_blocked`] and [`is_read_blocked`] for code-level
-//! enforcement in tool executors (protects memory.db and config.toml on all
-//! platforms).
+//! enforcement in tool executors. They apply the same policy on every
+//! platform, so an in-process tool never reaches further than a sandboxed
+//! subprocess.
 //!
 //! This crate is intentionally standalone with zero internal dependencies,
 //! making it usable outside the Kernex ecosystem.
@@ -74,9 +91,13 @@ use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
 /// Configuration for system sandbox restrictions.
+///
+/// Build one with [`SandboxProfile::new`] and the `with_*` methods; the
+/// struct is `#[non_exhaustive]`, so a later field is not a breaking change.
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub struct SandboxProfile {
-    /// Extra paths that should be fully writable (Linux Landlock allowlist).
+    /// Extra paths that should be fully writable.
     pub allowed_paths: Vec<PathBuf>,
     /// Extra paths that should be completely blocked for read/write.
     pub blocked_paths: Vec<PathBuf>,
@@ -103,6 +124,40 @@ pub struct SandboxProfile {
     /// network at all on older kernels (logged at spawn time). UDP and
     /// non-TCP sockets are never restricted on Linux.
     pub allow_network: bool,
+}
+
+impl SandboxProfile {
+    /// The default profile: no extra paths, enforcement not required,
+    /// subprocess network denied.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the extra writable paths.
+    pub fn with_allowed_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.allowed_paths = paths;
+        self
+    }
+
+    /// Set the paths blocked for both reads and writes.
+    pub fn with_blocked_paths(mut self, paths: Vec<PathBuf>) -> Self {
+        self.blocked_paths = paths;
+        self
+    }
+
+    /// Require OS-level enforcement (see
+    /// [`SandboxProfile::require_os_enforcement`]).
+    pub fn with_require_os_enforcement(mut self, required: bool) -> Self {
+        self.require_os_enforcement = required;
+        self
+    }
+
+    /// Allow or deny subprocess network access (see
+    /// [`SandboxProfile::allow_network`]).
+    pub fn with_allow_network(mut self, allow: bool) -> Self {
+        self.allow_network = allow;
+        self
+    }
 }
 
 /// Environment variable that requires OS-level sandbox enforcement
@@ -180,6 +235,17 @@ fn check_enforcement(available: bool, profile: &SandboxProfile) -> std::io::Resu
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use tracing::warn;
 
+mod env;
+mod gate;
+mod policy;
+mod scope;
+
+pub use env::{hardened_env, BASE_ENV_ALLOWLIST};
+pub use scope::SandboxScope;
+
+use gate::check_workspace;
+use policy::Policy;
+
 #[cfg(target_os = "macos")]
 mod seatbelt;
 
@@ -188,78 +254,33 @@ mod landlock_sandbox;
 
 /// Build a [`Command`] with OS-level system protection (best-effort).
 ///
-/// Blocks writes to dangerous system directories and the runtime's core
-/// data directory (memory.db). On platforms without OS-level enforcement
-/// (no `/usr/bin/sandbox-exec`, no Landlock kernel support, Windows, etc.)
-/// this falls back to a plain command after a once-per-process stderr
-/// warning, preserving the historical fail-open behaviour. This function is
-/// infallible by signature and therefore cannot honour
-/// [`REQUIRE_SANDBOX_ENV`] or `require_os_enforcement`; deployments where
-/// running unsandboxed is unacceptable must use [`try_protected_command`].
+/// The subprocess may write under the scope's workspace and the other write
+/// roots, and nowhere in the runtime data directory. On platforms without
+/// OS-level enforcement (no `/usr/bin/sandbox-exec`, no Landlock kernel
+/// support, Windows, etc.) this falls back to a plain command after a
+/// once-per-process stderr warning, preserving the historical fail-open
+/// behaviour. This function is infallible by signature and therefore cannot
+/// honour [`REQUIRE_SANDBOX_ENV`] or `require_os_enforcement`; deployments
+/// where running unsandboxed is unacceptable must use
+/// [`try_protected_command`].
 ///
-/// `data_dir` is the runtime data directory (e.g. `~/.kernex/`). Writes to
-/// `{data_dir}/data/` are blocked (protects memory.db). All other paths
-/// under `data_dir` (workspace, skills, projects) remain writable.
-pub fn protected_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
+/// When the scope or a `blocked_paths` entry is not an absolute path the
+/// policy cannot be built; the returned command then fails to spawn
+/// instead of running unprotected.
+pub fn protected_command(program: &str, scope: &SandboxScope, profile: &SandboxProfile) -> Command {
     if !os_enforcement_available() {
         warn_unsandboxed_once();
     }
-    let mut cmd = platform_command(program, data_dir, profile);
+    let policy = Policy::new(scope, profile);
+    if let Some(problem) = policy.invalid() {
+        return gate::refused_command(problem);
+    }
+    if let Some(rejection) = policy.workspace_rejection() {
+        gate::warn_workspace_rejected_once(&scope.workspace, rejection);
+    }
+    let mut cmd = platform_command(program, &policy, profile);
     hardened_env(&mut cmd);
     cmd
-}
-
-/// Environment variables preserved when hardening a spawned subprocess.
-///
-/// Everything else from the parent environment is cleared - in particular
-/// provider API keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...) and cloud
-/// credentials, which subprocesses must never inherit implicitly. A
-/// subprocess that legitimately needs more receives it via an explicit
-/// `Command::env` opt-in at its call site (configured toolbox/MCP env maps,
-/// the Claude CLI auth pass-through).
-///
-/// The `LC_*` locale family is additionally preserved by prefix in
-/// [`hardened_env`]. Proxy and TLS-trust variables are preserved because they
-/// are configuration, not secrets, and clearing them would silently break
-/// corporate networks.
-pub const BASE_ENV_ALLOWLIST: &[&str] = &[
-    "PATH",
-    "HOME",
-    "TMPDIR",
-    "TEMP",
-    "TMP",
-    "TERM",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "TZ",
-    "LANG",
-    "HTTP_PROXY",
-    "HTTPS_PROXY",
-    "NO_PROXY",
-    "http_proxy",
-    "https_proxy",
-    "no_proxy",
-    "SSL_CERT_FILE",
-    "SSL_CERT_DIR",
-];
-
-/// Clear the inherited environment on `cmd` and re-apply only the minimal
-/// base allowlist ([`BASE_ENV_ALLOWLIST`] plus the `LC_*` family) from the
-/// parent process.
-///
-/// Applied automatically by [`protected_command`] / [`try_protected_command`];
-/// exposed for spawn sites that cannot route through the sandbox wrappers
-/// (e.g. MCP server processes that must stay unwrapped for stdio framing).
-pub fn hardened_env(cmd: &mut Command) {
-    cmd.env_clear();
-    for (k, v) in std::env::vars_os() {
-        let Some(key) = k.to_str() else { continue };
-        let allowed = BASE_ENV_ALLOWLIST.contains(&key) || key.starts_with("LC_");
-        if allowed {
-            cmd.env(&k, &v);
-        }
-    }
 }
 
 /// Credential directories/files under `$HOME` whose READS are denied to
@@ -336,19 +357,34 @@ pub(crate) fn resolved_home() -> PathBuf {
 
 /// Strict variant of [`protected_command`].
 ///
-/// Returns an [`io::Error`](std::io::Error) of kind [`Unsupported`](std::io::ErrorKind::Unsupported)
-/// when the host cannot apply OS-level enforcement *and* enforcement is
-/// required, either via `profile.require_os_enforcement` or the
-/// [`REQUIRE_SANDBOX_ENV`] environment variable. When enforcement is not
-/// required this behaves identically to [`protected_command`] (warns once
-/// per process and falls back) and always returns `Ok(Command)`.
+/// Returns an [`io::Error`](std::io::Error) when enforcement is required,
+/// either via `profile.require_os_enforcement` or the
+/// [`REQUIRE_SANDBOX_ENV`] environment variable, and one of these holds:
+///
+/// - the host cannot apply OS-level enforcement
+///   ([`Unsupported`](std::io::ErrorKind::Unsupported));
+/// - the scope's workspace is not accepted as a write root, because it is the
+///   home directory, one of its ancestors, `/`, or inside a protected
+///   directory ([`InvalidInput`](std::io::ErrorKind::InvalidInput)).
+///
+/// A scope directory or a `blocked_paths` entry that is not an absolute
+/// path is always an [`InvalidInput`](std::io::ErrorKind::InvalidInput)
+/// error, whether or not enforcement is required: a path that cannot be
+/// resolved cannot be protected.
+///
+/// When enforcement is not required this behaves identically to
+/// [`protected_command`] (warns once per process and falls back) and always
+/// returns `Ok(Command)`.
 pub fn try_protected_command(
     program: &str,
-    data_dir: &Path,
+    scope: &SandboxScope,
     profile: &SandboxProfile,
 ) -> std::io::Result<Command> {
     check_enforcement(os_enforcement_available(), profile)?;
-    let mut cmd = platform_command(program, data_dir, profile);
+    let policy = Policy::new(scope, profile);
+    gate::check_policy(&policy)?;
+    check_workspace(&policy, scope, profile)?;
+    let mut cmd = platform_command(program, &policy, profile);
     hardened_env(&mut cmd);
     Ok(cmd)
 }
@@ -371,147 +407,45 @@ pub fn os_enforcement_available() -> bool {
     }
 }
 
-/// Best-effort path canonicalization. Returns the canonicalized path or the
-/// original if canonicalization fails (file doesn't exist yet, permissions, etc.).
-///
-/// **Assumption (callers must uphold):** the input path is already absolute,
-/// either because the caller passed an `is_absolute()` path through or because
-/// the upstream code used `data_dir.join(...)` on an absolute `data_dir`. The
-/// lexical fallback is safe under that assumption: if canonicalization fails
-/// because the leaf does not yet exist, the parent components are still
-/// resolved and the comparison vs. blocked prefixes (`starts_with`) remains
-/// meaningful. Passing a relative path here would silently pass through and
-/// could match an unintended prefix. The two callers (`is_blocked_write_path`
-/// and `is_allowed_data_dir_write`) both prefix-promote relative inputs via
-/// `cwd.join(...)` before reaching this function.
-fn try_canonicalize(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
-}
-
 /// Check if a write to the given path should be blocked.
 ///
-/// Returns `true` if the path targets a protected location:
-/// - Dangerous OS directories (`/System`, `/bin`, `/sbin`, `/usr/bin`, etc.)
-/// - The runtime's core data directory (`{data_dir}/data/`) — protects memory.db
+/// Returns `true` unless the path is under one of the scope's write roots
+/// (the workspace, the temp directories, the toolchain cache directories,
+/// `allowed_paths`) and outside every protected location (the runtime data
+/// directory's database, skills, projects and configuration, the system
+/// directories, `blocked_paths`). A relative path is always blocked.
 ///
-/// Resolves symlinks before comparison to prevent bypass via symlink chains.
-/// Used by tool executors for code-level enforcement.
-pub fn is_write_blocked(path: &Path, data_dir: &Path, profile: Option<&SandboxProfile>) -> bool {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        return true;
-    };
-
-    let resolved = try_canonicalize(&abs);
-
-    let data_data = try_canonicalize(&data_dir.join("data"));
-    if resolved.starts_with(&data_data) {
-        return true;
-    }
-
-    let config_file = try_canonicalize(&data_dir.join("config.toml"));
-    if resolved == config_file {
-        return true;
-    }
-
-    if let Some(prof) = profile {
-        for blocked in &prof.blocked_paths {
-            if resolved.starts_with(try_canonicalize(blocked)) {
-                return true;
-            }
-        }
-    }
-
-    let blocked_prefixes: &[&str] = &[
-        "/System",
-        "/bin",
-        "/sbin",
-        "/usr/bin",
-        "/usr/sbin",
-        "/usr/lib",
-        "/usr/libexec",
-        "/private/etc",
-        "/Library",
-        "/etc",
-        "/boot",
-        "/proc",
-        "/sys",
-        "/dev",
-    ];
-
-    for prefix in blocked_prefixes {
-        if resolved.starts_with(prefix) {
-            return true;
-        }
-    }
-
-    false
+/// Symlinks are resolved before comparison, including in the parent of a
+/// file that does not exist yet. Used by tool executors for code-level
+/// enforcement.
+pub fn is_write_blocked(path: &Path, scope: &SandboxScope, profile: &SandboxProfile) -> bool {
+    Policy::new(scope, profile).check_write(path).is_err()
 }
 
 /// Check if a read from the given path should be blocked.
 ///
-/// Returns `true` if the path targets a protected location:
-/// - The runtime's core data directory (`{data_dir}/data/`) — protects memory.db
-/// - The runtime's config file (`{data_dir}/config.toml`) — protects API keys
-/// - The actual config file at `config_path` (may differ from data_dir) — protects secrets
+/// Returns `true` if the path targets a protected location: the memory
+/// database, the configuration file, a credential store under `$HOME`, or a
+/// `blocked_paths` entry. A relative path is always blocked.
 ///
-/// Resolves symlinks before comparison to prevent bypass via symlink chains.
-/// Used by tool executors for code-level enforcement.
-pub fn is_read_blocked(
-    path: &Path,
-    data_dir: &Path,
-    config_path: Option<&Path>,
-    profile: Option<&SandboxProfile>,
-) -> bool {
-    let abs = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        return true;
-    };
-
-    let resolved = try_canonicalize(&abs);
-
-    let data_data = try_canonicalize(&data_dir.join("data"));
-    if resolved.starts_with(&data_data) {
-        return true;
-    }
-
-    let config_in_data = try_canonicalize(&data_dir.join("config.toml"));
-    if resolved == config_in_data {
-        return true;
-    }
-
-    if let Some(cp) = config_path {
-        let resolved_config = try_canonicalize(cp);
-        if resolved == resolved_config {
-            return true;
-        }
-    }
-
-    if let Some(prof) = profile {
-        for blocked in &prof.blocked_paths {
-            if resolved.starts_with(try_canonicalize(blocked)) {
-                return true;
-            }
-        }
-    }
-
-    false
+/// Symlinks are resolved before comparison. Used by tool executors for
+/// code-level enforcement.
+pub fn is_read_blocked(path: &Path, scope: &SandboxScope, profile: &SandboxProfile) -> bool {
+    Policy::new(scope, profile).check_read(path).is_err()
 }
 
 #[cfg(target_os = "macos")]
-fn platform_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
-    seatbelt::protected_command(program, data_dir, profile)
+fn platform_command(program: &str, policy: &Policy, profile: &SandboxProfile) -> Command {
+    seatbelt::protected_command(program, policy, profile)
 }
 
 #[cfg(target_os = "linux")]
-fn platform_command(program: &str, data_dir: &Path, profile: &SandboxProfile) -> Command {
-    landlock_sandbox::protected_command(program, data_dir, profile)
+fn platform_command(program: &str, policy: &Policy, profile: &SandboxProfile) -> Command {
+    landlock_sandbox::protected_command(program, policy, profile)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn platform_command(program: &str, _data_dir: &Path, _profile: &SandboxProfile) -> Command {
+fn platform_command(program: &str, _policy: &Policy, _profile: &SandboxProfile) -> Command {
     warn!("OS-level protection not available on this platform; using code-level enforcement only");
     Command::new(program)
 }
@@ -521,11 +455,16 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// A scope on paths that exist on no host, so the policy leaves them
+    /// as written.
+    fn test_scope() -> SandboxScope {
+        SandboxScope::new("/kx-lib-test/ws", "/kx-lib-test/state")
+    }
+
     #[test]
     fn test_protected_command_returns_command() {
-        let data_dir = PathBuf::from("/tmp/ws");
         let profile = SandboxProfile::default();
-        let cmd = protected_command("claude", &data_dir, &profile);
+        let cmd = protected_command("claude", &test_scope(), &profile);
         let program = cmd.as_std().get_program().to_string_lossy().to_string();
         assert!(!program.is_empty());
     }
@@ -537,9 +476,8 @@ mod tests {
         std::env::set_var("KERNEX_TEST_SENTINEL_DO_NOT_PASS", "1");
         std::env::set_var("LC_KERNEX_TEST", "es_ES.UTF-8");
 
-        let data_dir = PathBuf::from("/tmp/ws");
         let profile = SandboxProfile::default();
-        let cmd = protected_command("echo", &data_dir, &profile);
+        let cmd = protected_command("echo", &test_scope(), &profile);
         let explicit: Vec<String> = cmd
             .as_std()
             .get_envs()
@@ -566,189 +504,114 @@ mod tests {
     }
 
     #[test]
-    fn test_is_write_blocked_data_dir() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(is_write_blocked(
-            Path::new("/home/user/.kernex/data/memory.db"),
-            &data_dir,
-            None
-        ));
-        assert!(is_write_blocked(
-            Path::new("/home/user/.kernex/data/"),
-            &data_dir,
-            None
-        ));
-    }
-
-    #[test]
-    fn test_is_write_blocked_allows_workspace() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
+    fn test_is_write_blocked_follows_the_policy() {
+        let scope = test_scope();
+        let profile = SandboxProfile::default();
         assert!(!is_write_blocked(
-            Path::new("/home/user/.kernex/workspace/test.txt"),
-            &data_dir,
-            None
-        ));
-        assert!(!is_write_blocked(
-            Path::new("/home/user/.kernex/skills/test/SKILL.md"),
-            &data_dir,
-            None
-        ));
-    }
-
-    #[test]
-    fn test_is_write_blocked_system_dirs() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(is_write_blocked(
-            Path::new("/System/Library/test"),
-            &data_dir,
-            None
-        ));
-        assert!(is_write_blocked(Path::new("/bin/sh"), &data_dir, None));
-        assert!(is_write_blocked(Path::new("/usr/bin/env"), &data_dir, None));
-        assert!(is_write_blocked(
-            Path::new("/private/etc/hosts"),
-            &data_dir,
-            None
+            Path::new("/kx-lib-test/ws/src/main.rs"),
+            &scope,
+            &profile
         ));
         assert!(is_write_blocked(
-            Path::new("/Library/Preferences/test"),
-            &data_dir,
-            None
+            Path::new("/kx-lib-test/other/file"),
+            &scope,
+            &profile
         ));
-    }
-
-    #[test]
-    fn test_is_write_blocked_allows_normal_paths() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(!is_write_blocked(Path::new("/tmp/test"), &data_dir, None));
-        assert!(!is_write_blocked(
-            Path::new("/home/user/documents/test"),
-            &data_dir,
-            None
+        assert!(is_write_blocked(
+            Path::new("/kx-lib-test/state/memory.db"),
+            &scope,
+            &profile
         ));
-        assert!(!is_write_blocked(
-            Path::new("/usr/local/bin/something"),
-            &data_dir,
-            None
+        assert!(is_write_blocked(
+            Path::new("/kx-lib-test/state/skills/x/SKILL.md"),
+            &scope,
+            &profile
         ));
-    }
-
-    #[test]
-    fn test_is_write_blocked_no_string_prefix_false_positive() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(!is_write_blocked(
-            Path::new("/binaries/test"),
-            &data_dir,
-            None
-        ));
-    }
-
-    #[test]
-    fn test_is_write_blocked_relative_path() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
+        assert!(is_write_blocked(Path::new("/bin/sh"), &scope, &profile));
         assert!(is_write_blocked(
             Path::new("relative/path"),
-            &data_dir,
-            None
-        ));
-        assert!(is_write_blocked(
-            Path::new("../../data/memory.db"),
-            &data_dir,
-            None
+            &scope,
+            &profile
         ));
     }
 
     #[test]
-    fn test_is_write_blocked_config_toml() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(is_write_blocked(
-            Path::new("/home/user/.kernex/config.toml"),
-            &data_dir,
-            None
-        ));
-    }
-
-    #[test]
-    fn test_is_read_blocked_data_dir() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(is_read_blocked(
-            Path::new("/home/user/.kernex/data/memory.db"),
-            &data_dir,
-            None,
-            None
-        ));
-        assert!(is_read_blocked(
-            Path::new("/home/user/.kernex/data/"),
-            &data_dir,
-            None,
-            None
-        ));
-    }
-
-    #[test]
-    fn test_is_read_blocked_config() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(is_read_blocked(
-            Path::new("/home/user/.kernex/config.toml"),
-            &data_dir,
-            None,
-            None
-        ));
-    }
-
-    #[test]
-    fn test_is_read_blocked_external_config() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        let ext_config = PathBuf::from("/opt/kernex/config.toml");
-        assert!(is_read_blocked(
-            Path::new("/opt/kernex/config.toml"),
-            &data_dir,
-            Some(ext_config.as_path()),
-            None
+    fn test_is_read_blocked_follows_the_policy() {
+        let scope = test_scope().with_config_path("/kx-lib-test/etc/config.toml");
+        let profile = SandboxProfile::default();
+        assert!(!is_read_blocked(
+            Path::new("/kx-lib-test/other/README.md"),
+            &scope,
+            &profile
         ));
         assert!(!is_read_blocked(
-            Path::new("/opt/kernex/other.toml"),
-            &data_dir,
-            Some(ext_config.as_path()),
-            None
+            Path::new("/kx-lib-test/state/skills/x/SKILL.md"),
+            &scope,
+            &profile
+        ));
+        assert!(is_read_blocked(
+            Path::new("/kx-lib-test/state/memory.db"),
+            &scope,
+            &profile
+        ));
+        assert!(is_read_blocked(
+            Path::new("/kx-lib-test/state/config.toml"),
+            &scope,
+            &profile
+        ));
+        assert!(is_read_blocked(
+            Path::new("/kx-lib-test/etc/config.toml"),
+            &scope,
+            &profile
+        ));
+        assert!(is_read_blocked(
+            Path::new("relative/path"),
+            &scope,
+            &profile
         ));
     }
 
     #[test]
-    fn test_is_read_blocked_allows_workspace() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(!is_read_blocked(
-            Path::new("/home/user/.kernex/workspace/test.txt"),
-            &data_dir,
-            None,
-            None
-        ));
-        assert!(!is_read_blocked(
-            Path::new("/home/user/.kernex/skills/test/SKILL.md"),
-            &data_dir,
-            None,
-            None
-        ));
+    fn test_blocked_paths_apply_to_reads_and_writes() {
+        let scope = test_scope();
+        let profile = SandboxProfile::new()
+            .with_blocked_paths(vec![PathBuf::from("/kx-lib-test/ws/secrets")]);
+        let target = Path::new("/kx-lib-test/ws/secrets/token");
+        assert!(is_read_blocked(target, &scope, &profile));
+        assert!(is_write_blocked(target, &scope, &profile));
     }
 
     #[test]
-    fn test_is_read_blocked_allows_stores() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(!is_read_blocked(
-            Path::new("/home/user/.kernex/stores/trading/store.db"),
-            &data_dir,
-            None,
-            None
-        ));
+    fn test_rejected_workspace_is_refused_when_enforcement_is_required() {
+        let scope = SandboxScope::new("/", "/kx-lib-test/state");
+        let strict = SandboxProfile::new().with_require_os_enforcement(true);
+        let policy = Policy::new(&scope, &strict);
+        let err = check_workspace(&policy, &scope, &strict).expect_err("must refuse");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+
+        // Not required: falls back (warns once) unless the developer's shell
+        // exports the env var.
+        if std::env::var_os(REQUIRE_SANDBOX_ENV).is_none() {
+            let lenient = SandboxProfile::default();
+            let policy = Policy::new(&scope, &lenient);
+            assert!(check_workspace(&policy, &scope, &lenient).is_ok());
+        }
+    }
+
+    #[test]
+    fn test_accepted_workspace_passes_the_workspace_check() {
+        let scope = test_scope();
+        let strict = SandboxProfile::new().with_require_os_enforcement(true);
+        let policy = Policy::new(&scope, &strict);
+        assert!(check_workspace(&policy, &scope, &strict).is_ok());
     }
 
     #[test]
     fn test_try_protected_command_lenient_returns_ok() {
         // require_os_enforcement = false → always Ok, even when the platform
         // cannot enforce.
-        let data_dir = PathBuf::from("/tmp/ws");
         let profile = SandboxProfile::default();
-        let result = try_protected_command("claude", &data_dir, &profile);
+        let result = try_protected_command("claude", &test_scope(), &profile);
         assert!(result.is_ok());
     }
 
@@ -758,12 +621,8 @@ mod tests {
         // On a host that supports enforcement we expect Ok; on one that does
         // not we expect Err(ErrorKind::Unsupported). This guards against the
         // strict flag silently being ignored.
-        let data_dir = PathBuf::from("/tmp/ws");
-        let profile = SandboxProfile {
-            require_os_enforcement: true,
-            ..Default::default()
-        };
-        let result = try_protected_command("claude", &data_dir, &profile);
+        let profile = SandboxProfile::new().with_require_os_enforcement(true);
+        let result = try_protected_command("claude", &test_scope(), &profile);
         if os_enforcement_available() {
             assert!(result.is_ok(), "expected Ok on a host with enforcement");
         } else {
@@ -850,22 +709,5 @@ mod tests {
         } else {
             assert!(!second, "warning re-emitted after a prior emission");
         }
-    }
-
-    #[test]
-    fn test_is_read_blocked_relative_path() {
-        let data_dir = PathBuf::from("/home/user/.kernex");
-        assert!(is_read_blocked(
-            Path::new("relative/path"),
-            &data_dir,
-            None,
-            None
-        ));
-        assert!(is_read_blocked(
-            Path::new("../../data/memory.db"),
-            &data_dir,
-            None,
-            None
-        ));
     }
 }
