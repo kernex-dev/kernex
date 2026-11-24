@@ -64,7 +64,8 @@ impl Named {
             // A stop the sandboxed process could have caused (its own
             // directory or link closed to lookups) would hide what is
             // below it. One at another user's directory it cannot cause.
-            let ours = walk.stopped_at.as_deref().filter(|stop| owned_by_us(stop));
+            let stop = walk.stopped_at.as_deref();
+            let ours = stop.filter(|stop| caused_by_us(stop, walk.stop_meta.as_ref()));
             ours.map(|stop| format!("{} cannot be looked up", stop.display()))
         };
         if self.problem.is_none() {
@@ -81,25 +82,53 @@ impl Named {
     }
 }
 
-/// Whether `stop`, or the directory it is in, belongs to this process's
-/// user, who could change its mode. Unknown counts as yes.
-fn owned_by_us(stop: &Path) -> bool {
+/// Whether this process's user could have caused the walk to stop at
+/// `stop`, by changing the mode or ACL of something it owns. `meta` is the
+/// stop's own `lstat`, when the walk got it (a link that cannot be read).
+/// Unknown counts as yes.
+///
+/// A stop it cannot have caused is one in a directory of another user's,
+/// at an item of another user's, or below such a directory that it cannot
+/// search. When the stop's own attributes could not be read and its
+/// directory can be searched, the stop itself is what refuses, and its
+/// owner is unknown.
+fn caused_by_us(stop: &Path, meta: Option<&std::fs::Metadata>) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         // SAFETY: `geteuid` takes no arguments, cannot fail and touches no
         // memory of ours.
         let us = unsafe { libc::geteuid() };
-        let mine = |p: &Path| p.symlink_metadata().map_or(true, |m| m.uid() == us);
-        let parent_mine = stop.parent().map_or(true, mine);
-        let stop_mine = stop.symlink_metadata().is_ok_and(|m| m.uid() == us);
-        parent_mine || stop_mine
+        let Some(parent) = stop.parent() else {
+            return true;
+        };
+        if parent.symlink_metadata().map_or(true, |m| m.uid() == us) {
+            return true;
+        }
+        match meta {
+            Some(meta) => meta.uid() == us,
+            None => searchable(parent),
+        }
     }
     #[cfg(not(unix))]
     {
-        let _ = stop;
+        let _ = (stop, meta);
         true
     }
+}
+
+/// Whether this process's user can search `dir`. Unknown counts as yes.
+#[cfg(unix)]
+fn searchable(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(name) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
+        return true;
+    };
+    // SAFETY: `name` is a valid NUL-terminated string that outlives the
+    // call, which only reads it.
+    let found =
+        unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
+    found == 0
 }
 
 /// `path` under the stored case of its directory, its own name as written.
@@ -120,6 +149,7 @@ struct Walk {
     record: bool,
     seen: Vec<PathBuf>,
     stopped_at: Option<PathBuf>,
+    stop_meta: Option<std::fs::Metadata>,
 }
 
 impl Walk {
@@ -131,6 +161,7 @@ impl Walk {
             record,
             seen: Vec::new(),
             stopped_at: None,
+            stop_meta: None,
         }
     }
 
@@ -176,6 +207,7 @@ impl Walk {
                     Err(_) => {
                         self.complete = false;
                         self.stopped_at = Some(current.clone());
+                        self.stop_meta = Some(meta);
                         current
                     }
                 }
@@ -358,6 +390,51 @@ mod tests {
         };
         let named = walked(&closed.join("x/y"));
         assert_eq!(named.problem, None);
+    }
+
+    #[test]
+    fn a_stop_at_this_users_item_in_another_users_directory_is_a_problem() {
+        // macOS lets an ACL hide an item's attributes, even from its owner,
+        // while lookups through it still work. Placed directly in root's
+        // world-writable temp directory, both the item and the link in it.
+        let Ok(dir) = tempfile::Builder::new()
+            .prefix("kx-acl-")
+            .tempdir_in("/private/tmp")
+        else {
+            return;
+        };
+        let base = dir.path().to_path_buf();
+        std::fs::create_dir(base.join("real")).unwrap();
+        let link = dir.path().with_extension("link");
+        std::os::unix::fs::symlink(base.join("real"), &link).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("l")).unwrap();
+        let acl = |args: &[&str], item: &Path| {
+            std::process::Command::new("chmod")
+                .args(args)
+                .arg(item)
+                .status()
+                .is_ok_and(|s| s.success())
+        };
+        let hide = ["+a", "everyone deny readattr"];
+        let found = if acl(&hide, &base) && base.symlink_metadata().is_err() {
+            let through_dir = walked(&base.join("l/secret")).problem;
+            acl(&["-N"], &base);
+            let hidden = acl(&["-h", hide[0], hide[1]], &link);
+            let through_link = (hidden && link.symlink_metadata().is_err())
+                .then(|| walked(&link.join("secret")).problem);
+            acl(&["-h", "-N"], &link);
+            Some((through_dir, through_link))
+        } else {
+            None
+        };
+        let _ = std::fs::remove_file(&link);
+        let Some((through_dir, through_link)) = found else {
+            return;
+        };
+        assert!(through_dir.is_some_and(|p| p.contains("cannot be looked up")));
+        if let Some(through_link) = through_link {
+            assert!(through_link.is_some_and(|p| p.contains("cannot be looked up")));
+        }
     }
 
     #[test]

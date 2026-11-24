@@ -541,3 +541,38 @@ fn a_link_to_protected_state_cannot_be_replaced() {
     let out = sandboxed(&scope, &profile, &ws, "/bin/sh", &["-c", &script]);
     assert_eq!(std::fs::read_link(&link).ok(), Some(real), "{}", out.stderr);
 }
+
+#[test]
+fn hiding_a_link_from_the_host_does_not_unprotect_what_is_behind_it() {
+    if !enforcement_or_skip("hidden_link") {
+        return;
+    }
+    // The workspace is named through a link that sits directly in the
+    // world-writable `/private/tmp`, which belongs to root. An ACL can hide
+    // the link's attributes from the host while lookups still follow it;
+    // the next sandbox must not then protect only the link's spelling.
+    let (_guard, real) = workspace("hidden-link-");
+    std::fs::write(real.join(".env"), "API_KEY=x").unwrap();
+    let holder = tempfile::Builder::new()
+        .prefix("kx-hidden-")
+        .tempfile_in("/private/tmp")
+        .expect("link name");
+    let link = holder.path().with_extension("ws");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let scope = SandboxScope::new(&link, home().join(".kernex"));
+    let mut profile = SandboxProfile::default();
+    profile.blocked_paths.push(link.join(".env"));
+    let l = link.display();
+    let hide = format!("/bin/chmod -h +a 'everyone deny readattr' '{l}'");
+    let hidden = sandboxed(&scope, &profile, &real, "/bin/sh", &["-c", &hide]).ok;
+    let next = kernex_sandbox::try_protected_command("/bin/cat", &scope, &profile);
+    let _ = std::process::Command::new("/bin/chmod")
+        .args(["-h", "-N"])
+        .arg(&link)
+        .status();
+    let _ = std::fs::remove_file(&link);
+    assert!(
+        !hidden || next.is_err(),
+        "a sandbox was built while the link to the workspace was hidden"
+    );
+}
