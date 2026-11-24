@@ -7,22 +7,6 @@ use kernex_sandbox::SandboxScope;
 
 static DEFAULT_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
 
-/// Let an agent CLI that runs as the provider use its own state under the
-/// home directory (login, settings, transcripts). The sandbox keeps those
-/// locations from every other subprocess. Without a home directory nothing
-/// is granted.
-pub(crate) fn grant_cli_state(profile: &mut kernex_sandbox::SandboxProfile, relative: &[&str]) {
-    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-        return;
-    };
-    if !home.is_absolute() {
-        return;
-    }
-    for path in relative {
-        profile.allowed_paths.push(home.join(path));
-    }
-}
-
 /// Environment variable naming the runtime data directory.
 const DATA_DIR_ENV: &str = "KERNEX_DATA_DIR";
 
@@ -95,8 +79,7 @@ impl SandboxDirs {
 
     /// [`scope`](Self::scope) without the missing-data-dir warning.
     pub(crate) fn build_scope(&self, workspace: &Path) -> SandboxScope {
-        let data_dir = self.data_dir.clone().unwrap_or_else(default_data_dir);
-        let mut scope = SandboxScope::new(workspace, data_dir);
+        let mut scope = SandboxScope::new(workspace, self.resolved_data_dir());
         if let Some(config_path) = &self.config_path {
             scope = scope.with_config_path(config_path);
         }
@@ -104,6 +87,11 @@ impl SandboxDirs {
             scope = scope.with_db_path(db_path);
         }
         scope
+    }
+
+    /// The configured data directory, or the runtime default.
+    pub(crate) fn resolved_data_dir(&self) -> PathBuf {
+        self.data_dir.clone().unwrap_or_else(default_data_dir)
     }
 }
 

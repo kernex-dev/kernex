@@ -39,6 +39,13 @@ pub struct ProviderConfig {
     /// Which hosts the `web_fetch` tool may reach. The default is disabled:
     /// the tool is not offered to the model.
     pub web_fetch: crate::WebFetchPolicy,
+    /// For the `claude-code` and `opencode` providers: run the agent CLI
+    /// with its permission checks off when a request names no tools. The
+    /// default is `false`, under which such a request may use only the
+    /// CLI's read-only tools, the declared MCP servers' tools and the
+    /// fetches `web_fetch` allows. A request with a tool list never runs
+    /// with the bypass. The OS sandbox applies either way.
+    pub cli_permission_bypass: bool,
     /// Performance/cost tier used to select a model when `model` is `None`.
     pub tier: Option<ModelTier>,
     /// HTTP request timeout in seconds (default: 120). Applies to all HTTP-based providers.
@@ -58,6 +65,7 @@ impl Default for ProviderConfig {
             config_path: None,
             db_path: None,
             web_fetch: Default::default(),
+            cli_permission_bypass: false,
             tier: None,
             timeout_secs: 120,
         }
@@ -76,6 +84,8 @@ impl std::fmt::Debug for ProviderConfig {
             .field("data_dir", &self.data_dir)
             .field("config_path", &self.config_path)
             .field("db_path", &self.db_path)
+            .field("web_fetch", &self.web_fetch)
+            .field("cli_permission_bypass", &self.cli_permission_bypass)
             .field("tier", &self.tier)
             .field("timeout_secs", &self.timeout_secs)
             .finish()
@@ -281,7 +291,9 @@ impl ProviderFactory {
                     None, // oauth token
                 )
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_permission_bypass(config.cli_permission_bypass)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "opencode" => {
@@ -291,7 +303,9 @@ impl ProviderFactory {
                     config.model.unwrap_or_default(),
                 )
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_permission_bypass(config.cli_permission_bypass)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             // OpenAI-compatible third-party providers.
@@ -540,6 +554,7 @@ mod tests {
             config_path: None,
             db_path: None,
             web_fetch: Default::default(),
+            cli_permission_bypass: false,
             tier: None,
             timeout_secs: 60,
         };

@@ -81,7 +81,25 @@ those limits are stated.
   no tool can write (`mcp/` in the data directory) and reaches the workspace
   through `{workspace}` in its arguments.
   With the CLI providers the external CLI starts the servers itself, inside
-  its own sandbox and with its network.
+  its own sandbox and with its network, so only servers that declare
+  `permissions.network` are passed to it.
+- **Agent CLI providers** — `claude-code` and `opencode` always run inside
+  the OS sandbox; without a configured workspace each call gets an empty
+  temporary directory. The tool allowlist is passed to the CLI as its own
+  permission settings, and the CLI's permission bypass is off unless the
+  host sets `cli_permission_bypass`. The CLIs' own fetch and search tools
+  run only when `web_fetch` allows every host, since neither CLI can be held
+  to a host list. Each CLI keeps its settings, login and caches in its own
+  directory under `cli/` in the data directory, which no other sandboxed
+  process can read or write, not in the user's (`~/.claude`,
+  `~/.config/opencode`), and reads no settings or project config files, so
+  nothing its tools write runs in the user's own CLI. OpenCode's config
+  there is read-only, its cache is new for every call and its login files
+  are removed before every call: it reaches a model provider only through
+  that provider's API key variable, of which it receives just the one it
+  is configured for. OpenCode's logins in the user's home are closed to
+  every sandboxed process. When a call times out, the CLI is killed with
+  every process it started.
 - **SSRF protection** — the in-process `web_fetch` tool resolves hostnames
   itself, validates every resolved address against private/link-local/
   loopback ranges, and pins the connection to the validated addresses, so a

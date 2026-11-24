@@ -274,11 +274,13 @@ mod env;
 mod gate;
 mod paths;
 mod policy;
+mod process;
 mod scope;
 mod tool_access;
 
 pub use env::{hardened_env, BASE_ENV_ALLOWLIST};
 pub use paths::{credential_read_deny_dirs, write_allow_dirs};
+pub use process::kill_process_group;
 pub use scope::SandboxScope;
 pub use tool_access::{
     no_follow, resolved_path, tool_read_path, tool_search_exclusions, tool_write_path,

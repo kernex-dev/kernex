@@ -1,6 +1,7 @@
 //! Provider trait implementation.
 
 use super::{config, events, OpenCodeProvider};
+use crate::cli_support::{self, CliWorkspace};
 use crate::error::ProviderError;
 use async_trait::async_trait;
 use kernex_core::{
@@ -27,12 +28,21 @@ impl Provider for OpenCodeProvider {
         let prompt = context.to_prompt_string();
         let start = Instant::now();
 
-        let tools_disabled = matches!(&context.allowed_tools, Some(t) if t.is_empty());
-        let allowed_tools = context.allowed_tools.clone().unwrap_or_default();
         let model = context.model.as_deref().unwrap_or(&self.model);
-
+        // Without a configured working directory the call gets an empty
+        // temporary one, so OpenCode always runs inside the sandbox.
+        let workspace = CliWorkspace::for_call(self.working_dir.as_deref()).map_err(|e| {
+            ProviderError::Logic(format!("cannot create a workspace for opencode CLI: {e}"))
+        })?;
+        let allowed = context.allowed_tools.as_deref();
+        let servers = cli_support::servers_for_cli(
+            &context.mcp_servers,
+            allowed,
+            workspace.path(),
+            "opencode",
+        );
         let config_json =
-            config::build_config(&allowed_tools, tools_disabled, &context.mcp_servers);
+            config::build_config(allowed, self.permission_bypass, &self.web_fetch, &servers);
         let args = Self::build_run_args(
             &prompt,
             model,
@@ -40,7 +50,9 @@ impl Provider for OpenCodeProvider {
             context.agent_name.as_deref(),
         );
 
-        let output = self.run_cli(&args, &config_json).await?;
+        let output = self
+            .run_cli(&args, &config_json, workspace.path(), model)
+            .await?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         let run = events::parse_events(&stdout);
 

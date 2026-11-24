@@ -1,6 +1,8 @@
 //! Tests for the Claude Code CLI provider.
 
+use super::command::CliCall;
 use super::mcp;
+use super::permissions::ToolAccess;
 use super::*;
 use kernex_core::context::McpServer;
 use kernex_core::traits::Provider;
@@ -13,7 +15,8 @@ fn test_default_provider() {
     assert_eq!(provider.name(), "claude-code");
     assert!(!provider.requires_api_key());
     assert_eq!(provider.max_turns, 25);
-    assert!(provider.allowed_tools.is_empty());
+    assert!(provider.allowed_tools.is_none());
+    assert!(!provider.permission_bypass);
     assert_eq!(provider.timeout, Duration::from_secs(3600));
     assert!(provider.working_dir.is_none());
     assert_eq!(provider.max_resume_attempts, 5);
@@ -36,6 +39,10 @@ fn test_from_config_with_timeout() {
     assert!(provider.working_dir.is_none());
     assert_eq!(provider.max_resume_attempts, 3);
     assert_eq!(provider.model, "claude-sonnet-4-6");
+    assert_eq!(provider.allowed_tools, Some(vec!["Bash".to_string()]));
+    // An empty list sets no default.
+    let none = ClaudeCodeProvider::from_config(5, vec![], 300, None, 3, String::new(), None);
+    assert!(none.allowed_tools.is_none());
 }
 
 #[test]
@@ -109,7 +116,9 @@ async fn test_write_and_cleanup_mcp_config() {
     }];
 
     // Writes a throwaway temp file (not under any workspace .claude/ dir).
-    let path = mcp::write_mcp_config_tempfile(&servers).await.unwrap();
+    let path = mcp::write_mcp_config_tempfile(&std::env::temp_dir(), &servers)
+        .await
+        .unwrap();
     assert!(path.exists());
     assert!(
         !path.components().any(|c| c.as_os_str() == ".claude"),
@@ -145,7 +154,9 @@ async fn test_mcp_config_tempfile_is_owner_only() {
         args: vec!["mcp".into()],
         ..Default::default()
     }];
-    let path = mcp::write_mcp_config_tempfile(&servers).await.unwrap();
+    let path = mcp::write_mcp_config_tempfile(&std::env::temp_dir(), &servers)
+        .await
+        .unwrap();
     // Configured MCP env values can carry credentials; the file must be
     // owner-readable only, regardless of umask.
     let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
@@ -155,89 +166,108 @@ async fn test_mcp_config_tempfile_is_owner_only() {
 
 // --- CLI argument construction tests ---
 
+/// Arguments for one call with no tool list, no bypass, fetch disabled.
+fn call_args(
+    prompt: &str,
+    max_turns: u32,
+    model: &str,
+    session_id: Option<&str>,
+    agent_name: Option<&str>,
+) -> Vec<String> {
+    args_with(
+        prompt, max_turns, model, session_id, agent_name, None, false,
+    )
+}
+
+fn args_with(
+    prompt: &str,
+    max_turns: u32,
+    model: &str,
+    session_id: Option<&str>,
+    agent_name: Option<&str>,
+    allowed: Option<&[String]>,
+    bypass: bool,
+) -> Vec<String> {
+    let web = crate::WebFetchPolicy::Disabled;
+    ClaudeCodeProvider::build_run_cli_args(&CliCall {
+        prompt,
+        max_turns,
+        model,
+        session_id,
+        agent_name,
+        access: ToolAccess {
+            allowed,
+            bypass,
+            web_fetch: &web,
+            mcp_servers: &[],
+        },
+        mcp_config_path: None,
+    })
+}
+
+/// The prompt: the last argument, after `--`.
+fn prompt_of(args: &[String]) -> Option<&str> {
+    match args {
+        [.., sep, prompt] if sep == "--" => Some(prompt),
+        _ => None,
+    }
+}
+
+fn value_of<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter()
+        .position(|a| a == flag)
+        .map(|i| args[i + 1].as_str())
+}
+
 #[test]
 fn test_build_run_cli_args_no_agent_name() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "hello world",
-        &[],
-        100,
-        &[],
-        "claude-sonnet-4-6",
-        false,
-        None,
-        None,
-    );
-    assert!(
-        !args.contains(&"--agent".to_string()),
-        "Without agent_name, --agent flag must NOT be present"
-    );
-    let p_idx = args
-        .iter()
-        .position(|a| a == "-p")
-        .expect("-p flag must be present");
-    assert_eq!(args[p_idx + 1], "hello world", "prompt must follow -p");
-    assert!(args.contains(&"--output-format".to_string()));
-    assert!(args.contains(&"json".to_string()));
-    assert!(args.contains(&"--max-turns".to_string()));
-    assert!(args.contains(&"100".to_string()));
-    assert!(args.contains(&"--model".to_string()));
-    assert!(args.contains(&"claude-sonnet-4-6".to_string()));
+    let args = call_args("hello world", 100, "claude-sonnet-4-6", None, None);
+    assert!(!args.contains(&"--agent".to_string()));
+    assert!(args.contains(&"-p".to_string()));
+    assert_eq!(prompt_of(&args), Some("hello world"));
+    assert_eq!(value_of(&args, "--output-format"), Some("json"));
+    assert_eq!(value_of(&args, "--max-turns"), Some("100"));
+    assert_eq!(value_of(&args, "--model"), Some("claude-sonnet-4-6"));
 }
 
 #[test]
 fn test_build_run_cli_args_rejects_flag_injection_in_model() {
     // Context-poisoned model that tries to smuggle a flag must be dropped,
     // not pushed as a value the CLI's argv parser would re-interpret.
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "hello",
-        &[],
-        100,
-        &[],
-        "--system-prompt=evil",
-        false,
-        None,
-        None,
-    );
-    assert!(
-        !args.contains(&"--system-prompt=evil".to_string()),
-        "model values starting with `-` must not be injected as argv"
-    );
-    // The --model flag itself should be absent because we filtered out
-    // the bogus value entirely.
+    let args = call_args("hello", 100, "--system-prompt=evil", None, None);
+    assert!(!args.contains(&"--system-prompt=evil".to_string()));
     assert!(!args.contains(&"--model".to_string()));
 }
 
 #[test]
+fn test_a_prompt_that_looks_like_an_option_stays_the_prompt() {
+    let args = call_args("--debug-file=/tmp/x", 100, "", None, Some("helper"));
+    assert_eq!(prompt_of(&args), Some("--debug-file=/tmp/x"));
+    assert_eq!(
+        args.iter().filter(|a| *a == "--debug-file=/tmp/x").count(),
+        1
+    );
+}
+
+#[test]
 fn test_build_run_cli_args_rejects_flag_injection_in_session_id() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
+    let args = call_args(
         "hello",
-        &[],
         100,
-        &[],
         "claude-sonnet-4-6",
-        false,
         Some("--dangerously-skip-permissions"),
         None,
     );
     assert!(!args.contains(&"--resume".to_string()));
-    assert!(!args.iter().any(|a| a == "--dangerously-skip-permissions"
-        && args[args
-            .iter()
-            .position(|x| x == a)
-            .unwrap_or(0)
-            .saturating_sub(1)]
-            == "--resume"));
+    assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
 }
 
 #[test]
 fn test_build_run_cli_args_rejects_flag_injection_in_agent_name() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
+    let args = call_args(
         "hello",
-        &[],
         100,
-        &[],
         "claude-sonnet-4-6",
-        false,
         None,
         Some("--system-prompt=evil"),
     );
@@ -247,177 +277,108 @@ fn test_build_run_cli_args_rejects_flag_injection_in_agent_name() {
 
 #[test]
 fn test_build_run_cli_args_with_agent_name() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
+    let args = call_args(
         "Build me a task tracker.",
-        &[],
         100,
-        &[],
         "claude-opus-4-6",
-        false,
         None,
         Some("build-analyst"),
     );
-    let agent_idx = args
-        .iter()
-        .position(|a| a == "--agent")
-        .expect("--agent flag must be present when agent_name is Some");
-    assert_eq!(
-        args[agent_idx + 1],
-        "build-analyst",
-        "--agent must be followed by the agent name"
-    );
-    let p_idx = args
-        .iter()
-        .position(|a| a == "-p")
-        .expect("-p flag must be present");
-    assert_eq!(
-        args[p_idx + 1],
-        "Build me a task tracker.",
-        "prompt must follow -p"
-    );
+    assert_eq!(value_of(&args, "--agent"), Some("build-analyst"));
+    assert_eq!(prompt_of(&args), Some("Build me a task tracker."));
+    assert_eq!(value_of(&args, "--model"), Some("claude-opus-4-6"));
 }
 
 #[test]
-fn test_build_run_cli_args_agent_with_model_override() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "Begin.",
-        &[],
-        100,
-        &[],
-        "claude-opus-4-6",
-        false,
-        None,
-        Some("build-architect"),
-    );
+fn test_agent_mode_keeps_permission_checks_without_the_bypass() {
+    let args = call_args("Begin.", 100, "", None, Some("build-developer"));
     assert!(args.contains(&"--agent".to_string()));
-    assert!(args.contains(&"--model".to_string()));
-    assert!(args.contains(&"claude-opus-4-6".to_string()));
-}
-
-#[test]
-fn test_build_run_cli_args_agent_with_skip_permissions() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "Begin.",
-        &[],
-        100,
-        &[],
-        "",
-        false,
-        None,
-        Some("build-developer"),
-    );
-    assert!(args.contains(&"--agent".to_string()));
-    assert!(args.contains(&"--dangerously-skip-permissions".to_string()));
+    assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+    assert_eq!(value_of(&args, "--permission-mode"), Some("dontAsk"));
+    let bypass = args_with("Begin.", 100, "", None, Some("build-developer"), None, true);
+    assert!(bypass.contains(&"--dangerously-skip-permissions".to_string()));
 }
 
 #[test]
 fn test_build_run_cli_args_agent_with_max_turns() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "Begin.",
-        &[],
-        25,
-        &[],
-        "",
-        false,
-        None,
-        Some("build-analyst"),
-    );
-    let mt_idx = args
-        .iter()
-        .position(|a| a == "--max-turns")
-        .expect("--max-turns must be present");
-    assert_eq!(args[mt_idx + 1], "25");
+    let args = call_args("Begin.", 25, "", None, Some("build-analyst"));
+    assert_eq!(value_of(&args, "--max-turns"), Some("25"));
 }
 
 #[test]
-fn test_build_run_cli_args_agent_name_empty_string() {
-    let args =
-        ClaudeCodeProvider::build_run_cli_args("Begin.", &[], 100, &[], "", false, None, Some(""));
-    assert!(!args.contains(&"--agent".to_string()));
+fn test_build_run_cli_args_agent_name_rejected_forms() {
+    for name in ["", "../../../etc/passwd", "foo/bar", "foo\\bar"] {
+        let args = call_args("Begin.", 100, "", None, Some(name));
+        assert!(!args.contains(&"--agent".to_string()), "{name:?}");
+    }
 }
 
 #[test]
 fn test_build_run_cli_args_agent_name_with_session_id() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "Begin.",
-        &[],
-        100,
-        &[],
-        "",
-        false,
-        Some("sess-123"),
-        Some("build-qa"),
-    );
+    let args = call_args("Begin.", 100, "", Some("sess-123"), Some("build-qa"));
     assert!(args.contains(&"--agent".to_string()));
     assert!(!args.contains(&"--resume".to_string()));
 }
 
 #[test]
-fn test_build_run_cli_args_agent_name_path_traversal() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "Begin.",
-        &[],
-        100,
-        &[],
-        "",
-        false,
-        None,
-        Some("../../../etc/passwd"),
-    );
-    assert!(!args.contains(&"--agent".to_string()));
-}
-
-#[test]
-fn test_build_run_cli_args_agent_name_with_slash() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "Begin.",
-        &[],
-        100,
-        &[],
-        "",
-        false,
-        None,
-        Some("foo/bar"),
-    );
-    assert!(!args.contains(&"--agent".to_string()));
-}
-
-#[test]
-fn test_build_run_cli_args_agent_name_with_backslash() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "Begin.",
-        &[],
-        100,
-        &[],
-        "",
-        false,
-        None,
-        Some("foo\\bar"),
-    );
-    assert!(!args.contains(&"--agent".to_string()));
-}
-
-#[test]
-fn test_build_run_cli_args_explicit_allowed_tools_no_agent() {
-    let args = ClaudeCodeProvider::build_run_cli_args(
-        "hello",
-        &[],
-        50,
-        &["Bash".to_string(), "Read".to_string()],
-        "claude-sonnet-4-6",
-        false,
-        None,
-        None,
-    );
+fn test_build_run_cli_args_explicit_allowed_tools() {
+    let list = vec!["Bash".to_string(), "Read".to_string()];
+    let args = args_with("hello", 50, "", None, None, Some(&list), true);
     let at_count = args.iter().filter(|a| *a == "--allowedTools").count();
     assert_eq!(at_count, 2);
+    assert_eq!(value_of(&args, "--tools"), Some("Bash,Read"));
     assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
 }
 
 #[test]
-fn test_build_run_cli_args_disabled_tools() {
-    let args =
-        ClaudeCodeProvider::build_run_cli_args("classify this", &[], 5, &[], "", true, None, None);
-    let at_idx = args.iter().position(|a| a == "--allowedTools").unwrap();
-    assert_eq!(args[at_idx + 1], "");
+fn test_a_resume_keeps_the_tool_restriction() {
+    // Auto-resume goes through the same builder: a request that disabled
+    // tools resumes with them disabled, not with the bypass.
+    let args = args_with(
+        "Continue where you left off.",
+        5,
+        "",
+        Some("sess-1"),
+        None,
+        Some(&[]),
+        true,
+    );
+    assert_eq!(value_of(&args, "--resume"), Some("sess-1"));
+    assert_eq!(value_of(&args, "--tools"), Some(""));
+    assert!(!args.contains(&"--dangerously-skip-permissions".to_string()));
+}
+
+#[test]
+fn test_mcp_config_path_is_passed() {
+    let web = crate::WebFetchPolicy::Disabled;
+    let path = Path::new("/tmp/kernex-mcp-1-0.json");
+    let args = ClaudeCodeProvider::build_run_cli_args(&CliCall {
+        prompt: "hi",
+        max_turns: 1,
+        model: "",
+        session_id: None,
+        agent_name: None,
+        access: ToolAccess {
+            allowed: None,
+            bypass: false,
+            web_fetch: &web,
+            mcp_servers: &["fs".to_string()],
+        },
+        mcp_config_path: Some(path),
+    });
+    assert_eq!(
+        value_of(&args, "--mcp-config"),
+        Some("/tmp/kernex-mcp-1-0.json")
+    );
+    assert_eq!(value_of(&args, "--allowedTools"), Some("mcp__fs__*"));
+}
+
+#[test]
+fn test_the_cli_config_dir_is_inside_the_data_dir() {
+    let p = ClaudeCodeProvider::new()
+        .with_sandbox_dirs(crate::SandboxDirs::new().with_data_dir("/srv/agent/state"));
+    assert_eq!(
+        p.cli_config_dir(),
+        PathBuf::from("/srv/agent/state/cli/claude")
+    );
 }

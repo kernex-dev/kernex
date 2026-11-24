@@ -19,7 +19,7 @@ libc = "0.2"
 landlock = "0.4"
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "io-util", "time"] }
 tempfile = { workspace = true }
 
 # Mirrors [workspace.lints] from the root Cargo.toml, except `unsafe_code` is

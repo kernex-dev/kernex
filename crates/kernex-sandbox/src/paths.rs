@@ -2,6 +2,30 @@
 
 use std::path::{Path, PathBuf};
 
+/// Directories inside the runtime data dir that tools may read and may not
+/// change: what the runtime trusts on its next start (skills, projects, the
+/// directory MCP servers start in, the MCP configs handed to an agent CLI,
+/// OpenCode's config). This matters when the data dir sits inside a write
+/// root, the temp dir say.
+pub(crate) const DATA_READ_ONLY: &[&str] = &[
+    "skills",
+    "projects",
+    "mcp",
+    "cli/mcp-config",
+    "cli/opencode/config",
+];
+
+/// An agent CLI's own state inside the data dir (the providers point the
+/// Claude CLI and OpenCode there). Closed to reads and writes from every
+/// subprocess except the CLI whose profile names the directory exactly in
+/// `SandboxProfile::allowed_paths`.
+pub(crate) const AGENT_CLI_STATE: &[&str] = &[
+    "cli/claude",
+    "cli/opencode/data",
+    "cli/opencode/state",
+    "cli/opencode/cache",
+];
+
 /// Credential directories/files under `$HOME` whose READS are denied to
 /// sandboxed subprocesses (the credential read-deny list).
 ///
@@ -40,6 +64,8 @@ pub fn credential_read_deny_dirs(home: &Path) -> Vec<PathBuf> {
         ".claude.json",
         ".codex",
         ".config/opencode",
+        ".local/share/opencode/auth.json",
+        ".local/share/opencode/mcp-auth.json",
         // Shell and REPL history: pasted secrets end up here.
         ".bash_history",
         ".zsh_history",

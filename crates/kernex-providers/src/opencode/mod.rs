@@ -6,10 +6,17 @@
 //! and others), so this gives the same OS-level agent isolation as the
 //! `claude-code` provider without tying it to one model vendor.
 //!
-//! kernex never edits the user's OpenCode config files. Per-call settings
-//! (tool permissions, MCP servers) are injected through the
-//! `OPENCODE_CONFIG_CONTENT` environment variable, which OpenCode merges on
-//! top of its regular config.
+//! OpenCode runs with its own config, data, state and cache directories
+//! inside the runtime data directory ([`OpenCodeProvider::cli_state_dir`]),
+//! never the user's, and reads no project config. Its tools run in the same
+//! sandbox as OpenCode itself, so nothing they write can add a plugin, an
+//! agent or a remote config that the user's own OpenCode would later run
+//! outside the sandbox. Per-call settings (tool permissions, MCP servers)
+//! are injected through the `OPENCODE_CONFIG_CONTENT` environment variable.
+//! A model provider's key reaches OpenCode only through its environment
+//! variable (see [`OpenCodeProvider::with_env_passthrough`] for providers
+//! kernex does not know): logins made with `opencode auth login` are not
+//! used.
 
 mod command;
 mod config;
@@ -26,31 +33,41 @@ use tokio::process::Command;
 /// Default timeout for the OpenCode CLI subprocess (60 minutes).
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3600);
 
-/// Environment variables passed through to the OpenCode subprocess.
-///
-/// The sandbox clears the environment, but OpenCode is the provider itself
-/// and needs the credentials of whichever model provider it is configured
-/// for. Keys stored with `opencode auth login` live in OpenCode's data dir
-/// and need no passthrough. The XDG variables keep OpenCode pointed at the
-/// same config and data dirs the user runs it with.
-const ENV_PASSTHROUGH: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "GOOGLE_GENERATIVE_AI_API_KEY",
-    "GEMINI_API_KEY",
-    "OPENROUTER_API_KEY",
-    "GROQ_API_KEY",
-    "DEEPSEEK_API_KEY",
-    "MISTRAL_API_KEY",
-    "XAI_API_KEY",
-    "FIREWORKS_API_KEY",
-    "OPENCODE_API_KEY",
-    "OPENCODE_CONFIG",
-    "XDG_CONFIG_HOME",
-    "XDG_DATA_HOME",
-    "XDG_CACHE_HOME",
-    "XDG_STATE_HOME",
+/// The XDG variables OpenCode locates its files with, and the directory
+/// under [`OpenCodeProvider::cli_state_dir`] each one points to.
+const XDG_DIRS: &[(&str, &str)] = &[
+    ("XDG_CONFIG_HOME", "config"),
+    ("XDG_DATA_HOME", "data"),
+    ("XDG_STATE_HOME", "state"),
+    ("XDG_CACHE_HOME", "cache"),
 ];
+
+/// The API key variables of the model provider named by the `provider/`
+/// prefix of an OpenCode model.
+///
+/// The sandbox clears the environment, and OpenCode gets back only the key
+/// of the upstream it is configured to call, so a tool call it runs cannot
+/// read the others. A provider not listed here
+/// gets no key; name its variable with
+/// [`OpenCodeProvider::with_env_passthrough`].
+fn provider_key_env(model: &str) -> &'static [&'static str] {
+    let Some((provider, _)) = model.split_once('/') else {
+        return &[];
+    };
+    match provider {
+        "anthropic" => &["ANTHROPIC_API_KEY"],
+        "openai" => &["OPENAI_API_KEY"],
+        "google" => &["GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"],
+        "openrouter" => &["OPENROUTER_API_KEY"],
+        "groq" => &["GROQ_API_KEY"],
+        "deepseek" => &["DEEPSEEK_API_KEY"],
+        "mistral" => &["MISTRAL_API_KEY"],
+        "xai" => &["XAI_API_KEY"],
+        "fireworks-ai" | "fireworks" => &["FIREWORKS_API_KEY"],
+        "opencode" => &["OPENCODE_API_KEY"],
+        _ => &[],
+    }
+}
 
 /// OpenCode CLI provider configuration.
 pub struct OpenCodeProvider {
@@ -65,6 +82,18 @@ pub struct OpenCodeProvider {
     /// System sandbox restrictions.
     sandbox_profile: kernex_sandbox::SandboxProfile,
     sandbox_dirs: crate::SandboxDirs,
+    /// Allow every OpenCode permission when no tool list applies.
+    permission_bypass: bool,
+    /// Which hosts OpenCode's `webfetch` may reach.
+    web_fetch: crate::WebFetchPolicy,
+    /// The program started (`opencode`, found on `PATH`).
+    program: String,
+    /// Reads a variable of the host environment (replaced in tests).
+    env_source: fn(&str) -> Option<String>,
+}
+
+fn host_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
 }
 
 impl OpenCodeProvider {
@@ -77,6 +106,10 @@ impl OpenCodeProvider {
             extra_env: vec![],
             sandbox_profile: Default::default(),
             sandbox_dirs: Default::default(),
+            permission_bypass: false,
+            web_fetch: Default::default(),
+            program: "opencode".to_string(),
+            env_source: host_env,
         }
     }
 
@@ -92,6 +125,10 @@ impl OpenCodeProvider {
             extra_env: vec![],
             sandbox_profile: Default::default(),
             sandbox_dirs: Default::default(),
+            permission_bypass: false,
+            web_fetch: Default::default(),
+            program: "opencode".to_string(),
+            env_source: host_env,
         }
     }
 
@@ -108,10 +145,56 @@ impl OpenCodeProvider {
     }
 
     /// Pass additional environment variables (by name) through to OpenCode,
-    /// for model providers not covered by the built-in list.
+    /// for model providers not covered by the built-in list. They are passed
+    /// whatever model is configured.
     pub fn with_env_passthrough(mut self, names: Vec<String>) -> Self {
         self.extra_env = names;
         self
+    }
+
+    /// Allow every OpenCode permission for requests that name no tools.
+    ///
+    /// Off by default: such a request may then use only the read-only tools
+    /// (`read`, `glob`, `grep`, `list`, `lsp`, `todowrite`). A request with
+    /// a tool list never gets the bypass. The OS sandbox applies either way.
+    pub fn with_permission_bypass(mut self, bypass: bool) -> Self {
+        self.permission_bypass = bypass;
+        self
+    }
+
+    /// Set the `web_fetch` policy. OpenCode has no per-host fetch rule, so
+    /// its `webfetch` and `websearch` tools run only under
+    /// [`WebFetchPolicy::AllowAll`](crate::WebFetchPolicy::AllowAll). The
+    /// default is disabled.
+    pub fn with_web_fetch_policy(mut self, policy: crate::WebFetchPolicy) -> Self {
+        self.web_fetch = policy;
+        self
+    }
+
+    /// Start `program` instead of `opencode` (tests use a stand-in CLI).
+    #[cfg(test)]
+    pub(crate) fn with_program(mut self, program: impl Into<String>) -> Self {
+        self.program = program.into();
+        self
+    }
+
+    /// Read host variables from `source` instead of the process environment.
+    #[cfg(test)]
+    pub(crate) fn with_env_source(mut self, source: fn(&str) -> Option<String>) -> Self {
+        self.env_source = source;
+        self
+    }
+
+    /// The directory OpenCode keeps its config, data, state and cache in
+    /// when kernex runs it: `cli/opencode` inside the runtime data directory.
+    /// The `config` directory inside it is read-only to OpenCode, and its
+    /// login files are closed, so OpenCode reaches a model provider only
+    /// through the provider's API key variable.
+    pub fn cli_state_dir(&self) -> PathBuf {
+        self.sandbox_dirs
+            .resolved_data_dir()
+            .join("cli")
+            .join("opencode")
     }
 
     /// Check if the `opencode` CLI is installed and accessible.

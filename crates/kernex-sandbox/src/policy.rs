@@ -153,8 +153,7 @@ impl Policy {
             push_unique(&mut write_deny, resolve(path));
             push_unique(&mut read_deny, resolve(path));
         }
-        // Tools may read skills and projects and may not change them.
-        for dir in ["skills", "projects"] {
+        for dir in crate::paths::DATA_READ_ONLY {
             push_unique(&mut write_deny, resolve(&scope.data_dir.join(dir)));
         }
         let allowed: Vec<PathBuf> = profile
@@ -172,6 +171,13 @@ impl Policy {
             if !allowed.contains(&cred) {
                 push_unique(&mut write_deny, cred.clone());
                 push_unique(&mut read_deny, cred);
+            }
+        }
+        for dir in crate::paths::AGENT_CLI_STATE {
+            let dir = resolve(&scope.data_dir.join(dir));
+            if !allowed.contains(&dir) {
+                push_unique(&mut write_deny, dir.clone());
+                push_unique(&mut read_deny, dir);
             }
         }
         for dir in crate::paths::toolchain_exec_paths(&home) {
@@ -556,6 +562,42 @@ mod tests {
                 "{path}"
             );
         }
+    }
+
+    #[test]
+    fn test_agent_cli_state_is_open_only_to_its_cli() {
+        // The data dir inside a write root, so only the deny entries hold.
+        let host = HostDirs {
+            temp_dirs: vec![p("tmp")],
+            ..host()
+        };
+        let scope = SandboxScope::new(p("code/proj"), p("tmp/state"));
+        let others = Policy::with_host(&scope, &SandboxProfile::default(), &host);
+        for dir in ["cli/claude", "cli/opencode/data", "cli/opencode/state"] {
+            let file = p(&format!("tmp/state/{dir}/f"));
+            assert_eq!(others.check_write(&file), Err(Denial::Protected), "{dir}");
+            assert_eq!(others.check_read(&file), Err(Denial::Protected), "{dir}");
+        }
+        for dir in ["cli/mcp-config", "cli/opencode/config", "mcp"] {
+            let file = p(&format!("tmp/state/{dir}/f"));
+            assert_eq!(others.check_write(&file), Err(Denial::Protected), "{dir}");
+            assert_eq!(others.check_read(&file), Ok(()), "{dir}");
+        }
+
+        let claude = SandboxProfile::new().with_allowed_paths(vec![p("tmp/state/cli/claude")]);
+        let claude = Policy::with_host(&scope, &claude, &host);
+        assert_eq!(claude.check_write(&p("tmp/state/cli/claude/f")), Ok(()));
+        assert_eq!(
+            claude.check_write(&p("tmp/state/cli/opencode/data/f")),
+            Err(Denial::Protected)
+        );
+        // Naming a directory above the state lifts nothing.
+        let above = SandboxProfile::new().with_allowed_paths(vec![p("tmp/state/cli")]);
+        let above = Policy::with_host(&scope, &above, &host);
+        assert_eq!(
+            above.check_write(&p("tmp/state/cli/claude/f")),
+            Err(Denial::Protected)
+        );
     }
 
     #[test]

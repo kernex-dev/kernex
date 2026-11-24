@@ -22,6 +22,7 @@ chrono = { workspace = true }
 secrecy = { version = "0.8", features = ["serde"] }
 schemars = { workspace = true }
 futures-util = "0.3"
+tempfile = { workspace = true }
 sha2 = { version = "0.10", optional = true }
 hmac = { version = "0.12", optional = true }
 
@@ -30,7 +31,6 @@ bedrock = ["dep:sha2", "dep:hmac"]
 
 [dev-dependencies]
 http = { workspace = true }
-tempfile = { workspace = true }
 
 [lints]
 workspace = true

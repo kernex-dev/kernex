@@ -1,10 +1,14 @@
 //! Claude Code CLI provider.
 //!
-//! Uses the locally installed `claude` CLI as a subprocess.
-//! Zero API keys needed — relies on the user's existing `claude` authentication.
+//! Uses the locally installed `claude` CLI as a subprocess, inside the OS
+//! sandbox and with its own config directory
+//! ([`ClaudeCodeProvider::cli_config_dir`]). It authenticates with an OAuth
+//! token passed to [`ClaudeCodeProvider::from_config`], `ANTHROPIC_API_KEY`,
+//! or a login made with that config directory.
 
 mod command;
 mod mcp;
+mod permissions;
 mod provider;
 mod response;
 
@@ -25,8 +29,9 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3600);
 pub struct ClaudeCodeProvider {
     /// Maximum agentic turns per invocation.
     max_turns: u32,
-    /// Tools the CLI is allowed to use.
-    allowed_tools: Vec<String>,
+    /// Tools the CLI is offered when the request names none. `None` offers
+    /// every tool; see [`ClaudeCodeProvider::with_permission_bypass`].
+    allowed_tools: Option<Vec<String>>,
     /// Subprocess timeout.
     timeout: Duration,
     /// Working directory for the CLI subprocess.
@@ -40,6 +45,12 @@ pub struct ClaudeCodeProvider {
     /// System sandbox restrictions.
     sandbox_profile: kernex_sandbox::SandboxProfile,
     sandbox_dirs: crate::SandboxDirs,
+    /// Run the CLI with its permission checks off when no tool list applies.
+    permission_bypass: bool,
+    /// Which hosts the CLI's `WebFetch` may reach.
+    web_fetch: crate::WebFetchPolicy,
+    /// The program started (`claude`, found on `PATH`).
+    program: String,
 }
 
 /// JSON response from `claude -p --output-format json`.
@@ -69,7 +80,7 @@ impl ClaudeCodeProvider {
     pub fn new() -> Self {
         Self {
             max_turns: 25,
-            allowed_tools: vec![],
+            allowed_tools: None,
             timeout: DEFAULT_TIMEOUT,
             working_dir: None,
             max_resume_attempts: 5,
@@ -77,10 +88,18 @@ impl ClaudeCodeProvider {
             oauth_token: None,
             sandbox_profile: Default::default(),
             sandbox_dirs: Default::default(),
+            permission_bypass: false,
+            web_fetch: Default::default(),
+            program: "claude".to_string(),
         }
     }
 
     /// Create a provider from config values.
+    ///
+    /// `allowed_tools` is used when a request names no tools itself. An
+    /// empty list sets no default: such a request is offered every tool,
+    /// under the CLI's permission checks unless
+    /// [`with_permission_bypass`](Self::with_permission_bypass) is set.
     pub fn from_config(
         max_turns: u32,
         allowed_tools: Vec<String>,
@@ -92,7 +111,7 @@ impl ClaudeCodeProvider {
     ) -> Self {
         Self {
             max_turns,
-            allowed_tools,
+            allowed_tools: (!allowed_tools.is_empty()).then_some(allowed_tools),
             timeout: Duration::from_secs(timeout_secs),
             working_dir,
             max_resume_attempts,
@@ -100,6 +119,9 @@ impl ClaudeCodeProvider {
             oauth_token,
             sandbox_profile: Default::default(),
             sandbox_dirs: Default::default(),
+            permission_bypass: false,
+            web_fetch: Default::default(),
+            program: "claude".to_string(),
         }
     }
 
@@ -112,6 +134,37 @@ impl ClaudeCodeProvider {
     /// Set the runtime directories the sandbox protects from tool calls.
     pub fn with_sandbox_dirs(mut self, dirs: crate::SandboxDirs) -> Self {
         self.sandbox_dirs = dirs;
+        self
+    }
+
+    /// Run the CLI with its permission checks off
+    /// (`--dangerously-skip-permissions`) for requests that name no tools.
+    ///
+    /// Off by default: such a request then runs in the CLI's `dontAsk`
+    /// mode, where only its read-only tools, the declared MCP servers' tools
+    /// and the fetches the `web_fetch` policy allows run. A request with a
+    /// tool list never runs with the bypass. The OS sandbox applies either
+    /// way.
+    pub fn with_permission_bypass(mut self, bypass: bool) -> Self {
+        self.permission_bypass = bypass;
+        self
+    }
+
+    /// Set the `web_fetch` policy. The CLI's `WebFetch` and `WebSearch`
+    /// run only under [`WebFetchPolicy::AllowAll`](crate::WebFetchPolicy::AllowAll):
+    /// the CLI approves a built-in list of documentation hosts by itself, so
+    /// a host list cannot be enforced and turns them off. The default is
+    /// disabled. The CLI keeps the network it needs to reach the model, so
+    /// this governs the fetch tools, not what a shell command can reach.
+    pub fn with_web_fetch_policy(mut self, policy: crate::WebFetchPolicy) -> Self {
+        self.web_fetch = policy;
+        self
+    }
+
+    /// Start `program` instead of `claude` (tests use a stand-in CLI).
+    #[cfg(test)]
+    pub(crate) fn with_program(mut self, program: impl Into<String>) -> Self {
+        self.program = program.into();
         self
     }
 

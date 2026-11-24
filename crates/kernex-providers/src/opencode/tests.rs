@@ -3,6 +3,7 @@
 use super::config::{build_config, permissions};
 use super::events::parse_events;
 use super::*;
+use crate::WebFetchPolicy;
 use kernex_core::context::McpServer;
 use kernex_core::traits::Provider;
 use serde_json::Value;
@@ -95,38 +96,129 @@ fn test_args_reject_agent_path_traversal() {
 
 // --- permissions ---
 
+fn list(entries: &[&str]) -> Vec<String> {
+    entries.iter().map(|s| s.to_string()).collect()
+}
+
+const ALL: WebFetchPolicy = WebFetchPolicy::AllowAll;
+const OFF: WebFetchPolicy = WebFetchPolicy::Disabled;
+
 #[test]
-fn test_permissions_full_access_allows_all_but_prompts() {
-    let p = permissions(&[], false);
+fn test_permissions_bypass_allows_all_but_prompts() {
+    let p = permissions(None, true, &ALL, &[]);
     assert_eq!(p["bash"], "allow");
     assert_eq!(p["edit"], "allow");
     assert_eq!(p["external_directory"], "allow");
+    assert_eq!(p["webfetch"], "allow");
     assert_eq!(p["question"], "deny");
     assert_eq!(p["doom_loop"], "deny");
 }
 
 #[test]
-fn test_permissions_disabled_denies_all() {
-    let p = permissions(&["Bash".into()], true);
+fn test_permissions_without_bypass_are_read_only() {
+    let p = permissions(None, false, &ALL, &[]);
+    for key in ["read", "glob", "grep", "list", "lsp", "todowrite"] {
+        assert_eq!(p[key], "allow", "{key}");
+    }
+    for key in [
+        "bash",
+        "edit",
+        "task",
+        "external_directory",
+        "skill",
+        "webfetch",
+    ] {
+        assert_eq!(p[key], "deny", "{key}");
+    }
+}
+
+#[test]
+fn test_everything_unnamed_is_denied_first() {
+    for p in [
+        permissions(None, false, &ALL, &[]),
+        permissions(Some(&[]), false, &ALL, &[]),
+        permissions(Some(&list(&["Read"])), true, &ALL, &[]),
+    ] {
+        assert_eq!(p["*"], "deny");
+        assert_eq!(p.keys().next().map(String::as_str), Some("*"));
+    }
+    assert_eq!(permissions(None, true, &ALL, &[])["*"], "allow");
+}
+
+#[test]
+fn test_codesearch_follows_the_fetch_policy() {
+    assert_eq!(permissions(None, true, &OFF, &[])["codesearch"], "deny");
+    assert_eq!(permissions(None, true, &ALL, &[])["codesearch"], "allow");
+    let l = list(&["codesearch"]);
+    assert_eq!(
+        permissions(Some(&l), false, &ALL, &[])["codesearch"],
+        "allow"
+    );
+}
+
+#[test]
+fn test_passed_mcp_servers_are_allowed_by_name() {
+    let fs = McpServer {
+        name: "fs".into(),
+        command: "npx".into(),
+        network: true,
+        allowed_commands: vec!["npx".into()],
+        ..Default::default()
+    };
+    let servers = [fs];
+    let p = permissions(None, false, &OFF, &servers);
+    assert_eq!(p["fs_*"], "allow");
+    let l = list(&["mcp__fs__read_file", "Read"]);
+    let p = permissions(Some(&l), false, &OFF, &servers);
+    assert_eq!(p["fs_read_file"], "allow");
+    assert!(p.get("fs_*").is_none());
+    let l = list(&["mcp__fs"]);
+    let p = permissions(Some(&l), false, &OFF, &servers);
+    assert_eq!(p["fs_*"], "allow");
+}
+
+#[test]
+fn test_permissions_empty_list_denies_all() {
+    let p = permissions(Some(&[]), true, &ALL, &[]);
     assert!(p.values().all(|v| v == "deny"));
 }
 
 #[test]
-fn test_permissions_whitelist_maps_claude_names() {
-    let p = permissions(&["Read".into(), "Write".into(), "grep".into()], false);
+fn test_permissions_list_maps_claude_names_and_ignores_the_bypass() {
+    let l = list(&["Read", "Write", "grep", "Bash(git *)", "mcp__fs__read"]);
+    let p = permissions(Some(&l), true, &ALL, &[]);
     assert_eq!(p["read"], "allow");
     assert_eq!(p["edit"], "allow");
     assert_eq!(p["grep"], "allow");
-    assert_eq!(p["bash"], "deny");
+    assert_eq!(p["bash"], "allow");
     assert_eq!(p["webfetch"], "deny");
+    assert_eq!(p["task"], "deny");
+}
+
+#[test]
+fn test_fetch_needs_allow_all() {
+    let l = list(&["WebFetch", "websearch"]);
+    for policy in [OFF, WebFetchPolicy::AllowHosts(list(&["docs.rs"]))] {
+        for p in [
+            permissions(Some(&l), false, &policy, &[]),
+            permissions(None, true, &policy, &[]),
+        ] {
+            assert_eq!(p["webfetch"], "deny");
+            assert_eq!(p["websearch"], "deny");
+        }
+    }
+    let p = permissions(Some(&l), false, &ALL, &[]);
+    assert_eq!(p["webfetch"], "allow");
+    assert_eq!(p["websearch"], "allow");
 }
 
 #[test]
 fn test_permissions_never_ask() {
     for p in [
-        permissions(&[], false),
-        permissions(&[], true),
-        permissions(&["Bash".into()], false),
+        permissions(None, false, &OFF, &[]),
+        permissions(None, true, &ALL, &[]),
+        permissions(Some(&[]), false, &ALL, &[]),
+        permissions(Some(&list(&["Bash"])), false, &OFF, &[]),
     ] {
         assert!(p.values().all(|v| v == "allow" || v == "deny"));
     }
@@ -142,17 +234,9 @@ fn test_config_includes_mcp_servers() {
         args: vec!["-y".into(), "server-fs".into()],
         env,
         allowed_commands: vec!["npx".into()],
-        ..Default::default()
+        network: true,
     }];
-    // A server whose command no allow-list names is not handed to the CLI.
-    let undeclared = vec![McpServer {
-        name: "loose".into(),
-        command: "npx".into(),
-        ..Default::default()
-    }];
-    let cfg: Value = serde_json::from_str(&build_config(&[], false, &undeclared)).unwrap();
-    assert!(cfg["mcp"]["loose"].is_null());
-    let cfg: Value = serde_json::from_str(&build_config(&[], false, &servers)).unwrap();
+    let cfg: Value = serde_json::from_str(&build_config(None, false, &OFF, &servers)).unwrap();
     let fs = &cfg["mcp"]["fs"];
     assert_eq!(fs["type"], "local");
     assert_eq!(fs["command"], serde_json::json!(["npx", "-y", "server-fs"]));
@@ -162,9 +246,27 @@ fn test_config_includes_mcp_servers() {
 
 #[test]
 fn test_config_omits_empty_mcp() {
-    let cfg: Value = serde_json::from_str(&build_config(&[], false, &[])).unwrap();
+    let cfg: Value = serde_json::from_str(&build_config(None, false, &OFF, &[])).unwrap();
     assert!(cfg.get("mcp").is_none());
     assert!(cfg.get("permission").is_some());
+}
+
+// --- environment ---
+
+#[test]
+fn test_only_the_configured_provider_key_is_named() {
+    assert_eq!(
+        provider_key_env("anthropic/claude-sonnet-4-6"),
+        ["ANTHROPIC_API_KEY"]
+    );
+    assert_eq!(provider_key_env("openai/gpt-5"), ["OPENAI_API_KEY"]);
+    assert_eq!(
+        provider_key_env("google/gemini-3-pro"),
+        ["GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"]
+    );
+    assert!(provider_key_env("ollama/qwen3-coder:30b").is_empty());
+    assert!(provider_key_env("").is_empty());
+    assert!(provider_key_env("anthropic").is_empty());
 }
 
 // --- event parsing ---
@@ -217,12 +319,4 @@ fn test_parse_error_event() {
 #[test]
 fn test_parse_empty() {
     assert_eq!(parse_events(""), events::RunOutput::default());
-}
-
-#[tokio::test]
-async fn test_required_enforcement_without_workdir_errors() {
-    let profile = kernex_sandbox::SandboxProfile::new().with_require_os_enforcement(true);
-    let p = OpenCodeProvider::new().with_sandbox_profile(profile);
-    let err = p.run_cli(&["--version".into()], "{}").await.unwrap_err();
-    assert!(err.to_string().contains("unsandboxed"));
 }

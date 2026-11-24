@@ -1,8 +1,9 @@
 //! CLI command building and subprocess execution.
 
-use super::{OpenCodeProvider, ENV_PASSTHROUGH};
+use super::{provider_key_env, OpenCodeProvider, XDG_DIRS};
 use crate::error::ProviderError;
 use kernex_core::error::KernexError;
+use std::path::Path;
 use tokio::process::Command;
 use tracing::debug;
 
@@ -58,18 +59,21 @@ impl OpenCodeProvider {
         args
     }
 
-    /// Run `opencode run` with the per-call config and a timeout.
+    /// Run `opencode run` in `workspace` with the per-call config and a
+    /// timeout. `model` selects which provider key is passed through.
     pub(super) async fn run_cli(
         &self,
         args: &[String],
         config_json: &str,
+        workspace: &Path,
+        model: &str,
     ) -> Result<std::process::Output, KernexError> {
-        let mut cmd = self.base_command()?;
+        let (mut cmd, _cache) = self.base_command(workspace, model)?;
         cmd.env("OPENCODE_CONFIG_CONTENT", config_json);
         cmd.args(args);
         debug!("executing: opencode run --format json <prompt>");
 
-        let output = tokio::time::timeout(self.timeout, cmd.output())
+        let output = crate::cli_support::run_with_timeout(cmd, self.timeout)
             .await
             .map_err(|_| {
                 ProviderError::Logic(format!(
@@ -90,55 +94,85 @@ impl OpenCodeProvider {
         Ok(output)
     }
 
-    /// Build the base `Command` with working directory and system protection.
+    /// Build the base `Command`: OpenCode sandboxed in `workspace`, with its
+    /// own directories, network access and the key of the model provider
+    /// `model` names. The returned directory is this call's cache; it is
+    /// removed when dropped, after the call.
     ///
-    /// Same posture as the `claude-code` provider: sandboxed when a working
-    /// directory is configured, and an error when OS-level enforcement is
-    /// required but would not apply.
-    fn base_command(&self) -> Result<Command, KernexError> {
-        let mut cmd = match self.working_dir {
-            Some(ref dir) => {
-                // The working directory is the only writable part of the
-                // scope; the runtime data dir stays out of the CLI's reach.
-                let scope = self.sandbox_dirs.scope(dir);
-                // OpenCode IS the provider: it must reach the model API, so
-                // it is exempt from the subprocess egress deny-by-default.
-                let mut profile = self.sandbox_profile.clone();
-                profile.allow_network = true;
-                crate::sandbox_dirs::grant_cli_state(&mut profile, &[".config/opencode"]);
-                let mut c = kernex_sandbox::try_protected_command("opencode", &scope, &profile)
-                    .map_err(|e| {
-                        ProviderError::Logic(format!("refusing to run opencode CLI: {e}"))
-                    })?;
-                c.current_dir(dir);
-                c
-            }
-            None => {
-                if kernex_sandbox::enforcement_required(&self.sandbox_profile) {
-                    return Err(ProviderError::Logic(
-                        "refusing to run opencode CLI: OS-level sandbox enforcement is \
-                         required but no working directory is configured, so the \
-                         subprocess would run unsandboxed"
-                            .to_string(),
-                    )
-                    .into());
-                }
-                let mut c = Command::new("opencode");
-                kernex_sandbox::hardened_env(&mut c);
-                c
-            }
+    /// Errors when OS-level sandbox enforcement is required (profile flag or
+    /// `KERNEX_REQUIRE_SANDBOX=1`) and the host cannot provide it.
+    fn base_command(
+        &self,
+        workspace: &Path,
+        model: &str,
+    ) -> Result<(Command, tempfile::TempDir), KernexError> {
+        let state = self.cli_state_dir();
+        let refuse = |e: std::io::Error| {
+            ProviderError::Logic(format!(
+                "refusing to run opencode CLI: cannot prepare {}: {e}",
+                state.display()
+            ))
         };
+        for (_, sub) in XDG_DIRS {
+            crate::cli_support::create_private_dir(&state.join(sub)).map_err(refuse)?;
+        }
+        // OpenCode's tools run in OpenCode's own sandbox and can write what it
+        // writes. So that nothing one call leaves there steers the next:
+        // - its config directory is read-only (no agent, plugin or command
+        //   can be added);
+        // - its login files are removed before every call (logins come from
+        //   API key variables only, and a planted entry could make OpenCode
+        //   fetch and merge a remote config);
+        // - its cache, where it installs plugin packages and skills, is new
+        //   for every call.
+        for file in ["auth.json", "mcp-auth.json"] {
+            let path = state.join("data").join("opencode").join(file);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(refuse(e).into()),
+            }
+        }
+        let cache = tempfile::Builder::new()
+            .prefix("run-")
+            .tempdir_in(state.join("cache"))
+            .map_err(refuse)?;
+        let scope = self.sandbox_dirs.scope(workspace);
+        // OpenCode IS the provider: it must reach the model API, so it is
+        // exempt from the subprocess egress deny-by-default.
+        let mut profile = self.sandbox_profile.clone();
+        profile.allow_network = true;
+        for sub in ["data", "state", "cache"] {
+            profile.allowed_paths.push(state.join(sub));
+        }
+        let mut cmd = kernex_sandbox::try_protected_command(&self.program, &scope, &profile)
+            .map_err(|e| ProviderError::Logic(format!("refusing to run opencode CLI: {e}")))?;
+        cmd.current_dir(workspace);
+        for (var, sub) in XDG_DIRS {
+            cmd.env(var, state.join(sub));
+        }
+        cmd.env("XDG_CACHE_HOME", cache.path());
+        // Neither `opencode.json` nor `.opencode/` from the workspace, which
+        // the model can write.
+        cmd.env("OPENCODE_DISABLE_PROJECT_CONFIG", "1");
 
-        // The hardened env cleared everything; pass the model provider
-        // credentials and OpenCode's own location variables back in.
-        let extra = self.extra_env.iter().map(String::as_str);
-        for name in ENV_PASSTHROUGH.iter().copied().chain(extra) {
-            if let Ok(value) = std::env::var(name) {
+        let keys = provider_key_env(model);
+        if keys.is_empty() && self.extra_env.is_empty() {
+            debug!("opencode: no provider key passed for model {model:?}");
+        }
+        // The hardened env cleared everything; pass back the configured
+        // provider's key and the host's extras.
+        let names = keys
+            .iter()
+            .copied()
+            .chain(self.extra_env.iter().map(String::as_str));
+        for name in names {
+            if let Some(value) = (self.env_source)(name) {
                 if !value.is_empty() {
                     cmd.env(name, value);
                 }
             }
         }
-        Ok(cmd)
+        Ok((cmd, cache))
     }
 }

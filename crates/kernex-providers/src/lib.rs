@@ -11,6 +11,11 @@ pub mod anthropic;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 pub mod claude_code;
+#[cfg(test)]
+mod cli_e2e_tests;
+#[cfg(test)]
+mod cli_probe_tests;
+pub(crate) mod cli_support;
 pub mod error;
 pub mod factory;
 pub mod gemini;

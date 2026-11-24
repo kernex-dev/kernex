@@ -1,6 +1,10 @@
 //! Provider trait implementation with auto-resume logic.
 
+use super::command::CliCall;
+use super::permissions::ToolAccess;
 use super::{mcp, ClaudeCliResponse, ClaudeCodeProvider};
+use crate::cli_support::{self, CliWorkspace};
+use crate::error::ProviderError;
 use async_trait::async_trait;
 use kernex_core::{
     error::KernexError,
@@ -28,12 +32,33 @@ impl Provider for ClaudeCodeProvider {
         let prompt = context.to_prompt_string();
         let start = Instant::now();
 
-        // Write the declared MCP servers to a throwaway temp file passed via
-        // `--mcp-config`. Never touches the user's `.claude/settings.local.json`.
-        let mcp_config_path = if context.mcp_servers.is_empty() {
+        // Without a configured working directory the call gets an empty
+        // temporary one, so the CLI always runs inside the sandbox. It lives
+        // until the last auto-resume returns.
+        let workspace = CliWorkspace::for_call(self.working_dir.as_deref()).map_err(|e| {
+            ProviderError::Logic(format!("cannot create a workspace for claude CLI: {e}"))
+        })?;
+
+        // The request's tool list wins; then the provider's; `None` offers
+        // every tool.
+        let allowed: Option<Vec<String>> = context
+            .allowed_tools
+            .clone()
+            .or_else(|| self.allowed_tools.clone());
+        let servers = cli_support::servers_for_cli(
+            &context.mcp_servers,
+            allowed.as_deref(),
+            workspace.path(),
+            "claude-code",
+        );
+        let server_names: Vec<String> = servers.iter().map(|s| s.name.clone()).collect();
+
+        // Write the servers the CLI may start to a throwaway temp file passed
+        // via `--mcp-config`. Never touches the user's config.
+        let mcp_config_path = if servers.is_empty() {
             None
         } else {
-            match mcp::write_mcp_config_tempfile(&context.mcp_servers).await {
+            match mcp::write_mcp_config_tempfile(&self.mcp_config_dir(), &servers).await {
                 Ok(path) => Some(path),
                 Err(e) => {
                     warn!("failed to write MCP config: {e}");
@@ -42,31 +67,25 @@ impl Provider for ClaudeCodeProvider {
             }
         };
 
-        let extra_tools = mcp::mcp_tool_patterns(&context.mcp_servers);
-
-        // Resolve effective max_turns, allowed_tools, and model from context overrides.
         let effective_max_turns = context.max_turns.unwrap_or(self.max_turns);
-        let tools_disabled = matches!(&context.allowed_tools, Some(t) if t.is_empty());
-        let effective_tools: Vec<String> = context
-            .allowed_tools
-            .clone()
-            .unwrap_or_else(|| self.allowed_tools.clone());
         let effective_model = context.model.as_deref().unwrap_or(&self.model);
+        let call = CliCall {
+            prompt: &prompt,
+            max_turns: effective_max_turns,
+            model: effective_model,
+            session_id: context.session_id.as_deref(),
+            agent_name: context.agent_name.as_deref(),
+            access: ToolAccess {
+                allowed: allowed.as_deref(),
+                bypass: self.permission_bypass,
+                web_fetch: &self.web_fetch,
+                mcp_servers: &server_names,
+            },
+            mcp_config_path: mcp_config_path.as_deref(),
+        };
 
         // First call with original prompt.
-        let result = self
-            .run_cli(
-                &prompt,
-                &extra_tools,
-                effective_max_turns,
-                &effective_tools,
-                effective_model,
-                tools_disabled,
-                context.session_id.as_deref(),
-                context.agent_name.as_deref(),
-                mcp_config_path.as_deref(),
-            )
-            .await;
+        let result = self.run_cli(&call, workspace.path()).await;
 
         // The temp MCP config must outlive auto-resume (resumes reuse it), so
         // clean it up at the end. On an error here, clean up before returning.
@@ -95,16 +114,7 @@ impl Provider for ClaudeCodeProvider {
             if resp.subtype.as_deref() == Some("error_max_turns") {
                 if let Some(ref session_id) = resp.session_id {
                     text = self
-                        .auto_resume(
-                            text,
-                            session_id,
-                            &extra_tools,
-                            effective_max_turns,
-                            &effective_tools,
-                            effective_model,
-                            mcp_config_path.as_deref(),
-                            &mut model,
-                        )
+                        .auto_resume(text, session_id, &call, workspace.path(), &mut model)
                         .await;
                 }
             }
@@ -142,16 +152,14 @@ impl ClaudeCodeProvider {
     /// Auto-resume when Claude hit max_turns and returned a session_id.
     ///
     /// Retries up to `max_resume_attempts` times, accumulating results.
-    #[allow(clippy::too_many_arguments)]
+    /// Each resume runs with the permissions, model and MCP config of
+    /// `first`, in the same workspace.
     async fn auto_resume(
         &self,
         initial_text: String,
         session_id: &str,
-        extra_tools: &[String],
-        effective_max_turns: u32,
-        effective_tools: &[String],
-        effective_model: &str,
-        mcp_config_path: Option<&Path>,
+        first: &CliCall<'_>,
+        workspace: &Path,
         model: &mut Option<String>,
     ) -> String {
         let mut accumulated = initial_text;
@@ -169,23 +177,20 @@ impl ClaudeCodeProvider {
             );
             tokio::time::sleep(delay).await;
 
-            let resume_result = self
-                .run_cli_with_session(
-                    "Continue where you left off. Complete the remaining work.",
-                    extra_tools,
-                    &resume_session,
-                    effective_max_turns,
-                    effective_tools,
-                    effective_model,
-                    mcp_config_path,
-                )
-                .await;
+            let call = CliCall {
+                prompt: "Continue where you left off. Complete the remaining work.",
+                session_id: Some(&resume_session),
+                agent_name: None,
+                access: first.access,
+                ..*first
+            };
+            let resume_result = self.run_cli(&call, workspace).await;
 
             match resume_result {
                 Ok(resume_output) => {
                     let resume_stdout = String::from_utf8_lossy(&resume_output.stdout);
                     let (resume_text, resume_model) =
-                        self.parse_response(&resume_stdout, effective_max_turns);
+                        self.parse_response(&resume_stdout, first.max_turns);
                     accumulated = format!("{accumulated}\n\n---\n\n{resume_text}");
 
                     if resume_model.is_some() {

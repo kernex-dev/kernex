@@ -1,6 +1,6 @@
 //! MCP server config for the Claude Code CLI.
 //!
-//! Writes the declared MCP servers to a throwaway temp file and passes it to
+//! Writes the declared MCP servers to a throwaway file and passes it to
 //! the CLI via `--mcp-config <file>`. This is Claude Code's own mechanism for
 //! loading MCP servers from an arbitrary JSON file, so kernex never writes to
 //! (or deletes) the user's `.claude/settings.local.json` — which Claude Code
@@ -12,22 +12,21 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, warn};
 
-/// Serialize the declared MCP servers to a throwaway temp file (the
+/// Serialize the declared MCP servers to a throwaway file in `dir` (the
 /// `{"mcpServers": {...}}` shape Claude Code's `--mcp-config` expects) and
-/// return its path. The caller passes it via `--mcp-config` and removes it
+/// return its path.
+///
+/// `dir` must be a directory no sandboxed process can write: the CLI reads
+/// the file again on every auto-resume, so a file a tool could rewrite would
+/// let it change the command a server is started with. The caller passes it via `--mcp-config` and removes it
 /// with [`cleanup_mcp_config`] once the CLI calls finish.
 pub(super) async fn write_mcp_config_tempfile(
+    dir: &Path,
     servers: &[McpServer],
 ) -> Result<PathBuf, KernexError> {
     let mut mcp_servers = serde_json::Map::new();
+    // The caller has already chosen the servers the CLI may start.
     for srv in servers {
-        if !kernex_core::context::mcp_command_allowed(&srv.allowed_commands, &srv.command) {
-            tracing::warn!(
-                "mcp: '{}' not passed to the CLI: its command is not in a declared allow-list",
-                srv.name
-            );
-            continue;
-        }
         let mut entry = serde_json::Map::new();
         entry.insert(
             "command".to_string(),
@@ -75,8 +74,7 @@ pub(super) async fn write_mcp_config_tempfile(
     let mut last_err: Option<std::io::Error> = None;
     for _ in 0..8 {
         let seq = MCP_CONFIG_SEQ.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("kernex-mcp-{}-{seq}.json", std::process::id()));
+        let path = dir.join(format!("kernex-mcp-{}-{seq}.json", std::process::id()));
         let bytes = json.clone();
         let write_path = path.clone();
         let res = tokio::task::spawn_blocking(move || -> std::io::Result<()> {

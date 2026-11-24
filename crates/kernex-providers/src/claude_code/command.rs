@@ -1,9 +1,10 @@
 //! CLI command building and subprocess execution.
 
+use super::permissions::{permission_args, ToolAccess};
 use super::ClaudeCodeProvider;
 use crate::error::ProviderError;
 use kernex_core::error::KernexError;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tokio::process::Command;
 use tracing::debug;
 
@@ -15,23 +16,25 @@ fn looks_like_cli_flag(s: &str) -> bool {
     s.starts_with('-')
 }
 
+/// One CLI invocation: the request half of the argument list.
+#[derive(Clone, Copy)]
+pub(super) struct CliCall<'a> {
+    pub prompt: &'a str,
+    pub max_turns: u32,
+    pub model: &'a str,
+    pub session_id: Option<&'a str>,
+    pub agent_name: Option<&'a str>,
+    pub access: ToolAccess<'a>,
+    pub mcp_config_path: Option<&'a Path>,
+}
+
 impl ClaudeCodeProvider {
-    /// Build the CLI argument list for `run_cli()`.
+    /// Build the CLI argument list (excluding the binary name).
     ///
-    /// Extracted as a pure function so argument construction is testable
-    /// without subprocess execution. Returns `Vec<String>` of CLI arguments
-    /// (excluding the binary name).
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn build_run_cli_args(
-        prompt: &str,
-        extra_allowed_tools: &[String],
-        max_turns: u32,
-        allowed_tools: &[String],
-        model: &str,
-        context_disabled_tools: bool,
-        session_id: Option<&str>,
-        agent_name: Option<&str>,
-    ) -> Vec<String> {
+    /// Pure so argument construction is testable without a subprocess. The
+    /// first call and every auto-resume go through here, so a resume runs
+    /// with the same permissions as the call it continues.
+    pub(super) fn build_run_cli_args(call: &CliCall<'_>) -> Vec<String> {
         let mut args = Vec::new();
 
         // Agent mode: --agent <name> before -p.
@@ -39,7 +42,8 @@ impl ClaudeCodeProvider {
         // Reject agent names containing path separators, traversal patterns,
         // or a leading `-` so a poisoned skill can't smuggle a flag (e.g.
         // `agent_name = "--system-prompt=evil"`) into the CLI's argv.
-        let agent = agent_name
+        let agent = call
+            .agent_name
             .filter(|n| !n.is_empty())
             .filter(|n| !n.contains('/') && !n.contains('\\') && !n.contains(".."))
             .filter(|n| !looks_like_cli_flag(n));
@@ -48,215 +52,129 @@ impl ClaudeCodeProvider {
             args.push("--agent".to_string());
             args.push(name.to_string());
         }
-        let use_agent = agent.is_some();
 
+        // `-p` (print mode) takes no value; the prompt is the positional
+        // argument, passed last after `--` so a prompt that starts with `-`
+        // is never read as an option and a list-valued option before it
+        // cannot take it in.
         args.push("-p".to_string());
-        args.push(prompt.to_string());
 
         args.push("--output-format".to_string());
         args.push("json".to_string());
 
         args.push("--max-turns".to_string());
-        args.push(max_turns.to_string());
+        args.push(call.max_turns.to_string());
 
-        // Model override.
         // Reject values that look like CLI flags (`--system-prompt=evil`,
         // `-h`) so context-poisoning via `context.model` cannot inject
         // arbitrary flags into the claude subprocess.
-        if !model.is_empty() && !looks_like_cli_flag(model) {
+        if !call.model.is_empty() && !looks_like_cli_flag(call.model) {
             args.push("--model".to_string());
-            args.push(model.to_string());
+            args.push(call.model.to_string());
         }
 
-        // Session continuity: --resume resumes an existing conversation by session ID.
-        // Skipped when agent_name is set (agent mode does not use sessions).
-        if !use_agent {
-            if let Some(sid) = session_id.filter(|s| !looks_like_cli_flag(s)) {
+        // Session continuity. Skipped in agent mode (no sessions there).
+        if agent.is_none() {
+            if let Some(sid) = call.session_id.filter(|s| !looks_like_cli_flag(s)) {
                 args.push("--resume".to_string());
                 args.push(sid.to_string());
             }
         }
 
-        // Tool permissions: In `-p` (non-interactive) mode, Claude Code
-        // cannot prompt for approval — tools must be pre-approved or
-        // permissions bypassed entirely.
-        //
-        // - Agent mode -> always bypass (agent frontmatter controls tools).
-        // - `context_disabled_tools` = caller wants NO tools (classification).
-        // - `allowed_tools` empty = full access intended -> bypass.
-        // - `allowed_tools` non-empty = explicit whitelist -> pre-approve only those.
-        if use_agent {
-            args.push("--dangerously-skip-permissions".to_string());
-        } else if context_disabled_tools {
-            args.push("--allowedTools".to_string());
-            args.push(String::new());
-        } else if allowed_tools.is_empty() {
-            args.push("--dangerously-skip-permissions".to_string());
-            // MCP tool patterns still needed so Claude knows about them.
-            for tool in extra_allowed_tools {
-                args.push("--allowedTools".to_string());
-                args.push(tool.clone());
-            }
-        } else {
-            for tool in allowed_tools {
-                args.push("--allowedTools".to_string());
-                args.push(tool.clone());
-            }
-            for tool in extra_allowed_tools {
-                args.push("--allowedTools".to_string());
-                args.push(tool.clone());
-            }
-        }
+        args.extend(permission_args(&call.access));
 
-        args
-    }
-
-    /// Run the claude CLI subprocess with a timeout.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn run_cli(
-        &self,
-        prompt: &str,
-        extra_allowed_tools: &[String],
-        max_turns: u32,
-        allowed_tools: &[String],
-        model: &str,
-        context_disabled_tools: bool,
-        session_id: Option<&str>,
-        agent_name: Option<&str>,
-        mcp_config_path: Option<&Path>,
-    ) -> Result<std::process::Output, KernexError> {
-        let mut cmd = self.base_command()?;
-
-        let mut args = Self::build_run_cli_args(
-            prompt,
-            extra_allowed_tools,
-            max_turns,
-            allowed_tools,
-            model,
-            context_disabled_tools,
-            session_id,
-            agent_name,
-        );
-        // Load kernex's declared MCP servers from a temp file via Claude Code's
-        // own `--mcp-config` mechanism (never the user's .claude/ config).
-        if let Some(p) = mcp_config_path {
+        // kernex's declared MCP servers come from a temp file via the CLI's
+        // own `--mcp-config` mechanism, never from the user's config.
+        if let Some(p) = call.mcp_config_path {
             args.push("--mcp-config".to_string());
             args.push(p.to_string_lossy().into_owned());
         }
-        cmd.args(&args);
+        args.push("--".to_string());
+        args.push(call.prompt.to_string());
+        args
+    }
 
+    /// Run the claude CLI subprocess in `workspace` with a timeout.
+    pub(super) async fn run_cli(
+        &self,
+        call: &CliCall<'_>,
+        workspace: &Path,
+    ) -> Result<std::process::Output, KernexError> {
+        let mut cmd = self.base_command(workspace)?;
+        cmd.args(Self::build_run_cli_args(call));
         debug!(
             "executing: claude {}",
-            if agent_name.is_some() {
-                "--agent <name> -p <prompt>"
-            } else {
-                "-p <prompt>"
+            match (call.agent_name.is_some(), call.session_id.is_some()) {
+                (true, _) => "--agent <name> -p <prompt>",
+                (false, true) => "-p <prompt> --resume <session>",
+                (false, false) => "-p <prompt>",
             }
         );
         self.execute_with_timeout(cmd, "claude CLI").await
     }
 
-    /// Run the claude CLI subprocess with a specific session ID (for auto-resume).
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn run_cli_with_session(
-        &self,
-        prompt: &str,
-        extra_allowed_tools: &[String],
-        session_id: &str,
-        max_turns: u32,
-        allowed_tools: &[String],
-        model: &str,
-        mcp_config_path: Option<&Path>,
-    ) -> Result<std::process::Output, KernexError> {
-        let mut cmd = self.base_command()?;
-
-        cmd.arg("-p")
-            .arg(prompt)
-            .arg("--output-format")
-            .arg("json")
-            .arg("--max-turns")
-            .arg(max_turns.to_string())
-            .arg("--resume")
-            .arg(session_id);
-
-        // Same MCP config as the first call so resumes keep kernex's servers.
-        if let Some(p) = mcp_config_path {
-            cmd.arg("--mcp-config").arg(p);
-        }
-
-        // Model override.
-        if !model.is_empty() {
-            cmd.arg("--model").arg(model);
-        }
-
-        // Same permission logic as run_cli: bypass when full access,
-        // otherwise pre-approve only the listed tools.
-        if allowed_tools.is_empty() {
-            cmd.arg("--dangerously-skip-permissions");
-            for tool in extra_allowed_tools {
-                cmd.arg("--allowedTools").arg(tool);
-            }
-        } else {
-            for tool in allowed_tools {
-                cmd.arg("--allowedTools").arg(tool);
-            }
-            for tool in extra_allowed_tools {
-                cmd.arg("--allowedTools").arg(tool);
-            }
-        }
-
-        debug!("executing: claude -p <resume> --resume {session_id}");
-        self.execute_with_timeout(cmd, "claude CLI resume").await
+    /// The directory the CLI keeps its settings, login and transcripts in
+    /// when kernex runs it: `cli/claude` inside the runtime data directory.
+    ///
+    /// The CLI's own tools run in the same sandbox as the CLI, so they can
+    /// write wherever the CLI can. Keeping the CLI out of the user's
+    /// `~/.claude` and `~/.claude.json` means a tool call cannot add a hook
+    /// or an MCP server that the user's next interactive session would run
+    /// outside the sandbox. A user who logged in to the CLI interactively is
+    /// not logged in here: pass an OAuth token (`claude setup-token`) to
+    /// [`ClaudeCodeProvider::from_config`], set `ANTHROPIC_API_KEY`, or log in
+    /// once with `CLAUDE_CONFIG_DIR` set to this directory.
+    pub fn cli_config_dir(&self) -> PathBuf {
+        self.sandbox_dirs
+            .resolved_data_dir()
+            .join("cli")
+            .join("claude")
     }
 
-    /// Build the base `Command` with working directory and system protection.
+    /// Where the per-call MCP config files are written: `cli/mcp-config`
+    /// inside the data directory, which no sandboxed process can write.
+    /// Created owner-only.
+    pub(super) fn mcp_config_dir(&self) -> PathBuf {
+        let dir = self
+            .sandbox_dirs
+            .resolved_data_dir()
+            .join("cli")
+            .join("mcp-config");
+        if let Err(e) = crate::cli_support::create_private_dir(&dir) {
+            tracing::warn!("mcp: cannot create {}: {e}", dir.display());
+        }
+        dir
+    }
+
+    /// Build the base `Command`: the CLI sandboxed in `workspace`, with its
+    /// own config directory, network access and its credentials.
     ///
     /// Errors when OS-level sandbox enforcement is required (profile flag or
-    /// `KERNEX_REQUIRE_SANDBOX=1`) but the subprocess would run unsandboxed:
-    /// either the host cannot enforce, or no working directory is configured
-    /// so there is no sandbox wrapper at all.
-    fn base_command(&self) -> Result<Command, KernexError> {
-        let mut cmd = match self.working_dir {
-            Some(ref dir) => {
-                // The working directory is the only writable part of the
-                // scope; the runtime data dir stays out of the CLI's reach.
-                let scope = self.sandbox_dirs.scope(dir);
-                // The Claude CLI IS the provider: it must reach the API, so
-                // it is exempt from the subprocess egress deny-by-default
-                // that governs agent tool subprocesses.
-                let mut profile = self.sandbox_profile.clone();
-                profile.allow_network = true;
-                // Its login and settings live in its own state directory and,
-                // on macOS, in the keychain.
-                crate::sandbox_dirs::grant_cli_state(&mut profile, &[".claude", ".claude.json"]);
-                profile.allow_keychain = true;
-                let mut c = kernex_sandbox::try_protected_command("claude", &scope, &profile)
-                    .map_err(|e| {
-                        ProviderError::Logic(format!("refusing to run claude CLI: {e}"))
-                    })?;
-                c.current_dir(dir);
-                c
-            }
-            None => {
-                if kernex_sandbox::enforcement_required(&self.sandbox_profile) {
-                    return Err(ProviderError::Logic(
-                        "refusing to run claude CLI: OS-level sandbox enforcement is \
-                         required but no working directory is configured, so the \
-                         subprocess would run unsandboxed"
-                            .to_string(),
-                    )
-                    .into());
-                }
-                let mut c = Command::new("claude");
-                // No working dir means no sandbox wrapper; apply the env
-                // isolation directly so this branch matches the wrapped one.
-                kernex_sandbox::hardened_env(&mut c);
-                c
-            }
-        };
-        // Remove CLAUDECODE env var so the CLI doesn't think it's nested.
-        // (Redundant after env hardening, kept as defense in depth.)
-        cmd.env_remove("CLAUDECODE");
+    /// `KERNEX_REQUIRE_SANDBOX=1`) and the host cannot provide it.
+    fn base_command(&self, workspace: &Path) -> Result<Command, KernexError> {
+        let config_dir = self.cli_config_dir();
+        crate::cli_support::create_private_dir(&config_dir).map_err(|e| {
+            ProviderError::Logic(format!(
+                "refusing to run claude CLI: cannot create {}: {e}",
+                config_dir.display()
+            ))
+        })?;
+        // The working directory and the CLI's config directory are the only
+        // writable parts of the scope; the rest of the data dir stays out
+        // of the CLI's reach.
+        let scope = self.sandbox_dirs.scope(workspace);
+        // The Claude CLI IS the provider: it must reach the API, so it is
+        // exempt from the subprocess egress deny-by-default that governs
+        // agent tool subprocesses.
+        let mut profile = self.sandbox_profile.clone();
+        profile.allow_network = true;
+        profile.allowed_paths.push(config_dir.clone());
+        // A login made with this config dir is kept in the macOS keychain.
+        profile.allow_keychain = true;
+        let mut cmd = kernex_sandbox::try_protected_command(&self.program, &scope, &profile)
+            .map_err(|e| ProviderError::Logic(format!("refusing to run claude CLI: {e}")))?;
+        cmd.current_dir(workspace);
+        cmd.env("CLAUDE_CONFIG_DIR", &config_dir);
         // The Claude CLI is the provider subprocess itself: pass its auth
         // through explicitly. The hardened env cleared it along with
         // everything else; the CLI accepts either its OAuth token or an
@@ -275,10 +193,10 @@ impl ClaudeCodeProvider {
     /// Execute a command with the configured timeout and standard error handling.
     async fn execute_with_timeout(
         &self,
-        mut cmd: Command,
+        cmd: Command,
         label: &str,
     ) -> Result<std::process::Output, KernexError> {
-        let output = tokio::time::timeout(self.timeout, cmd.output())
+        let output = crate::cli_support::run_with_timeout(cmd, self.timeout)
             .await
             .map_err(|_| {
                 ProviderError::Logic(format!(
