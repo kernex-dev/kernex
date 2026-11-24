@@ -20,8 +20,11 @@
 //!
 //! ## Limits of this design
 //!
-//! - A directory that was walked has no rule of its own. It cannot be
-//!   listed, and a file created directly inside it after the ruleset was
+//! - A directory that was walked gets the right to be listed and nothing
+//!   else. A Landlock rule covers everything below the directory it names,
+//!   so the protected directories below it can be listed too: their file
+//!   names are visible, their contents are not. A file created directly
+//!   inside a walked directory after the ruleset was
 //!   built is not readable or writable by that subprocess. The ruleset is
 //!   rebuilt on every spawn, so this affects a file created and reopened
 //!   within one command. With the default policy the walked directories are
@@ -280,6 +283,9 @@ fn build_ruleset(
 
     let ruleset = base
         .create()?
+        // Listing only. Without it `ls` fails in `/`, in the home directory
+        // and in a workspace that holds a protected path.
+        .add_rules(path_beneath_rules(&rules.walked, AccessFs::ReadDir))?
         .add_rules(path_beneath_rules(&rules.read, read_access()))?
         .add_rules(path_beneath_rules(&rules.write, full_access()))?
         .add_rules(path_beneath_rules(DEVICE_FILES, device_access()))?
@@ -326,8 +332,8 @@ impl PathRules {
 
 /// Collect into `granted` the largest set of paths under `start` that
 /// contains no `deny` path, descending only into directories that lead to
-/// one. Directories that are descended into are recorded in `walked` and get
-/// no rule themselves.
+/// one. Directories that are descended into are recorded in `walked`; they
+/// get the right to be listed and no other.
 fn complement(
     start: &Path,
     deny: &[PathBuf],

@@ -219,6 +219,18 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
             shell_quote(&workspace)
         ),
     );
+    // Directories on the way to a protected path can still be listed: the
+    // home directory, and a workspace that holds a blocked directory.
+    let list_home = shell_probe(
+        &scope,
+        &SandboxProfile::default(),
+        &format!("ls {}", shell_quote(&home_path)),
+    );
+    let list_workspace = shell_probe(
+        &scope,
+        &blocking,
+        &format!("ls {}", shell_quote(&workspace)),
+    );
     // A hard link must not turn a read-only file into a writable one.
     let hard_link = workspace.join("linked.txt");
     let link_escape = shell_probe(
@@ -303,6 +315,14 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
     );
     assert!(token.exists() && !moved_dir.exists() && !moved_workspace.exists());
     assert!(write_beside_blocked.0, "write beside a blocked path failed");
+    assert!(
+        list_home.0 && list_home.1.contains("readable.txt"),
+        "the home directory could not be listed: {list_home:?}"
+    );
+    assert!(
+        list_workspace.0 && list_workspace.1.contains("src"),
+        "a workspace holding a blocked path could not be listed: {list_workspace:?}"
+    );
 
     assert!(
         roundtrip.0 && roundtrip.1.contains("body"),

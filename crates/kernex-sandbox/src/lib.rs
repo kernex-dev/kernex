@@ -64,10 +64,11 @@
 //!   signals). An older kernel enforces the rights it knows.
 //!   [`os_enforcement_available`] reports Landlock presence and
 //!   [`landlock_abi_version`] the depth. Landlock denies a path by giving it
-//!   no rule, so a directory on the way to a protected path cannot be listed
-//!   and files cannot be created directly inside it; with the default policy
-//!   those are `/`, the home directory and its ancestors, and the data
-//!   directory.
+//!   no rule, so files cannot be created directly inside a directory on the
+//!   way to a protected path; with the default policy those are `/`, the
+//!   home directory and its ancestors, and the data directory. Such a
+//!   directory can be listed, and so can the protected directories below
+//!   it: their file names are visible on Linux, their contents are not.
 //!
 //! ## Subprocess network policy
 //!

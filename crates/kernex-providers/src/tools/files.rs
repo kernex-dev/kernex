@@ -641,24 +641,13 @@ mod tests {
             assert!(glob.is_error && glob.content.contains(DENIED), "{root}");
         }
 
-        // A protected path below the root is left out of the results. Under
-        // Landlock the search finds nothing at all: a directory that holds a
-        // protected path cannot be listed by a subprocess.
-        let listable = !(cfg!(target_os = "linux") && kernex_sandbox::os_enforcement_available());
+        // A protected path below the root is left out of the results.
         let grep = tools.exec_grep(&json!({"pattern": "needle"})).await;
-        assert!(
-            !listable || grep.content.contains("a.rs"),
-            "{}",
-            grep.content
-        );
+        assert!(grep.content.contains("a.rs"), "{}", grep.content);
         assert!(!grep.content.contains("needle-secret"), "{}", grep.content);
         assert!(!grep.content.contains("needle-outside"), "{}", grep.content);
         let glob = tools.exec_glob(&json!({"pattern": "*"})).await;
-        assert!(
-            !listable || glob.content.contains("a.rs"),
-            "{}",
-            glob.content
-        );
+        assert!(glob.content.contains("a.rs"), "{}", glob.content);
         assert!(!glob.content.contains("token"), "{}", glob.content);
     }
 
