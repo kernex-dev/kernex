@@ -30,6 +30,7 @@ pub struct OpenRouterProvider {
     workspace_path: Option<PathBuf>,
     sandbox_profile: kernex_sandbox::SandboxProfile,
     sandbox_dirs: crate::SandboxDirs,
+    web_fetch: crate::WebFetchPolicy,
 }
 
 impl OpenRouterProvider {
@@ -49,6 +50,7 @@ impl OpenRouterProvider {
             workspace_path,
             sandbox_profile: Default::default(),
             sandbox_dirs: Default::default(),
+            web_fetch: Default::default(),
         })
     }
 
@@ -72,6 +74,13 @@ impl OpenRouterProvider {
     /// Set the runtime directories the sandbox protects from tool calls.
     pub fn with_sandbox_dirs(mut self, dirs: crate::SandboxDirs) -> Self {
         self.sandbox_dirs = dirs;
+        self
+    }
+
+    /// Set which hosts the `web_fetch` tool may reach. The default is
+    /// disabled: the tool is not offered to the model.
+    pub fn with_web_fetch_policy(mut self, policy: crate::WebFetchPolicy) -> Self {
+        self.web_fetch = policy;
         self
     }
 }
@@ -100,6 +109,7 @@ impl Provider for OpenRouterProvider {
                 let mut executor = ToolExecutor::new(ws.clone())
                     .with_sandbox_profile(self.sandbox_profile.clone())
                     .with_sandbox_dirs(&self.sandbox_dirs)
+                    .with_web_fetch_policy(self.web_fetch.clone())
                     .with_hook_runner_opt(context.hook_runner.clone())
                     .with_permission_rules_opt(context.permission_rules.clone());
                 executor.connect_mcp_servers(&context.mcp_servers).await;

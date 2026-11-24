@@ -26,3 +26,4 @@ pub(crate) mod tools;
 
 pub use error::ProviderError;
 pub use sandbox_dirs::SandboxDirs;
+pub use tools::WebFetchPolicy;

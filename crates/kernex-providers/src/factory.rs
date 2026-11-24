@@ -36,6 +36,9 @@ pub struct ProviderConfig {
     /// The memory database, when it lives outside `{data_dir}/memory.db`.
     /// Tool calls can neither read nor write it.
     pub db_path: Option<PathBuf>,
+    /// Which hosts the `web_fetch` tool may reach. The default is disabled:
+    /// the tool is not offered to the model.
+    pub web_fetch: crate::WebFetchPolicy,
     /// Performance/cost tier used to select a model when `model` is `None`.
     pub tier: Option<ModelTier>,
     /// HTTP request timeout in seconds (default: 120). Applies to all HTTP-based providers.
@@ -54,6 +57,7 @@ impl Default for ProviderConfig {
             data_dir: None,
             config_path: None,
             db_path: None,
+            web_fetch: Default::default(),
             tier: None,
             timeout_secs: 120,
         }
@@ -187,6 +191,7 @@ impl ProviderFactory {
         config: ProviderConfig,
     ) -> Result<Box<dyn Provider>, KernexError> {
         let sandbox_dirs = crate::SandboxDirs::from_config(&config);
+        let web_fetch = config.web_fetch.clone();
         match provider.to_lowercase().as_str() {
             "openai" => {
                 require_https_for_keyed_provider("openai", config.base_url.as_deref())?;
@@ -202,7 +207,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "anthropic" => {
@@ -216,7 +222,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "gemini" => {
@@ -229,7 +236,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "ollama" => {
@@ -244,7 +252,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "openrouter" => {
@@ -257,7 +266,8 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "claude-code" => {
@@ -300,7 +310,8 @@ impl ProviderFactory {
                 .with_timeout(config.timeout_secs)
                 .with_name("groq")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "mistral" => {
@@ -318,7 +329,8 @@ impl ProviderFactory {
                 .with_timeout(config.timeout_secs)
                 .with_name("mistral")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "deepseek" => {
@@ -336,7 +348,8 @@ impl ProviderFactory {
                 .with_timeout(config.timeout_secs)
                 .with_name("deepseek")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "fireworks" => {
@@ -354,7 +367,8 @@ impl ProviderFactory {
                 .with_timeout(config.timeout_secs)
                 .with_name("fireworks")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             "xai" => {
@@ -372,7 +386,8 @@ impl ProviderFactory {
                 .with_timeout(config.timeout_secs)
                 .with_name("xai")
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
-                .with_sandbox_dirs(sandbox_dirs);
+                .with_sandbox_dirs(sandbox_dirs)
+                .with_web_fetch_policy(web_fetch);
                 Ok(Box::new(p))
             }
             #[cfg(feature = "bedrock")]
@@ -524,6 +539,7 @@ mod tests {
             data_dir: Some(PathBuf::from("/var/lib/agent")),
             config_path: None,
             db_path: None,
+            web_fetch: Default::default(),
             tier: None,
             timeout_secs: 60,
         };
