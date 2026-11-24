@@ -5,7 +5,8 @@
 //! asserts what a tool call can and cannot reach: the workspace is writable,
 //! its siblings and the runtime data directory are not, credential stores and
 //! the memory database are unreadable, and reads stay broad otherwise. Skips
-//! when the host cannot apply OS enforcement (e.g. Linux < 5.13, WSL1).
+//! when the host cannot apply OS enforcement (e.g. Linux < 5.13, WSL1), unless
+//! `KERNEX_TEST_REQUIRE_SANDBOX` is set, in which case it fails.
 //!
 //! Everything is anchored to a throwaway `$HOME` set for the duration of the
 //! single test, so the rules apply to files this test created rather than the
@@ -17,6 +18,30 @@
 use std::path::Path;
 
 use kernex_sandbox::{SandboxProfile, SandboxScope};
+
+/// Environment variable that turns a skipped sandbox test into a failure.
+/// CI sets it on every runner that is known to enforce.
+const REQUIRE_ENV: &str = "KERNEX_TEST_REQUIRE_SANDBOX";
+
+/// Whether the probes can run. Panics instead of skipping when the
+/// environment says this host must enforce.
+fn enforcement_or_skip(test: &str) -> bool {
+    eprintln!(
+        "{test}: os_enforcement_available={} landlock_abi={:?}",
+        kernex_sandbox::os_enforcement_available(),
+        kernex_sandbox::landlock_abi_version()
+    );
+    if kernex_sandbox::os_enforcement_available() {
+        return true;
+    }
+    let required = std::env::var(REQUIRE_ENV).is_ok_and(|v| !v.is_empty() && v != "0");
+    assert!(
+        !required,
+        "{test}: {REQUIRE_ENV} is set but this host has no OS-level sandbox enforcement"
+    );
+    eprintln!("skipping {test}: no OS-level sandbox enforcement on this host");
+    false
+}
 
 fn run(cmd: tokio::process::Command) -> std::process::Output {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -71,8 +96,7 @@ fn shell_quote(p: &Path) -> String {
 
 #[test]
 fn home_lockdown_confines_writes_and_denies_secret_reads() {
-    if !kernex_sandbox::os_enforcement_available() {
-        eprintln!("skipping home_lockdown: no OS-level sandbox enforcement on this host");
+    if !enforcement_or_skip("home_lockdown") {
         return;
     }
 
@@ -109,6 +133,10 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
     let secrets = workspace.join("secrets");
     let token = secrets.join("token");
     std::fs::create_dir_all(&secrets).unwrap();
+    // An existing subdirectory: on Linux a file cannot be created directly
+    // in a directory that holds a blocked path, only below it.
+    let subdir = workspace.join("src");
+    std::fs::create_dir_all(&subdir).unwrap();
     std::fs::write(&token, "TOKEN-SENTINEL").unwrap();
     let blocking = SandboxProfile::new().with_blocked_paths(vec![secrets.clone()]);
 
@@ -154,10 +182,32 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
             shell_quote(&moved_workspace)
         ),
     );
+    // Ordinary work inside the workspace: list, create, read back, remove.
+    let roundtrip = shell_probe(
+        &scope,
+        &SandboxProfile::default(),
+        &format!(
+            "cd {} && ls . > /dev/null && mkdir d && echo body > d/f && cat d/f && mv d e && rm -r e",
+            shell_quote(&workspace)
+        ),
+    );
+    // A hard link must not turn a read-only file into a writable one.
+    let hard_link = workspace.join("linked.txt");
+    let link_escape = shell_probe(
+        &scope,
+        &SandboxProfile::default(),
+        &format!(
+            "ln {} {} && printf hacked > {}",
+            shell_quote(&readable),
+            shell_quote(&hard_link),
+            shell_quote(&hard_link)
+        ),
+    );
+    let readable_after = std::fs::read_to_string(&readable).unwrap();
     let write_beside_blocked = shell_probe(
         &scope,
         &blocking,
-        &format!("printf ok > {}", shell_quote(&workspace.join("beside.txt"))),
+        &format!("printf ok > {}", shell_quote(&subdir.join("beside.txt"))),
     );
 
     if let Some(h) = prev_home {
@@ -208,4 +258,13 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
     );
     assert!(token.exists() && !moved_dir.exists() && !moved_workspace.exists());
     assert!(write_beside_blocked.0, "write beside a blocked path failed");
+
+    assert!(
+        roundtrip.0 && roundtrip.1.contains("body"),
+        "ordinary work inside the workspace failed: {roundtrip:?}"
+    );
+    assert!(
+        !link_escape.0 && readable_after == "public",
+        "a file outside the workspace was modified through a hard link"
+    );
 }

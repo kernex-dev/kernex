@@ -1,62 +1,119 @@
-//! Linux Landlock LSM enforcement — broad allowlist approach.
+//! Linux Landlock LSM enforcement, generated from the shared [`Policy`].
 //!
-//! Landlock uses a broad allowlist: read-only on `/` (covers system dirs),
-//! full access to the shared policy's write roots plus `/opt`, `/srv`,
-//! `/run`, `/media`, `/mnt`. Then applies restrictive rules to the policy's
-//! read-deny paths.
+//! Landlock only grants: a rule on a path adds rights for everything below
+//! it, and no rule can take a right away. A path is therefore denied by
+//! leaving it without a rule, never by a more specific rule.
 //!
-//! ## Kernel Version Requirements
+//! - **Reads.** Read access is not granted on `/`. Starting at `/`, every
+//!   directory entry that does not lead to a read-deny path gets a read rule,
+//!   and only the entries that do lead to one are descended into. For a deny
+//!   list under `$HOME` that enumerates `/`, `/home`, the home directory and
+//!   a level or two below it.
+//! - **Writes.** Each write root gets full access. A root that contains a
+//!   protected path is walked the same way, so the protected path is left
+//!   out instead of being overridden.
+//! - **Devices.** A short list of device files (`/dev/null`, `/dev/tty`, ...)
+//!   and the shared-memory directory `/dev/shm` stay writable, so
+//!   redirections and POSIX semaphores keep working. `ioctl` on a device
+//!   file opened inside the sandbox is denied, and pseudo-terminals cannot
+//!   be allocated.
 //!
-//! Landlock support was introduced progressively across kernel releases. Each
-//! ABI version adds new access rights; older kernels silently ignore unknown
-//! flags via the `landlock` crate's version negotiation.
+//! ## Limits of this design
 //!
-//! | ABI | Kernel | Access rights added |
-//! |-----|--------|---------------------|
-//! | V1  | 5.13   | Filesystem reads, writes, execution (initial LSM) |
-//! | V2  | 5.19   | File truncation (`MakeFifo`, `TruncateFile`) |
-//! | V3  | 6.2    | Symlink creation, extended stat operations |
-//! | V4  | 6.7    | `ioctl` on devices and files |
-//! | V5  | 6.12   | Scope restrictions (cross-thread fd access) |
+//! - A directory that was walked has no rule of its own. It cannot be
+//!   listed, and a file created directly inside it after the ruleset was
+//!   built is not readable or writable by that subprocess. The ruleset is
+//!   rebuilt on every spawn, so this affects a file created and reopened
+//!   within one command. With the default policy the walked directories are
+//!   `/`, the home directory and its ancestors, and the runtime data
+//!   directory. A `blocked_paths` entry inside the workspace makes the
+//!   workspace root one of them: files can then only be created in its
+//!   subdirectories.
+//! - Symbolic links get no rule of their own. Access through a link is
+//!   decided by the rules covering the file it points to.
+//! - Landlock does not restrict connecting to a pathname Unix socket, so a
+//!   subprocess can still talk to any daemon whose socket file it can reach:
+//!   a container runtime socket, the session bus, an SSH or GPG agent, a
+//!   terminal multiplexer. UDP and other non-TCP sockets are never
+//!   restricted. Do not run the sandbox on a host where such a socket grants
+//!   more than the sandbox is meant to allow.
+//! - Landlock does not restrict `chmod`, `chown`, timestamps or extended
+//!   attributes, nor `stat`. A subprocess can change the mode of a file it
+//!   owns anywhere, and can see that a protected path exists.
+//! - Rules follow the file, not its name. A hard link or a bind mount made
+//!   before the sandbox started, pointing at a protected file from a
+//!   readable place, exposes that file. The sandbox cannot create either.
 //!
-//! This module requests [`ABI::V5`] access rights via [`full_access()`].
-//! On kernels below 6.12, the `landlock` crate negotiates down automatically
-//! and applies whatever rights the running kernel supports. The
-//! [`RulesetStatus::FullyEnforced`] check logs a warning when enforcement is
-//! partial so operators can identify under-protected deployments.
+//! ## Kernel versions
 //!
-//! **Minimum for any OS-level enforcement:** Linux 5.13.
-//! Below 5.13 (or WSL1, or containers with the Landlock LSM disabled),
-//! [`landlock_available()`] returns `false` and the sandbox falls back entirely
-//! to code-level protection via `is_read_blocked()` / `is_write_blocked()`.
+//! | ABI | Kernel | Added |
+//! |-----|--------|-------|
+//! | 1   | 5.13   | Filesystem read, write, execute, create and remove |
+//! | 2   | 5.19   | Rename and link across directories (`Refer`) |
+//! | 3   | 6.2    | File truncation |
+//! | 4   | 6.7    | TCP bind and connect |
+//! | 5   | 6.10   | `ioctl` on device files |
+//! | 6   | 6.12   | Scoping of abstract Unix sockets and signals |
 //!
-//! ## Edge Cases and Fallback
+//! The ruleset asks for everything up to ABI 6 and the `landlock` crate
+//! drops what the running kernel does not know. Below ABI 2 a sandboxed
+//! process cannot rename or link across directories at all. Below ABI 4 the
+//! network cannot be restricted; the gap is logged at spawn time.
 //!
-//! - **WSL1**: Does not expose the Landlock ABI; falls back to code-level enforcement.
-//! - **Containers**: Require the host kernel to have `CONFIG_SECURITY_LANDLOCK=y` and
-//!   the LSM enabled (e.g., `lsm=landlock,...`). Without it, the ABI file is absent.
-//! - **Partial enforcement**: Kernels between 5.13 and 6.11 apply the rights they know
-//!   about and log `"best-effort protection active"`. Core protection (no writes to
-//!   `data/` or `config.toml`) is included in V1 rights and enforced on all 5.13+ kernels.
+//! Below ABI 3 a file outside the write roots can still be truncated, so
+//! such a kernel does not count as enforcing: the rules it knows are
+//! applied, [`enforces`] reports `false`, and a caller that requires
+//! enforcement is refused.
 //!
-//! Code-level enforcement via `is_read_blocked()` and `is_write_blocked()`
-//! provides additional protection on all platforms regardless of kernel version.
+//! The ABI is read with the `landlock_create_ruleset` syscall. A kernel
+//! without Landlock (older than 5.13, WSL1, or the LSM not enabled) reports
+//! no ABI, and the sandbox falls back to the code-level checks unless
+//! enforcement is required.
 
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
-use crate::policy::Policy;
 use tokio::process::Command;
 use tracing::warn;
 
 use landlock::{
     path_beneath_rules, Access, AccessFs, AccessNet, BitFlags, Ruleset, RulesetAttr,
-    RulesetCreated, RulesetCreatedAttr, ABI,
+    RulesetCreated, RulesetCreatedAttr, RulesetStatus, Scope, ABI,
 };
 
-/// All read-related filesystem access flags.
+use crate::policy::Policy;
+
+/// `LANDLOCK_CREATE_RULESET_VERSION`: ask the syscall for the ABI version.
+const CREATE_RULESET_VERSION: libc::c_uint = 1;
+
+/// Minimum Landlock ABI that counts as enforcing the policy. Earlier ABIs
+/// cannot stop a file outside the write roots from being truncated.
+const MIN_ENFORCING_ABI: u32 = 3;
+
+/// Minimum Landlock ABI that supports network (TCP bind/connect) rules.
+const NET_RESTRICTION_MIN_ABI: u32 = 4;
+
+/// Device files a subprocess may read and write. Without them `> /dev/null`
+/// and terminal output fail under the sandbox.
+const DEVICE_FILES: &[&str] = &[
+    "/dev/null",
+    "/dev/zero",
+    "/dev/full",
+    "/dev/random",
+    "/dev/urandom",
+    "/dev/tty",
+];
+
+/// Shared-memory directory. POSIX semaphores and shared memory live here.
+const SHARED_MEMORY_DIR: &str = "/dev/shm";
+
+static WALKED_ROOT_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
+static PARTIAL_ABI_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
+
+/// Read access for a file or a directory tree.
 fn read_access() -> BitFlags<AccessFs> {
-    AccessFs::ReadFile | AccessFs::ReadDir | AccessFs::Execute | AccessFs::Refer
+    AccessFs::ReadFile | AccessFs::ReadDir | AccessFs::Execute
 }
 
 /// All filesystem access flags (read + write).
@@ -64,19 +121,45 @@ fn full_access() -> BitFlags<AccessFs> {
     AccessFs::from_all(ABI::V5)
 }
 
-/// Build a [`Command`] with Landlock read/write restrictions applied via `pre_exec`.
-///
-/// The child process will have:
-/// - Read and execute access to the entire filesystem (`/`)
-/// - Full access to the policy's write roots and `/opt`, `/srv`, `/run`, `/media`, `/mnt`
-/// - Restricted access to `{data_dir}/data/` and `{data_dir}/config.toml` (Refer-only,
-///   which blocks both reads and writes via Landlock intersection semantics)
-///
-/// System directories (`/bin`, `/sbin`, `/usr`, `/etc`, `/lib`, etc.) are implicitly
-/// read-only because only `/` gets read access and writable paths are explicitly listed.
+/// Access for the device files in [`DEVICE_FILES`]. No `ioctl`: on a
+/// terminal that would allow injecting input into the user's session.
+fn device_access() -> BitFlags<AccessFs> {
+    AccessFs::ReadFile | AccessFs::WriteFile
+}
+
+/// The Landlock ABI of the running kernel, or `None` when Landlock is not
+/// available. Probed once per process.
+pub(crate) fn abi_version() -> Option<u32> {
+    static ABI_VERSION: OnceLock<Option<u32>> = OnceLock::new();
+    *ABI_VERSION.get_or_init(probe_abi)
+}
+
+/// Whether the running kernel enforces the whole filesystem policy.
+pub(crate) fn enforces() -> bool {
+    abi_version().is_some_and(|abi| abi >= MIN_ENFORCING_ABI)
+}
+
+fn probe_abi() -> Option<u32> {
+    // SAFETY: `landlock_create_ruleset` with a null attribute pointer, size 0
+    // and the VERSION flag reads no memory and creates nothing; it returns
+    // the ABI version, or -1 with errno set when Landlock is absent.
+    let version = unsafe {
+        libc::syscall(
+            libc::SYS_landlock_create_ruleset,
+            std::ptr::null::<libc::c_void>(),
+            0usize,
+            CREATE_RULESET_VERSION,
+        )
+    };
+    u32::try_from(version).ok().filter(|abi| *abi >= 1)
+}
+
+/// Build a [`Command`] with the Landlock ruleset for `policy` applied via
+/// `pre_exec`.
 ///
 /// If the kernel does not support Landlock, logs a warning and falls back
-/// to a plain command.
+/// to a plain command. If the ruleset cannot be built, an error is returned
+/// when enforcement is required and the command falls back otherwise.
 ///
 /// ## Allocator soundness
 ///
@@ -91,24 +174,37 @@ pub(crate) fn protected_command(
     program: &str,
     policy: &Policy,
     profile: &crate::SandboxProfile,
-) -> Command {
-    if !landlock_available() {
+) -> std::io::Result<Command> {
+    let Some(abi) = abi_version() else {
         warn!("landlock: not supported by this kernel; falling back to code-level protection");
-        return Command::new(program);
+        return Ok(Command::new(program));
+    };
+    if abi < MIN_ENFORCING_ABI && !PARTIAL_ABI_WARNING_EMITTED.swap(true, Ordering::Relaxed) {
+        warn!(
+            abi,
+            "landlock: this kernel cannot restrict file truncation (needs ABI 3 / kernel 6.2); \
+             applying the rules it supports"
+        );
     }
-
-    let mut cmd = Command::new(program);
+    let required = crate::enforcement_required(profile);
 
     // Build the ruleset in the parent. Filesystem probes, allocations, and any
     // landlock-internal bookkeeping happen here, where no fork-after-allocator
     // hazard exists.
     let prepared = match build_ruleset(policy, profile) {
         Ok(r) => r,
+        Err(e) if required => {
+            return Err(std::io::Error::other(format!(
+                "landlock ruleset could not be built: {e}"
+            )));
+        }
         Err(e) => {
             warn!(error = %e, "landlock: ruleset construction failed; falling back to code-level protection");
-            return cmd;
+            return Ok(Command::new(program));
         }
     };
+
+    let mut cmd = Command::new(program);
 
     // Move the prepared ruleset into the pre_exec closure. `restrict_self`
     // consumes self, and pre_exec is FnMut, so we wrap in `Option<Mutex<_>>`
@@ -120,28 +216,23 @@ pub(crate) fn protected_command(
     // closure only locks a Mutex (no allocation; the Mutex is uncontended in
     // the child since other threads do not exist post-fork), takes the
     // prepared ruleset, and invokes the `landlock_restrict_self` syscall.
+    // Errors are built from a raw errno, which does not allocate.
     unsafe {
         cmd.pre_exec(move || {
-            let mut guard = cell
-                .lock()
-                .map_err(|_| std::io::Error::other("landlock: ruleset mutex poisoned"))?;
-            let ruleset = guard
-                .take()
-                .ok_or_else(|| std::io::Error::other("landlock: pre_exec invoked twice"))?;
-            // Note: we cannot inspect `status.ruleset` here to log
-            // partial-enforcement warnings — tracing dispatchers may hold
-            // allocated state and we are post-fork. Operators who need
-            // FullyEnforced guarantees should set
-            // `SandboxProfile::require_os_enforcement = true` and use
-            // `try_protected_command`.
-            let _status = ruleset.restrict_self().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::PermissionDenied, e.to_string())
-            })?;
+            let denied = || std::io::Error::from_raw_os_error(libc::EPERM);
+            let mut guard = cell.lock().map_err(|_| denied())?;
+            let ruleset = guard.take().ok_or_else(denied)?;
+            let status = ruleset.restrict_self().map_err(|_| denied())?;
+            // A ruleset the kernel did not enforce at all must not pass for
+            // a sandbox when the caller required one.
+            if required && status.ruleset == RulesetStatus::NotEnforced {
+                return Err(denied());
+            }
             Ok(())
         });
     }
 
-    cmd
+    Ok(cmd)
 }
 
 /// Build the Landlock ruleset entirely in the parent process. The returned
@@ -152,115 +243,147 @@ fn build_ruleset(
     policy: &Policy,
     profile: &crate::SandboxProfile,
 ) -> Result<RulesetCreated, anyhow::Error> {
-    // Broad read on `/`, but NOT blanket write on `$HOME`. Writes are
-    // granted only to the policy's write roots (the workspace, the system
-    // temp dirs, the toolchain cache/state dirs, `allowed_paths`). The data
-    // dir is not among them.
-    let base = Ruleset::default().handle_access(full_access())?;
+    let mut base = Ruleset::default().handle_access(full_access())?;
 
     // Network egress deny-by-default: handling the TCP access rights without
     // adding any NetPort allow rule denies every TCP bind/connect. Only
     // possible on ABI v4+ (kernel 6.7+); older kernels cannot restrict the
     // network at all, so the gap is logged instead of silently assumed
-    // covered. UDP and non-TCP sockets are outside Landlock's scope on every
-    // ABI (the macOS Seatbelt path covers all socket families; this
-    // asymmetry is documented in the crate docs).
-    let base = if profile.allow_network {
-        base
-    } else {
-        match landlock_abi_version() {
+    // covered.
+    if !profile.allow_network {
+        match abi_version() {
             Some(abi) if abi >= NET_RESTRICTION_MIN_ABI => {
-                base.handle_access(AccessNet::BindTcp | AccessNet::ConnectTcp)?
+                base = base.handle_access(AccessNet::BindTcp | AccessNet::ConnectTcp)?;
             }
-            abi => {
-                warn!(
-                    abi = ?abi,
-                    "landlock: kernel ABI lacks network rules (needs v4 / kernel 6.7+); \
-                     subprocess network egress cannot be restricted on this host"
-                );
-                base
-            }
+            abi => warn!(
+                abi = ?abi,
+                "landlock: kernel ABI lacks network rules (needs v4 / kernel 6.7+); \
+                 subprocess network egress cannot be restricted on this host"
+            ),
         }
-    };
+    }
+    // On ABI v6+ a sandboxed process may only signal processes inside its
+    // own sandbox and only connect to abstract Unix sockets created there.
+    // That is local IPC, independent of the network flag.
+    base = base.scope(Scope::Signal | Scope::AbstractUnixSocket)?;
 
-    let mut ruleset = base
+    let rules = PathRules::for_policy(policy);
+    if let Some(root) = rules.walked_root(policy) {
+        if !WALKED_ROOT_WARNING_EMITTED.swap(true, Ordering::Relaxed) {
+            warn!(
+                root = %root.display(),
+                "landlock: a protected path sits inside this writable directory; \
+                 files can only be created in its subdirectories"
+            );
+        }
+    }
+
+    let ruleset = base
         .create()?
-        .add_rules(path_beneath_rules(&[PathBuf::from("/")], read_access()))?;
-
-    // Write roots come from the shared policy. A rule needs an existing path.
-    for root in policy.write_roots() {
-        if root.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(
-                std::slice::from_ref(root),
-                full_access(),
-            ))?;
-        }
-    }
-
-    let optional_paths = ["/opt", "/srv", "/run", "/media", "/mnt"];
-    for path in &optional_paths {
-        let p = PathBuf::from(path);
-        if p.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(&[p], full_access()))?;
-        }
-    }
-
-    // Read-deny list (credential stores, the memory database, the config
-    // file, `blocked_paths`): a refer_only rule on each path that exists.
-    for denied in policy.read_deny() {
-        if denied.exists() {
-            ruleset = ruleset.add_rules(path_beneath_rules(
-                std::slice::from_ref(denied),
-                refer_only(),
-            ))?;
-        }
-    }
-
+        .add_rules(path_beneath_rules(&rules.read, read_access()))?
+        .add_rules(path_beneath_rules(&rules.write, full_access()))?
+        .add_rules(path_beneath_rules(DEVICE_FILES, device_access()))?
+        .add_rules(path_beneath_rules([SHARED_MEMORY_DIR], full_access()))?;
     Ok(ruleset)
 }
 
-/// Check if the kernel supports Landlock by probing the ABI version file.
-fn landlock_available() -> bool {
-    std::path::Path::new("/sys/kernel/security/landlock/abi_version").exists()
+/// The paths that receive a rule, and the directories that were walked
+/// instead of receiving one.
+#[derive(Debug, Default)]
+struct PathRules {
+    read: Vec<PathBuf>,
+    write: Vec<PathBuf>,
+    walked: Vec<PathBuf>,
 }
 
-/// Path to the kernel's Landlock ABI version file.
-const ABI_VERSION_FILE: &str = "/sys/kernel/security/landlock/abi_version";
+impl PathRules {
+    fn for_policy(policy: &Policy) -> Self {
+        let mut rules = Self::default();
+        complement(
+            Path::new("/"),
+            policy.read_deny(),
+            &mut rules.read,
+            &mut rules.walked,
+        );
 
-/// Minimum Landlock ABI that supports network (TCP bind/connect) rules.
-/// Shipped in kernel 6.7.
-const NET_RESTRICTION_MIN_ABI: u32 = 4;
+        // A path that may not be read may not be written either.
+        let mut write_deny = policy.write_deny().to_vec();
+        write_deny.extend(policy.read_deny().iter().cloned());
+        for root in policy.write_roots() {
+            complement(root, &write_deny, &mut rules.write, &mut rules.walked);
+        }
+        rules
+    }
 
-/// Read the kernel's Landlock ABI version. `None` when Landlock is absent
-/// or the file is unreadable/unparsable.
-fn landlock_abi_version() -> Option<u32> {
-    let content = std::fs::read_to_string(ABI_VERSION_FILE).ok()?;
-    parse_abi_version(&content)
+    /// The first write root that had to be walked, if any.
+    fn walked_root<'a>(&self, policy: &'a Policy) -> Option<&'a PathBuf> {
+        policy
+            .write_roots()
+            .iter()
+            .find(|root| self.walked.contains(root))
+    }
 }
 
-/// Parse the abi_version file content (a decimal integer plus newline).
-fn parse_abi_version(content: &str) -> Option<u32> {
-    content.trim().parse().ok()
-}
-
-/// Minimal access — blocks both reads and writes via Landlock intersection.
-///
-/// When combined with `full_access` on a parent path, effective access =
-/// `full_access ∩ Refer = Refer` — no ReadFile, no WriteFile.
-fn refer_only() -> BitFlags<AccessFs> {
-    AccessFs::Refer.into()
+/// Collect into `granted` the largest set of paths under `start` that
+/// contains no `deny` path, descending only into directories that lead to
+/// one. Directories that are descended into are recorded in `walked` and get
+/// no rule themselves.
+fn complement(
+    start: &Path,
+    deny: &[PathBuf],
+    granted: &mut Vec<PathBuf>,
+    walked: &mut Vec<PathBuf>,
+) {
+    if deny.iter().any(|denied| start.starts_with(denied)) {
+        return;
+    }
+    if !deny.iter().any(|denied| denied.starts_with(start)) {
+        granted.push(start.to_path_buf());
+        return;
+    }
+    walked.push(start.to_path_buf());
+    let entries = match std::fs::read_dir(start) {
+        Ok(entries) => entries,
+        Err(e) => {
+            // Nothing below is granted. Say so: the subprocess will see
+            // the whole directory as inaccessible.
+            warn!(dir = %start.display(), error = %e, "landlock: cannot list directory; nothing below it is granted");
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        // A rule on a symlink would apply to its target, which may be a
+        // denied path. The target is covered where it really lives.
+        if entry.file_type().is_ok_and(|kind| kind.is_symlink()) {
+            continue;
+        }
+        complement(&entry.path(), deny, granted, walked);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::policy::HostDirs;
+    use crate::{SandboxProfile, SandboxScope};
 
     #[test]
-    fn test_read_access_flags() {
+    fn test_read_access_has_no_write_or_link_right() {
         let flags = read_access();
         assert!(flags.contains(AccessFs::ReadFile));
         assert!(flags.contains(AccessFs::ReadDir));
         assert!(flags.contains(AccessFs::Execute));
+        assert!(!flags.contains(AccessFs::WriteFile));
+        // Refer on a read-only tree would let a file be hard-linked into a
+        // write root and modified there.
+        assert!(!flags.contains(AccessFs::Refer));
+    }
+
+    #[test]
+    fn test_device_access_has_no_ioctl() {
+        let flags = device_access();
+        assert!(flags.contains(AccessFs::WriteFile));
+        assert!(!flags.contains(AccessFs::IoctlDev));
     }
 
     #[test]
@@ -271,48 +394,106 @@ mod tests {
         assert!(flags.contains(AccessFs::MakeDir));
     }
 
-    #[test]
-    fn test_refer_only_blocks_reads_and_writes() {
-        let flags = refer_only();
-        assert!(flags.contains(AccessFs::Refer));
-        assert!(!flags.contains(AccessFs::ReadFile));
-        assert!(!flags.contains(AccessFs::WriteFile));
+    /// A tree: root/{a/{keep,secret/key},b,link->a/secret}.
+    fn tree() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("a/secret")).unwrap();
+        std::fs::write(root.join("a/secret/key"), "k").unwrap();
+        std::fs::write(root.join("a/keep"), "x").unwrap();
+        std::fs::create_dir_all(root.join("b")).unwrap();
+        std::os::unix::fs::symlink(root.join("a/secret"), root.join("link")).unwrap();
+        (dir, root)
     }
 
-    fn test_policy(profile: &crate::SandboxProfile) -> Policy {
-        let scope = crate::SandboxScope::new("/tmp/ws", "/tmp/state");
-        Policy::new(&scope, profile)
+    fn walk(start: &Path, deny: &[PathBuf]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+        let (mut granted, mut walked) = (Vec::new(), Vec::new());
+        complement(start, deny, &mut granted, &mut walked);
+        granted.sort();
+        walked.sort();
+        (granted, walked)
+    }
+
+    #[test]
+    fn test_complement_grants_the_whole_tree_without_a_deny_path() {
+        let (_dir, root) = tree();
+        let (granted, walked) = walk(&root, &[PathBuf::from("/elsewhere")]);
+        assert_eq!(granted, vec![root]);
+        assert!(walked.is_empty());
+    }
+
+    #[test]
+    fn test_complement_leaves_out_the_deny_path_and_its_ancestors() {
+        let (_dir, root) = tree();
+        let (granted, walked) = walk(&root, &[root.join("a/secret")]);
+        assert_eq!(granted, vec![root.join("a/keep"), root.join("b")]);
+        assert_eq!(walked, vec![root.clone(), root.join("a")]);
+    }
+
+    #[test]
+    fn test_complement_skips_symlinks() {
+        let (_dir, root) = tree();
+        let (granted, _) = walk(&root, &[root.join("a/secret")]);
+        assert!(!granted.contains(&root.join("link")));
+    }
+
+    #[test]
+    fn test_complement_grants_nothing_under_a_denied_start() {
+        let (_dir, root) = tree();
+        let (granted, walked) = walk(&root.join("a/secret"), &[root.join("a")]);
+        assert!(granted.is_empty());
+        assert!(walked.is_empty());
+    }
+
+    #[test]
+    fn test_complement_handles_a_deny_path_that_does_not_exist() {
+        let (_dir, root) = tree();
+        let (granted, walked) = walk(&root, &[root.join("b/missing.db")]);
+        assert_eq!(granted, vec![root.join("a")]);
+        assert_eq!(walked, vec![root.clone(), root.join("b")]);
+    }
+
+    #[test]
+    fn test_policy_rules_keep_protected_state_out_of_both_lists() {
+        let (_dir, root) = tree();
+        let host = HostDirs {
+            home: root.join("home"),
+            temp_dirs: Vec::new(),
+        };
+        // State inside the workspace: `a` is the workspace, `a/secret` a
+        // blocked path.
+        let scope = SandboxScope::new(root.join("a"), root.join("state"));
+        let profile = SandboxProfile::new().with_blocked_paths(vec![root.join("a/secret")]);
+        let policy = Policy::with_host(&scope, &profile, &host);
+        let rules = PathRules::for_policy(&policy);
+
+        let secret = root.join("a/secret");
+        assert!(rules.write.contains(&root.join("a/keep")));
+        for granted in rules.read.iter().chain(&rules.write) {
+            assert!(!granted.starts_with(&secret), "{}", granted.display());
+            assert!(!secret.starts_with(granted), "{}", granted.display());
+        }
+        assert_eq!(rules.walked_root(&policy), Some(&root.join("a")));
+    }
+
+    #[test]
+    fn test_build_ruleset_succeeds_with_and_without_network() {
+        if abi_version().is_none() {
+            return;
+        }
+        let scope = SandboxScope::new("/tmp/ws", "/tmp/state");
+        let profile = SandboxProfile::default();
+        assert!(build_ruleset(&Policy::new(&scope, &profile), &profile).is_ok());
+        let opt_in = SandboxProfile::new().with_allow_network(true);
+        assert!(build_ruleset(&Policy::new(&scope, &opt_in), &opt_in).is_ok());
     }
 
     #[test]
     fn test_command_structure() {
-        let profile = crate::SandboxProfile::default();
-        let cmd = protected_command("claude", &test_policy(&profile), &profile);
+        let scope = SandboxScope::new("/tmp/ws", "/tmp/state");
+        let profile = SandboxProfile::default();
+        let cmd = protected_command("claude", &Policy::new(&scope, &profile), &profile).unwrap();
         let program = cmd.as_std().get_program().to_string_lossy().to_string();
         assert_eq!(program, "claude");
-    }
-
-    #[test]
-    fn test_parse_abi_version() {
-        assert_eq!(parse_abi_version("4\n"), Some(4));
-        assert_eq!(parse_abi_version("5"), Some(5));
-        assert_eq!(parse_abi_version("  6  \n"), Some(6));
-        assert_eq!(parse_abi_version(""), None);
-        assert_eq!(parse_abi_version("not-a-number"), None);
-        assert_eq!(parse_abi_version("-1"), None);
-    }
-
-    #[test]
-    fn test_build_ruleset_with_network_denied_succeeds() {
-        // The deny-by-default path must build a valid ruleset on any
-        // Landlock-capable kernel, whether or not the ABI supports network
-        // rules (older ABIs log the gap and keep filesystem rules).
-        if !landlock_available() {
-            return;
-        }
-        let profile = crate::SandboxProfile::default();
-        assert!(build_ruleset(&test_policy(&profile), &profile).is_ok());
-        let opt_in = crate::SandboxProfile::new().with_allow_network(true);
-        assert!(build_ruleset(&test_policy(&opt_in), &opt_in).is_ok());
     }
 }

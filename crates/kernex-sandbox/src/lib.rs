@@ -29,9 +29,10 @@
 //!   `$HOME` are denied outside the write roots, and writes to `/System`,
 //!   `/bin`, `/sbin`, `/usr/{bin,sbin,lib,libexec}`, `/private/etc` and
 //!   `/Library` are denied.
-//! - **Linux**: Landlock LSM via `pre_exec` hook (kernel 5.13+ minimum, 6.12+
-//!   for full ABI::V5 enforcement; older kernels apply best-effort protection
-//!   using only the rights they support).
+//! - **Linux**: Landlock LSM via `pre_exec` hook (kernel 5.13+ minimum;
+//!   older kernels than 6.12 apply the rights they support). Reads are
+//!   granted everywhere except the read-deny paths, and writes only under
+//!   the write roots.
 //! - **Other**: Falls back to a plain command with a warning.
 //!
 //! [`protected_command`] is best-effort and never fails: when the host
@@ -56,12 +57,15 @@
 //!   release removes it, [`os_enforcement_available`] returns `false` and
 //!   the fail-mode policy above applies.
 //! - **Linux**: Landlock enforcement depth depends on the kernel ABI
-//!   (5.13 minimum; 6.7+ adds TCP restrictions; 6.12+ for ABI v5). On
-//!   kernels between 5.13 and 6.11 some access rights cannot be enforced
-//!   and the sandbox degrades to what the kernel supports; the ruleset
-//!   status is logged at spawn time but is not observable programmatically
-//!   by callers. [`os_enforcement_available`] reports Landlock presence,
-//!   not enforcement depth.
+//!   (5.13 minimum; 5.19 adds cross-directory rename and link control; 6.7
+//!   adds TCP restrictions; 6.12 adds scoping of abstract Unix sockets and
+//!   signals). An older kernel enforces the rights it knows.
+//!   [`os_enforcement_available`] reports Landlock presence and
+//!   [`landlock_abi_version`] the depth. Landlock denies a path by giving it
+//!   no rule, so a directory on the way to a protected path cannot be listed
+//!   and files cannot be created directly inside it; with the default policy
+//!   those are `/`, the home directory and its ancestors, and the data
+//!   directory.
 //!
 //! ## Subprocess network policy
 //!
@@ -71,9 +75,11 @@
 //!
 //! - **macOS Seatbelt**: full — denies every socket operation (TCP, UDP,
 //!   and local sockets; DNS resolution is consequently unavailable too).
-//! - **Linux Landlock**: TCP bind/connect only, and only on kernels 6.7+
-//!   (ABI v4). Older kernels cannot restrict the network; the gap is
-//!   logged at spawn time. UDP and non-TCP sockets are never restricted.
+//! - **Linux Landlock**: TCP bind/connect on kernels 6.7+ (ABI v4) and
+//!   abstract Unix sockets on 6.12+ (ABI v6). Older kernels cannot restrict
+//!   the network; the gap is logged at spawn time. UDP, other non-TCP
+//!   sockets and pathname Unix sockets are never restricted, so a daemon
+//!   whose socket file the subprocess can reach stays reachable.
 //!
 //! In-process HTTP performed by the runtime itself (e.g. a `web_fetch`
 //! tool implemented without a subprocess) is not subject to this policy;
@@ -278,7 +284,10 @@ pub fn protected_command(program: &str, scope: &SandboxScope, profile: &SandboxP
     if let Some(rejection) = policy.workspace_rejection() {
         gate::warn_workspace_rejected_once(&scope.workspace, rejection);
     }
-    let mut cmd = platform_command(program, &policy, profile);
+    let mut cmd = match platform_command(program, &policy, profile) {
+        Ok(cmd) => cmd,
+        Err(e) => return gate::refused_command(&e.to_string()),
+    };
     hardened_env(&mut cmd);
     cmd
 }
@@ -384,7 +393,7 @@ pub fn try_protected_command(
     let policy = Policy::new(scope, profile);
     gate::check_policy(&policy)?;
     check_workspace(&policy, scope, profile)?;
-    let mut cmd = platform_command(program, &policy, profile);
+    let mut cmd = platform_command(program, &policy, profile)?;
     hardened_env(&mut cmd);
     Ok(cmd)
 }
@@ -392,6 +401,10 @@ pub fn try_protected_command(
 /// Returns `true` when the current host can apply OS-level sandbox
 /// enforcement (Seatbelt on macOS or Landlock on Linux). Used by
 /// [`try_protected_command`] to honour `require_os_enforcement`.
+///
+/// On Linux this needs Landlock ABI 3 (kernel 6.2): an older kernel cannot
+/// stop a file outside the write roots from being truncated. The rules such
+/// a kernel supports are still applied when enforcement is not required.
 pub fn os_enforcement_available() -> bool {
     #[cfg(target_os = "macos")]
     {
@@ -399,11 +412,28 @@ pub fn os_enforcement_available() -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        Path::new("/sys/kernel/security/landlock/abi_version").exists()
+        landlock_sandbox::enforces()
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         false
+    }
+}
+
+/// The Landlock ABI version of the running kernel, read with the
+/// `landlock_create_ruleset` syscall. `None` when Landlock is unavailable,
+/// and on every platform other than Linux.
+///
+/// The ABI tells how deep enforcement goes: 4 and later restrict TCP, 6 and
+/// later scope abstract Unix sockets and signals.
+pub fn landlock_abi_version() -> Option<u32> {
+    #[cfg(target_os = "linux")]
+    {
+        landlock_sandbox::abi_version()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
     }
 }
 
@@ -435,19 +465,31 @@ pub fn is_read_blocked(path: &Path, scope: &SandboxScope, profile: &SandboxProfi
 }
 
 #[cfg(target_os = "macos")]
-fn platform_command(program: &str, policy: &Policy, profile: &SandboxProfile) -> Command {
-    seatbelt::protected_command(program, policy, profile)
+fn platform_command(
+    program: &str,
+    policy: &Policy,
+    profile: &SandboxProfile,
+) -> std::io::Result<Command> {
+    Ok(seatbelt::protected_command(program, policy, profile))
 }
 
 #[cfg(target_os = "linux")]
-fn platform_command(program: &str, policy: &Policy, profile: &SandboxProfile) -> Command {
+fn platform_command(
+    program: &str,
+    policy: &Policy,
+    profile: &SandboxProfile,
+) -> std::io::Result<Command> {
     landlock_sandbox::protected_command(program, policy, profile)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn platform_command(program: &str, _policy: &Policy, _profile: &SandboxProfile) -> Command {
+fn platform_command(
+    program: &str,
+    _policy: &Policy,
+    _profile: &SandboxProfile,
+) -> std::io::Result<Command> {
     warn!("OS-level protection not available on this platform; using code-level enforcement only");
-    Command::new(program)
+    Ok(Command::new(program))
 }
 
 #[cfg(test)]

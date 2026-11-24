@@ -1201,6 +1201,7 @@ version = "0.11.0"
 dependencies = [
  "anyhow",
  "landlock",
+ "libc",
  "tempfile",
  "tokio",
  "tracing",

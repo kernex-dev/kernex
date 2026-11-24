@@ -15,6 +15,30 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::Path;
 
+/// Environment variable that turns a skipped sandbox test into a failure.
+/// CI sets it on every runner that is known to enforce.
+const REQUIRE_ENV: &str = "KERNEX_TEST_REQUIRE_SANDBOX";
+
+/// Whether the probes can run. Panics instead of skipping when the
+/// environment says this host must enforce.
+fn enforcement_or_skip(test: &str) -> bool {
+    eprintln!(
+        "{test}: os_enforcement_available={} landlock_abi={:?}",
+        kernex_sandbox::os_enforcement_available(),
+        kernex_sandbox::landlock_abi_version()
+    );
+    if kernex_sandbox::os_enforcement_available() {
+        return true;
+    }
+    let required = std::env::var(REQUIRE_ENV).is_ok_and(|v| !v.is_empty() && v != "0");
+    assert!(
+        !required,
+        "{test}: {REQUIRE_ENV} is set but this host has no OS-level sandbox enforcement"
+    );
+    eprintln!("skipping {test}: no OS-level sandbox enforcement on this host");
+    false
+}
+
 fn run(cmd: tokio::process::Command) -> std::process::Output {
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {
@@ -63,10 +87,7 @@ fn network_denial_enforceable() -> bool {
     }
     #[cfg(target_os = "linux")]
     {
-        std::fs::read_to_string("/sys/kernel/security/landlock/abi_version")
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok())
-            .is_some_and(|abi| abi >= 4)
+        kernex_sandbox::landlock_abi_version().is_some_and(|abi| abi >= 4)
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
@@ -76,8 +97,7 @@ fn network_denial_enforceable() -> bool {
 
 #[test]
 fn network_egress_denied_by_default_allowed_on_opt_in() {
-    if !kernex_sandbox::os_enforcement_available() {
-        eprintln!("skipping network_egress: no OS-level sandbox enforcement on this host");
+    if !enforcement_or_skip("network_egress") {
         return;
     }
 

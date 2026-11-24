@@ -201,9 +201,8 @@ impl Policy {
         &self.write_roots
     }
 
-    /// Paths no tool call may write, even inside a write root. Read by the
-    /// Seatbelt generator only; [`Policy::check_write`] applies it everywhere.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    /// Paths no tool call may write, even inside a write root.
+    #[cfg_attr(not(any(target_os = "macos", target_os = "linux")), allow(dead_code))]
     pub(crate) fn write_deny(&self) -> &[PathBuf] {
         &self.write_deny
     }
