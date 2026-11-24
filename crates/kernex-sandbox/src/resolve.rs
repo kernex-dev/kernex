@@ -131,11 +131,11 @@ fn searchable(dir: &Path, before: &std::fs::Metadata) -> bool {
     let Ok(name) = std::ffi::CString::new(dir.as_os_str().as_bytes()) else {
         return true;
     };
-    // SAFETY: `name` is a valid NUL-terminated string that outlives the
-    // call, which only reads it.
     // `AT_EACCESS` alone: other flags send some C libraries to an emulation
     // that ignores ACLs, or to an error. The identity check below is what
     // keeps a link swapped in at `dir` from counting.
+    // SAFETY: `name` is a valid NUL-terminated string that outlives the
+    // call, which only reads it.
     let found =
         unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
     // Only a refusal says it cannot be searched; any other error is unknown.
@@ -490,12 +490,16 @@ mod tests {
         let closed = dir.path().join("closed");
         std::fs::create_dir(&closed).unwrap();
         std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
-        if std::fs::read_dir(&closed).is_err() {
+        let answers = std::fs::read_dir(&closed).is_err().then(|| {
             let seen = closed.symlink_metadata().unwrap();
-            assert!(!searchable(&closed, &seen));
-            assert!(searchable(&closed, &before));
-        }
+            (searchable(&closed, &seen), searchable(&closed, &before))
+        });
+        // Opened again before any assertion, so the temp dir can be removed.
         std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if let Some((as_seen, as_other)) = answers {
+            assert!(!as_seen);
+            assert!(as_other);
+        }
         // A file of root's as the stop's directory.
         let hosts = ["/private/etc/hosts", "/etc/hosts"]
             .into_iter()
