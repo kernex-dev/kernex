@@ -45,15 +45,55 @@ fn open_options(configure: impl FnOnce(&mut std::fs::OpenOptions)) -> tokio::fs:
     tokio::fs::OpenOptions::from(options)
 }
 
-async fn read_file(path: &Path) -> std::io::Result<String> {
-    let mut file = open_options(|o| {
+/// Open `path` for reading. Only a regular file is accepted: a FIFO or a
+/// device would block the read or never end.
+async fn open_regular(path: &Path) -> std::io::Result<tokio::fs::File> {
+    let meta = tokio::fs::symlink_metadata(path).await?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "not a regular file",
+        ));
+    }
+    open_options(|o| {
         o.read(true);
     })
     .open(path)
-    .await?;
+    .await
+}
+
+async fn read_file(path: &Path) -> std::io::Result<String> {
     let mut content = String::new();
-    file.read_to_string(&mut content).await?;
+    open_regular(path)
+        .await?
+        .read_to_string(&mut content)
+        .await?;
     Ok(content)
+}
+
+/// Read at most `limit` bytes of `path` as text, plus the few bytes that
+/// tell a longer file from one that ends there.
+async fn read_file_head(path: &Path, limit: usize) -> std::io::Result<String> {
+    let mut bytes = Vec::new();
+    open_regular(path)
+        .await?
+        .take(limit as u64 + 4)
+        .read_to_end(&mut bytes)
+        .await?;
+    match String::from_utf8(bytes) {
+        Ok(text) => Ok(text),
+        // The cut fell inside a character: keep what is whole.
+        Err(e) if e.utf8_error().error_len().is_none() => {
+            let valid = e.utf8_error().valid_up_to();
+            let mut bytes = e.into_bytes();
+            bytes.truncate(valid);
+            Ok(String::from_utf8_lossy(&bytes).into_owned())
+        }
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "stream did not contain valid UTF-8",
+        )),
+    }
 }
 
 async fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
@@ -68,10 +108,19 @@ async fn write_file(path: &Path, content: &str) -> std::io::Result<()> {
 
 /// Whether one line of search output names a path under `excluded`.
 fn names_excluded(line: &str, excluded: &[PathBuf]) -> bool {
+    // `grep` reports a binary match and its own errors with a prefix.
+    let line = ["Binary file ", "grep: ", "rg: ", "find: "]
+        .iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
+        .unwrap_or(line);
     excluded.iter().any(|path| {
         let prefix = path.to_string_lossy();
-        line.strip_prefix(prefix.as_ref())
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/') || rest.starts_with(':'))
+        line.strip_prefix(prefix.as_ref()).is_some_and(|rest| {
+            rest.is_empty()
+                || rest.starts_with('/')
+                || rest.starts_with(':')
+                || rest.starts_with(' ')
+        })
     })
 }
 
@@ -121,7 +170,7 @@ impl ToolExecutor {
 
         debug!("tool/read: {}", path.display());
 
-        match read_file(&path).await {
+        match read_file_head(&path, MAX_READ_OUTPUT).await {
             Ok(content) => ok(truncate_output(&content, MAX_READ_OUTPUT)),
             Err(e) => error(format!("Error reading {path_str}: {e}")),
         }
@@ -288,7 +337,10 @@ impl ToolExecutor {
                 let stdout = without_excluded(&String::from_utf8_lossy(&output.stdout), &excluded);
                 // grep/rg exit code 1 = no matches (not an error for us).
                 if stdout.is_empty() && !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    // A protected path the search could not enter is not
+                    // an error to report, and its name is not repeated.
+                    let stderr =
+                        without_excluded(&String::from_utf8_lossy(&output.stderr), &excluded);
                     if stderr.is_empty() {
                         ok("(no matches found)")
                     } else {
@@ -415,6 +467,54 @@ mod tests {
             .exec_read(&json!({"file_path": fx.path("outside/missing.txt")}))
             .await;
         assert!(missing.content.contains(DENIED), "{}", missing.content);
+    }
+
+    #[tokio::test]
+    async fn test_read_reaches_skills_and_caps_a_large_file() {
+        let fx = Fixture::new();
+        let tools = fx.plain();
+        std::fs::create_dir_all(fx.root.join("state/skills/review")).unwrap();
+        std::fs::write(fx.root.join("state/skills/review/SKILL.md"), "skill body").unwrap();
+        std::fs::write(fx.root.join("state/memory.db"), "db").unwrap();
+        let skill = tools
+            .exec_read(&json!({"file_path": fx.path("state/skills/review/SKILL.md")}))
+            .await;
+        assert_eq!(skill.content, "skill body");
+        let db = tools
+            .exec_read(&json!({"file_path": fx.path("state/memory.db")}))
+            .await;
+        assert!(db.is_error && db.content.contains(DENIED));
+
+        // A file far over the output cap is read up to the cap; the cut may
+        // fall inside a multi-byte character.
+        std::fs::write(fx.root.join("ws/big.txt"), "\u{e9}".repeat(MAX_READ_OUTPUT)).unwrap();
+        let big = tools.exec_read(&json!({"file_path": "big.txt"})).await;
+        assert!(!big.is_error, "{}", big.content);
+        assert!(big.content.len() < MAX_READ_OUTPUT + 200);
+
+        // A directory is not a regular file.
+        let dir = tools.exec_read(&json!({"file_path": "src"})).await;
+        assert!(dir.is_error);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_read_of_a_fifo_returns_instead_of_blocking() {
+        let fx = Fixture::new();
+        let tools = fx.plain();
+        let fifo = fx.root.join("ws/pipe");
+        let made = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap();
+        assert!(made.success());
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tools.exec_read(&json!({"file_path": "pipe"})),
+        )
+        .await
+        .expect("read of a FIFO blocked");
+        assert!(read.is_error && read.content.contains("not a regular file"));
     }
 
     #[tokio::test]
@@ -572,5 +672,8 @@ mod tests {
             "/ws/src/a.rs:1:x\n/ws/secrets-public/b:1:w\n/ws/a.db.md:1:v\n"
         );
         assert_eq!(without_excluded(output, &[]), output);
+        let noise =
+            "Binary file /ws/secrets/bin matches\ngrep: /ws/secrets: Operation not permitted\n";
+        assert_eq!(without_excluded(noise, &excluded), "");
     }
 }

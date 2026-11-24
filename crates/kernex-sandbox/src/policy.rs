@@ -197,6 +197,15 @@ impl Policy {
             push_unique(&mut tool_write_roots, dir.clone());
         }
         let mut tool_read_roots = tool_write_roots.clone();
+        // A workspace that is refused as a write root (the home directory,
+        // say) can still be read, and so can the skills and projects the
+        // runtime points the model at.
+        if scope.workspace.is_absolute() {
+            push_unique(&mut tool_read_roots, resolve(&scope.workspace));
+        }
+        for dir in ["skills", "projects"] {
+            push_unique(&mut tool_read_roots, resolve(&scope.data_dir.join(dir)));
+        }
         for dir in profile.read_paths.iter().filter(|p| p.is_absolute()) {
             push_unique(&mut tool_read_roots, resolve(dir));
         }
@@ -305,6 +314,14 @@ impl Policy {
         }
         let resolved = resolve(path);
         if under_any_deny(&resolved, deny) {
+            return Err(Denial::Protected);
+        }
+        // Still a symlink after resolution: a chain longer than the walk
+        // follows. Where it ends is unknown, so it is refused.
+        if resolved
+            .symlink_metadata()
+            .is_ok_and(|meta| meta.file_type().is_symlink())
+        {
             return Err(Denial::Protected);
         }
         if under_any(&resolved, roots) {

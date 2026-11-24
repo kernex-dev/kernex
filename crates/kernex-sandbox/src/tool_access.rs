@@ -3,8 +3,9 @@
 //! A file tool (`read`, `write`, `edit`, `grep`, `glob`) runs inside the host
 //! process, so no OS profile stands behind it. Its reach is narrower than a
 //! sandboxed subprocess: the workspace, `SandboxProfile::allowed_paths` and,
-//! for reads, `SandboxProfile::read_paths`. The protected paths stay denied
-//! inside those roots.
+//! for reads, `SandboxProfile::read_paths` and the runtime's `skills/` and
+//! `projects/` directories. The protected paths stay denied inside those
+//! roots.
 //!
 //! Each check returns the path with its symlinks resolved. The tool must open
 //! that path, not the one it was given, and open it without following a
@@ -35,8 +36,10 @@ impl std::error::Error for ToolPathDenied {}
 
 /// Resolve `path` for a file tool that reads it.
 ///
-/// Allowed under the workspace, `allowed_paths` and `read_paths`, minus the
-/// read-deny paths. `path` must be absolute.
+/// Allowed under the workspace, `allowed_paths`, `read_paths` and the data
+/// directory's `skills/` and `projects/`, minus the read-deny paths. A
+/// workspace that is refused as a write root stays readable. `path` must be
+/// absolute.
 pub fn tool_read_path(
     path: &Path,
     scope: &SandboxScope,
@@ -181,6 +184,56 @@ mod tests {
             tool_read_path(&root.join("ws/inner"), &scope, &plain),
             Ok(root.join("ws/src/a.rs"))
         );
+    }
+
+    #[test]
+    fn test_skills_and_a_rejected_workspace_stay_readable() {
+        let (_dir, root, scope) = fixture();
+        let plain = SandboxProfile::default();
+        let skill = root.join("state/skills/review/SKILL.md");
+        assert!(tool_read_path(&skill, &scope, &plain).is_ok());
+        assert_eq!(tool_write_path(&skill, &scope, &plain), Err(ToolPathDenied));
+        assert_eq!(
+            tool_read_path(&root.join("state/memory.db"), &scope, &plain),
+            Err(ToolPathDenied)
+        );
+
+        // The filesystem root is never a write root; reads below it work,
+        // minus the protected paths.
+        let wide = SandboxScope::new("/", root.join("state"));
+        assert!(tool_read_path(&root.join("outside/secret"), &wide, &plain).is_ok());
+        assert_eq!(
+            tool_write_path(&root.join("outside/secret"), &wide, &plain),
+            Err(ToolPathDenied)
+        );
+        assert_eq!(
+            tool_read_path(&root.join("state/memory.db"), &wide, &plain),
+            Err(ToolPathDenied)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_symlink_chain_longer_than_the_walk_is_refused() {
+        let (_dir, root, scope) = fixture();
+        let plain = SandboxProfile::default();
+        // m0 -> m1 -> ... -> m39 -> a missing file outside the workspace.
+        let last = 39;
+        std::os::unix::fs::symlink(
+            root.join("outside/missing"),
+            root.join(format!("ws/m{last}")),
+        )
+        .unwrap();
+        for i in (0..last).rev() {
+            std::os::unix::fs::symlink(
+                root.join(format!("ws/m{}", i + 1)),
+                root.join(format!("ws/m{i}")),
+            )
+            .unwrap();
+        }
+        let head = root.join("ws/m0");
+        assert_eq!(tool_read_path(&head, &scope, &plain), Err(ToolPathDenied));
+        assert_eq!(tool_write_path(&head, &scope, &plain), Err(ToolPathDenied));
     }
 
     #[test]
