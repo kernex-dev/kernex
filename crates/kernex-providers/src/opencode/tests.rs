@@ -141,8 +141,17 @@ fn test_config_includes_mcp_servers() {
         command: "npx".into(),
         args: vec!["-y".into(), "server-fs".into()],
         env,
+        allowed_commands: vec!["npx".into()],
         ..Default::default()
     }];
+    // A server whose command no allow-list names is not handed to the CLI.
+    let undeclared = vec![McpServer {
+        name: "loose".into(),
+        command: "npx".into(),
+        ..Default::default()
+    }];
+    let cfg: Value = serde_json::from_str(&build_config(&[], false, &undeclared)).unwrap();
+    assert!(cfg["mcp"]["loose"].is_null());
     let cfg: Value = serde_json::from_str(&build_config(&[], false, &servers)).unwrap();
     let fs = &cfg["mcp"]["fs"];
     assert_eq!(fs["type"], "local");

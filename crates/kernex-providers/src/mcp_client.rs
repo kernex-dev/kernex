@@ -48,7 +48,7 @@ pub enum McpError {
     /// The server's command is not in its declared command allow-list, or
     /// no allow-list was declared.
     #[error(
-        "mcp: '{server}' not started: command {command:?} is not in a declared command allow-list"
+        "mcp: '{server}' not started: command {command:?} is a relative path or is not in a declared command allow-list"
     )]
     NotAllowed { server: String, command: String },
     /// stdin/stdout pipe was missing on the spawned child.
@@ -173,7 +173,11 @@ impl McpClient {
     ) -> Result<Self, McpError> {
         let name = server.name.as_str();
         let command = server.command.as_str();
-        if !kernex_core::context::mcp_command_allowed(&server.allowed_commands, command) {
+        // A command with a `/` that is not absolute would be found relative
+        // to the workspace, which the model can write.
+        let relative = command.contains('/') && !command.starts_with('/');
+        if relative || !kernex_core::context::mcp_command_allowed(&server.allowed_commands, command)
+        {
             return Err(McpError::NotAllowed {
                 server: name.to_string(),
                 command: command.to_string(),
@@ -189,6 +193,15 @@ impl McpClient {
         // framing is unaffected. The wrapper also clears the inherited
         // environment (provider API keys included); the server's configured
         // env below is the explicit opt-in.
+        if !scope.workspace.is_dir() {
+            return Err(McpError::Spawn {
+                command: command.to_string(),
+                source: std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("workspace {} is not a directory", scope.workspace.display()),
+                ),
+            });
+        }
         let profile = server_profile(profile, server);
         let mut cmd =
             kernex_sandbox::try_protected_command(command, scope, &profile).map_err(|e| {
@@ -432,7 +445,6 @@ impl McpClient {
     }
 }
 
-/// Parse the `tools/list` response into `McpToolDef` items.
 /// The sandbox profile one server runs under: the executor's profile, with
 /// network access when the server's declaration grants it.
 fn server_profile(base: &SandboxProfile, server: &McpServer) -> SandboxProfile {
@@ -441,6 +453,7 @@ fn server_profile(base: &SandboxProfile, server: &McpServer) -> SandboxProfile {
     profile
 }
 
+/// Parse the `tools/list` response into `McpToolDef` items.
 fn parse_tools_list(result: &Value) -> Vec<McpToolDef> {
     result
         .get("tools")
@@ -514,6 +527,15 @@ done
         dir.canonicalize().unwrap()
     }
 
+    /// Removes the fixture directory when the test ends, passing or not.
+    struct Fixture(std::path::PathBuf);
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     fn echo_server(script: &std::path::Path, allowed: &[&str]) -> McpServer {
         McpServer {
             name: "echo".into(),
@@ -537,7 +559,8 @@ done
     /// database, nor write outside the workspace.
     #[tokio::test]
     async fn test_server_runs_inside_the_sandbox() {
-        let root = fixture_dir("mcp-sandbox");
+        let fixture = Fixture(fixture_dir("mcp-sandbox"));
+        let root = fixture.0.clone();
         let workspace = root.join("proj");
         let data_dir = root.join("data");
         let secret = root.join("secrets/token");
@@ -560,6 +583,19 @@ done
                 McpClient::connect(&echo_server(&script, allowed), &scope, &profile).await;
             assert!(matches!(refused, Err(McpError::NotAllowed { .. })));
         }
+        // A relative command would run a file from the workspace.
+        for command in ["./sh", "bin/sh"] {
+            let mut server = echo_server(&script, &["sh"]);
+            server.command = command.into();
+            let refused = McpClient::connect(&server, &scope, &profile).await;
+            assert!(
+                matches!(refused, Err(McpError::NotAllowed { .. })),
+                "{command}"
+            );
+        }
+        let nowhere = SandboxScope::new(root.join("missing"), &data_dir);
+        let refused = McpClient::connect(&echo_server(&script, &["sh"]), &nowhere, &profile).await;
+        assert!(matches!(refused, Err(McpError::Spawn { .. })));
 
         let mut client = McpClient::connect(&echo_server(&script, &["sh"]), &scope, &profile)
             .await
@@ -586,13 +622,20 @@ done
                 call(&mut client, "cat_file", &data_dir.join("memory.db")).await,
                 "DENIED"
             );
-            for outside in [root.join("outside.txt"), data_dir.join("planted.txt")] {
+            // A build directory under the system temp directory is writable
+            // by policy, so only the data directory can be probed there.
+            let temp = std::env::temp_dir();
+            let temp = temp.canonicalize().unwrap_or(temp);
+            let mut outside = vec![data_dir.join("planted.txt")];
+            if !root.starts_with(&temp) {
+                outside.push(root.join("outside.txt"));
+            }
+            for outside in outside {
                 assert_eq!(call(&mut client, "put_file", &outside).await, "DENIED");
                 assert!(!outside.exists(), "{}", outside.display());
             }
         }
         client.shutdown().await;
-        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Manual probe of a published server started the way the example

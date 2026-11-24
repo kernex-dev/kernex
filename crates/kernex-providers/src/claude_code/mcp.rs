@@ -21,6 +21,13 @@ pub(super) async fn write_mcp_config_tempfile(
 ) -> Result<PathBuf, KernexError> {
     let mut mcp_servers = serde_json::Map::new();
     for srv in servers {
+        if !kernex_core::context::mcp_command_allowed(&srv.allowed_commands, &srv.command) {
+            tracing::warn!(
+                "mcp: '{}' not passed to the CLI: its command is not in a declared allow-list",
+                srv.name
+            );
+            continue;
+        }
         let mut entry = serde_json::Map::new();
         entry.insert(
             "command".to_string(),

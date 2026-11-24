@@ -177,7 +177,14 @@ impl ToolExecutor {
                     self.mcp_clients.insert(server.name.clone(), client);
                 }
                 Err(e) => {
-                    warn!("mcp: failed to connect to '{}': {e}", server.name);
+                    // A server that downloads itself fails slowly and
+                    // silently without the network; say what to check.
+                    let hint = if server.network {
+                        ""
+                    } else {
+                        " (it runs without network access; a server that needs it must declare permissions.network)"
+                    };
+                    warn!("mcp: failed to connect to '{}': {e}{hint}", server.name);
                 }
             }
         }

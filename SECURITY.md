@@ -74,6 +74,12 @@ those limits are stated.
   are rejected for both MCP and toolbox commands. Skill-declared arguments
   and environment pairs are validated against control-character and
   shell-metacharacter filters.
+- **MCP servers run inside the sandbox** — a server the runtime starts gets
+  the same OS profile as a tool subprocess, with no network unless its skill
+  declares `permissions.network`, and it starts only if its command is listed
+  in a non-empty `permissions.commands`. The server starts in the workspace.
+  With the CLI providers the external CLI starts the servers itself, inside
+  its own sandbox and with its network.
 - **SSRF protection** — the in-process `web_fetch` tool resolves hostnames
   itself, validates every resolved address against private/link-local/
   loopback ranges, and pins the connection to the validated addresses, so a

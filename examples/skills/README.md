@@ -75,7 +75,7 @@ Markdown body injected into the agent's system prompt when the skill is active.
 - **`requires`** — Kernex checks these binaries exist in `$PATH` before activating the skill
 - **`trigger`** — Case-insensitive keyword matching against user messages
 - **`[mcp.*]`** — MCP servers are started dynamically when the skill triggers
-- **`[permissions]`** — An MCP server starts only if its `command` is listed in `commands`. It runs inside the OS sandbox: it can write to the workspace, cannot read credential stores, and has no network unless `network` lists at least one host. The sandbox allows or denies the network as a whole; the host names document what the skill talks to. A server started with `npx -y` downloads its package, so it needs the network
+- **`[permissions]`** — An MCP server starts only if its `command` is listed in `commands`. It runs inside the OS sandbox and starts in the workspace (so `.` in `args` is the workspace): it can write to the workspace, cannot read credential stores, and has no network unless `network` lists at least one host (or `[mcp.name]` sets `network = true`). With the Claude Code and OpenCode providers the CLI starts the server itself and the server shares the CLI's network. The sandbox allows or denies the network as a whole; the host names document what the skill talks to. A server started with `npx -y` downloads its package, so it needs the network
 - **Body** — The markdown below the frontmatter becomes part of the system prompt
 
 ### Skills.sh compatibility

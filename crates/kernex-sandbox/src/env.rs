@@ -43,8 +43,7 @@ pub const BASE_ENV_ALLOWLIST: &[&str] = &[
 ///
 /// Applied automatically by [`protected_command`](crate::protected_command) /
 /// [`try_protected_command`](crate::try_protected_command);
-/// exposed for spawn sites that cannot route through the sandbox wrappers
-/// (e.g. MCP server processes that must stay unwrapped for stdio framing).
+/// exposed for spawn sites that do not route through the sandbox wrappers.
 pub fn hardened_env(cmd: &mut Command) {
     cmd.env_clear();
     for (k, v) in std::env::vars_os() {

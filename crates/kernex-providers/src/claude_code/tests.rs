@@ -104,6 +104,7 @@ async fn test_write_and_cleanup_mcp_config() {
         name: "playwright".into(),
         command: "npx".into(),
         args: vec!["@playwright/mcp".into(), "--headless".into()],
+        allowed_commands: vec!["npx".into()],
         ..Default::default()
     }];
 

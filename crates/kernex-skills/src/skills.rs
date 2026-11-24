@@ -107,6 +107,10 @@ struct McpFrontmatter {
     command: String,
     #[serde(default)]
     args: Vec<String>,
+    /// Whether the server process may open network connections
+    /// (`network = true`). Defaults to deny.
+    #[serde(default)]
+    network: bool,
 }
 
 /// Cap on individual skill metadata files (SKILL.md, mcp.json, toolbox.json)
@@ -545,7 +549,7 @@ pub fn load_skills(data_dir: &str) -> Vec<Skill> {
                     args: mfm.args,
                     // A declared network host list is the skill-level grant;
                     // the OS sandbox is all-or-nothing.
-                    network: !fm.permissions.network.is_empty(),
+                    network: mfm.network || !fm.permissions.network.is_empty(),
                     allowed_commands: fm.permissions.commands.clone(),
                     ..Default::default()
                 })
@@ -783,7 +787,14 @@ fn parse_yaml_frontmatter(block: &str) -> Option<SkillFrontmatter> {
                         if is_safe_mcp_command(&command) {
                             let args: Vec<String> =
                                 parts[1..].iter().map(|s| s.to_string()).collect();
-                            mcp.insert(server_name, McpFrontmatter { command, args });
+                            mcp.insert(
+                                server_name,
+                                McpFrontmatter {
+                                    command,
+                                    args,
+                                    network: false,
+                                },
+                            );
                         }
                     }
                 }

@@ -82,6 +82,13 @@ pub(super) fn permissions(allowed_tools: &[String], tools_disabled: bool) -> Map
 fn mcp_section(servers: &[McpServer]) -> Map<String, Value> {
     let mut map = Map::new();
     for s in servers {
+        if !kernex_core::context::mcp_command_allowed(&s.allowed_commands, &s.command) {
+            tracing::warn!(
+                "mcp: '{}' not passed to the CLI: its command is not in a declared allow-list",
+                s.name
+            );
+            continue;
+        }
         let mut command = vec![Value::String(s.command.clone())];
         command.extend(s.args.iter().cloned().map(Value::String));
         map.insert(
