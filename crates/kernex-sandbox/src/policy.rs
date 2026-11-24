@@ -10,6 +10,11 @@
 //! - A write is allowed only under a write root, and never under a
 //!   write-deny path. Deny wins over a root that contains it.
 //! - A read is allowed everywhere except under a read-deny path.
+//! - A read-deny path is write-denied too: a file that could be renamed
+//!   would leave its protected name.
+//! - `allowed_paths` lifts a default credential entry it names exactly,
+//!   never the runtime's state or a `blocked_paths` entry. An entry that
+//!   contains the home directory is ignored.
 //!
 //! Every path is compared after symlink resolution, including a path whose
 //! last components do not exist yet.
@@ -84,13 +89,18 @@ pub(crate) struct HostDirs {
 impl HostDirs {
     /// Read the home directory and the temp directories from the host.
     pub(crate) fn detect() -> Self {
+        let temp = std::env::temp_dir();
+        let mut temp_dirs = vec![PathBuf::from("/tmp"), PathBuf::from("/var/tmp")];
+        // macOS gives each user `<dir>/T` for temp files and `<dir>/C` for
+        // caches; compilers keep their module caches in the second.
+        #[cfg(target_os = "macos")]
+        if temp.starts_with("/var/folders") && temp.file_name().is_some_and(|n| n == "T") {
+            temp_dirs.push(temp.with_file_name("C"));
+        }
+        temp_dirs.push(temp);
         Self {
             home: crate::resolved_home(),
-            temp_dirs: vec![
-                PathBuf::from("/tmp"),
-                PathBuf::from("/var/tmp"),
-                std::env::temp_dir(),
-            ],
+            temp_dirs,
         }
     }
 }
@@ -98,7 +108,6 @@ impl HostDirs {
 /// Resolved path sets for one scope and profile.
 #[derive(Debug, Clone)]
 pub(crate) struct Policy {
-    home: PathBuf,
     write_roots: Vec<PathBuf>,
     write_deny: Vec<PathBuf>,
     read_deny: Vec<PathBuf>,
@@ -146,8 +155,25 @@ impl Policy {
         for dir in ["skills", "projects"] {
             push_unique(&mut write_deny, resolve(&scope.data_dir.join(dir)));
         }
+        let allowed: Vec<PathBuf> = profile
+            .allowed_paths
+            .iter()
+            .filter(|p| p.is_absolute())
+            .map(|p| resolve(p))
+            // Like a misplaced temp dir: it would make the whole home writable.
+            .filter(|p| !home.starts_with(p))
+            .collect();
         for cred in crate::credential_read_deny_dirs(&home) {
-            push_unique(&mut read_deny, resolve(&cred));
+            let cred = resolve(&cred);
+            // A host that hands a credential location to the subprocess
+            // (an agent CLI's own state) has decided it may use it.
+            if !allowed.contains(&cred) {
+                push_unique(&mut write_deny, cred.clone());
+                push_unique(&mut read_deny, cred);
+            }
+        }
+        for dir in crate::paths::toolchain_exec_paths(&home) {
+            push_unique(&mut write_deny, resolve(&dir));
         }
 
         let workspace_rejection = if home.starts_with(&workspace) {
@@ -173,14 +199,13 @@ impl Policy {
         for dir in crate::write_allow_dirs(&home) {
             push_unique(&mut write_roots, resolve(&dir));
         }
-        for dir in profile.allowed_paths.iter().filter(|p| p.is_absolute()) {
-            push_unique(&mut write_roots, resolve(dir));
+        for dir in allowed {
+            push_unique(&mut write_roots, dir);
         }
 
         let guards = guard_dirs(&write_roots, &write_deny, &read_deny);
 
         Self {
-            home,
             write_roots,
             write_deny,
             read_deny,
@@ -188,12 +213,6 @@ impl Policy {
             workspace_rejection,
             invalid,
         }
-    }
-
-    /// The resolved home directory. Read by the Seatbelt generator only.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    pub(crate) fn home(&self) -> &Path {
-        &self.home
     }
 
     /// Directories a tool call may write under.
@@ -610,6 +629,63 @@ mod tests {
     }
 
     #[test]
+    fn test_allowed_path_lifts_only_the_credential_entry_it_names() {
+        let read = |allowed: &str| {
+            let profile = SandboxProfile::new().with_allowed_paths(vec![p(allowed)]);
+            Policy::with_host(&scope(), &profile, &host())
+        };
+        // Named exactly: readable and writable.
+        let named = read(".claude");
+        assert_eq!(named.check_read(&p(".claude/settings.json")), Ok(()));
+        assert_eq!(named.check_write(&p(".claude/settings.json")), Ok(()));
+        assert_eq!(named.check_read(&p(".ssh/id_rsa")), Err(Denial::Protected));
+        // A directory above credential entries lifts none of them.
+        let above = read(".config");
+        assert_eq!(above.check_write(&p(".config/tool/state")), Ok(()));
+        assert_eq!(
+            above.check_read(&p(".config/gh/hosts.yml")),
+            Err(Denial::Protected)
+        );
+        assert_eq!(
+            above.check_write(&p(".config/gh/hosts.yml")),
+            Err(Denial::Protected)
+        );
+        // The home directory or an ancestor is not accepted at all.
+        for all in [PathBuf::from(HOME), PathBuf::from("/")] {
+            let profile = SandboxProfile::new().with_allowed_paths(vec![all]);
+            let policy = Policy::with_host(&scope(), &profile, &host());
+            assert_eq!(policy.check_read(&p(".ssh/id_rsa")), Err(Denial::Protected));
+            assert_eq!(
+                policy.check_write(&p("notes.txt")),
+                Err(Denial::OutsideWriteRoots)
+            );
+        }
+        // Runtime state is never lifted.
+        let state = read(".kernex");
+        assert_eq!(
+            state.check_read(&p(".kernex/memory.db")),
+            Err(Denial::Protected)
+        );
+    }
+
+    #[test]
+    fn test_credentials_inside_a_write_root_are_write_denied() {
+        let policy = policy();
+        assert_eq!(policy.check_write(&p(".cargo/registry/x")), Ok(()));
+        for path in [".cargo/credentials.toml", ".cargo/env", ".cargo/bin/cargo"] {
+            assert_eq!(
+                policy.check_write(&p(path)),
+                Err(Denial::Protected),
+                "{path}"
+            );
+        }
+        assert_eq!(
+            policy.check_write(&p(".rustup/toolchains/x")),
+            Err(Denial::OutsideWriteRoots)
+        );
+    }
+
+    #[test]
     fn test_profile_paths_extend_both_lists() {
         let profile = SandboxProfile::new()
             .with_allowed_paths(vec![PathBuf::from("/kx-policy-test/extra")])
@@ -716,8 +792,14 @@ mod tests {
         assert!(policy.guards().contains(&p("code/proj/.agent")));
         assert!(!policy.guards().contains(&p("code")));
 
-        // State outside every root needs no guard.
-        assert!(self::policy().guards().is_empty());
+        // State outside every root needs no guard. What remains guards the
+        // toolchain directories that hold a read-only `bin` or a credential
+        // file.
+        let default_guards = self::policy().guards().to_vec();
+        assert!(default_guards.contains(&p(".cargo")));
+        assert!(default_guards.contains(&p(".local/share/fish")));
+        assert!(!default_guards.iter().any(|g| g.starts_with(p(".kernex"))));
+        assert!(!default_guards.contains(&p("code/proj")));
     }
 
     #[test]

@@ -226,6 +226,10 @@ impl ClaudeCodeProvider {
                 // that governs agent tool subprocesses.
                 let mut profile = self.sandbox_profile.clone();
                 profile.allow_network = true;
+                // Its login and settings live in its own state directory and,
+                // on macOS, in the keychain.
+                crate::sandbox_dirs::grant_cli_state(&mut profile, &[".claude", ".claude.json"]);
+                profile.allow_keychain = true;
                 let mut c = kernex_sandbox::try_protected_command("claude", &scope, &profile)
                     .map_err(|e| {
                         ProviderError::Logic(format!("refusing to run claude CLI: {e}"))

@@ -112,6 +112,16 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
     std::fs::create_dir_all(ssh_key.parent().unwrap()).unwrap();
     std::fs::write(&ssh_key, "PRIVATE-KEY-SENTINEL").unwrap();
 
+    let npmrc = home_path.join(".npmrc");
+    std::fs::write(&npmrc, "NPM-TOKEN-SENTINEL").unwrap();
+    // A toolchain directory: its caches are writable, its programs are not.
+    let cargo_bin = home_path.join(".cargo/bin");
+    let cargo_registry = home_path.join(".cargo/registry");
+    std::fs::create_dir_all(&cargo_bin).unwrap();
+    std::fs::create_dir_all(&cargo_registry).unwrap();
+    let cargo_token = home_path.join(".cargo/credentials.toml");
+    std::fs::write(&cargo_token, "CARGO-TOKEN-SENTINEL").unwrap();
+
     let readable = home_path.join("readable.txt");
     std::fs::write(&readable, "public").unwrap();
 
@@ -147,6 +157,7 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
     std::env::set_var("HOME", &home_path);
 
     let ssh_read = read_probe(&scope, &ssh_key);
+    let npmrc_read = read_probe(&scope, &npmrc);
     let public_read = read_probe(&scope, &readable);
     let skill_read = read_probe(&scope, &skill);
     let database_read = read_probe(&scope, &database);
@@ -158,6 +169,23 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
     let new_skill_write = write_probe(&scope, &data_dir.join("skills/review/extra.md"));
     let data_dir_write = write_probe(&scope, &data_dir.join("notes.txt"));
     let database_write = write_probe(&scope, &database);
+    let cargo_bin_write = write_probe(&scope, &cargo_bin.join("cargo-evil"));
+    let cargo_registry_write = write_probe(&scope, &cargo_registry.join("index.lock"));
+    let cargo_env_write = write_probe(&scope, &home_path.join(".cargo/env"));
+    // A credential inside a writable directory must not be readable under
+    // another name.
+    let moved_token = home_path.join(".cargo/registry/moved");
+    let move_token = shell_probe(
+        &scope,
+        &SandboxProfile::default(),
+        &format!(
+            "mv {} {} ; cat {} {}",
+            shell_quote(&cargo_token),
+            shell_quote(&moved_token),
+            shell_quote(&moved_token),
+            shell_quote(&cargo_token)
+        ),
+    );
 
     let dev_null = shell_probe(&scope, &SandboxProfile::default(), "echo x > /dev/null");
     let token_read = shell_probe(&scope, &blocking, &format!("cat {}", shell_quote(&token)));
@@ -220,6 +248,7 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
     // else, including the skills directory, stays readable.
     assert_eq!(ssh_read, None, "credential read was not denied");
     assert_eq!(database_read, None, "memory database read was not denied");
+    assert_eq!(npmrc_read, None, "registry token read was not denied");
     assert_eq!(public_read.as_deref(), Some("public"));
     assert_eq!(skill_read.as_deref(), Some("skill body"));
 
@@ -237,6 +266,22 @@ fn home_lockdown_confines_writes_and_denies_secret_reads() {
     );
     assert!(!data_dir_write, "write into the data directory succeeded");
     assert!(!database_write, "write to the memory database succeeded");
+    assert!(
+        !cargo_bin_write,
+        "write to a toolchain bin directory succeeded"
+    );
+    assert!(
+        cargo_registry_write,
+        "write to a toolchain cache was blocked"
+    );
+    assert!(
+        !cargo_env_write,
+        "write to a toolchain startup file succeeded"
+    );
+    assert!(
+        !move_token.1.contains("CARGO-TOKEN-SENTINEL") && cargo_token.exists(),
+        "a credential was moved and read"
+    );
     assert_eq!(
         std::fs::read_to_string(&database).unwrap(),
         "DATABASE-SENTINEL"

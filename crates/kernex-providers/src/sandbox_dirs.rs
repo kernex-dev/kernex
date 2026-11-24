@@ -7,6 +7,22 @@ use kernex_sandbox::SandboxScope;
 
 static DEFAULT_WARNING_EMITTED: AtomicBool = AtomicBool::new(false);
 
+/// Let an agent CLI that runs as the provider use its own state under the
+/// home directory (login, settings, transcripts). The sandbox keeps those
+/// locations from every other subprocess. Without a home directory nothing
+/// is granted.
+pub(crate) fn grant_cli_state(profile: &mut kernex_sandbox::SandboxProfile, relative: &[&str]) {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return;
+    };
+    if !home.is_absolute() {
+        return;
+    }
+    for path in relative {
+        profile.allowed_paths.push(home.join(path));
+    }
+}
+
 /// Environment variable naming the runtime data directory.
 const DATA_DIR_ENV: &str = "KERNEX_DATA_DIR";
 

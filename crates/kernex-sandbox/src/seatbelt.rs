@@ -1,8 +1,10 @@
 //! macOS Seatbelt (sandbox-exec) enforcement.
 //!
-//! The profile is generated from the shared [`Policy`]: writes inside `$HOME`
-//! are denied outside the policy's write roots, the write-deny and read-deny
-//! paths are denied on top, and everything else is allowed by default.
+//! The profile is generated from the shared [`Policy`] and denies by default.
+//! A subprocess may run programs, read files outside the read-deny paths,
+//! write under the write roots and look up a short list of system services.
+//! Everything else is refused: the keychain, other applications, Apple
+//! events, pseudo-terminals, and the network unless the profile allows it.
 //!
 //! No path is ever written into the profile text. Each one is passed to
 //! `sandbox-exec` as a `-D` parameter and referenced as `(param "P<n>")`, so
@@ -55,22 +57,89 @@ impl BuiltProfile {
     }
 }
 
+/// What every subprocess gets: process control inside the sandbox, read-only
+/// system information, and the services a dynamically linked program needs
+/// to resolve users, log and find its temp directory.
+const BASE_RULES: &str = r#"(version 1)
+(deny default)
+(allow process-fork)
+(allow process-exec*)
+(allow signal (target same-sandbox))
+(allow process-info* (target same-sandbox))
+(allow sysctl-read)
+(allow system-info)
+(allow ipc-posix-sem)
+(allow ipc-posix-shm*)
+(allow mach-lookup
+  (global-name "com.apple.system.opendirectoryd.libinfo")
+  (global-name "com.apple.system.opendirectoryd.membership")
+  (global-name "com.apple.system.notification_center")
+  (global-name "com.apple.system.logger")
+  (global-name "com.apple.logd")
+  (global-name "com.apple.diagnosticd")
+  (global-name "com.apple.bsd.dirhelper")
+)
+(allow file-read*)
+(allow file-write-data
+  (literal "/dev/null")
+  (literal "/dev/zero")
+  (literal "/dev/tty")
+  (literal "/dev/dtracehelper")
+  (literal "/dev/stdout")
+  (literal "/dev/stderr")
+  (regex #"^/dev/fd/[0-9]+$")
+)
+(allow file-ioctl (literal "/dev/dtracehelper"))
+"#;
+
+/// Added when the profile allows the network: IP sockets, plus the services
+/// that resolve names and evaluate certificate trust. Local sockets stay
+/// closed except the resolver's: a daemon listening on one (a container
+/// runtime, an SSH agent) would otherwise be one `connect` away.
+const NETWORK_RULES: &str = r#"(allow network-outbound (remote ip))
+(allow network-inbound (local ip))
+(allow network-bind (local ip))
+(allow network-outbound (literal "/private/var/run/mDNSResponder"))
+(allow system-socket)
+(allow mach-lookup
+  (global-name "com.apple.dnssd.service")
+  (global-name "com.apple.SystemConfiguration.configd")
+  (global-name "com.apple.SystemConfiguration.DNSConfiguration")
+  (global-name "com.apple.trustd")
+  (global-name "com.apple.trustd.agent")
+  (global-name "com.apple.TrustEvaluationAgent")
+)
+"#;
+
+/// Added when the profile allows keychain queries.
+const KEYCHAIN_RULES: &str = r#"(allow mach-lookup
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.securityd.xpc")
+  (global-name "com.apple.security.agent")
+  (global-name "com.apple.secd")
+)
+"#;
+
 /// Generate the Seatbelt profile for `policy`.
 ///
-/// SBPL is last-match-wins, so the order is: deny writes inside `$HOME`,
-/// re-allow the write roots, then deny the protected paths. A protected path
-/// inside a write root therefore stays denied, and so does renaming or
-/// removing a directory above it (the policy's guards).
+/// SBPL is last-match-wins, so the order is: the base rules, the write
+/// roots, then the protected paths. A protected path inside a write root
+/// therefore stays denied, and so does renaming or removing a directory
+/// above it (the policy's guards).
 fn build_profile(policy: &Policy, profile: &crate::SandboxProfile) -> BuiltProfile {
     let mut built = BuiltProfile {
-        text: String::from("(version 1)\n(allow default)\n"),
+        text: String::from(BASE_RULES),
         params: Vec::new(),
     };
+    // Without these no socket of any family can be used, the resolver's
+    // included, so DNS is unavailable too.
+    if profile.allow_network {
+        built.text.push_str(NETWORK_RULES);
+    }
+    if profile.allow_keychain {
+        built.text.push_str(KEYCHAIN_RULES);
+    }
 
-    // $HOME write lockdown. Writes outside $HOME keep allow-default
-    // behaviour, minus the write-deny list below.
-    let home = built.filters("subpath", &[policy.home().to_path_buf()]);
-    built.rule("deny", "file-write*", &home);
     let roots = built.filters("subpath", policy.write_roots());
     built.rule("allow", "file-write*", &roots);
 
@@ -80,15 +149,6 @@ fn build_profile(policy: &Policy, profile: &crate::SandboxProfile) -> BuiltProfi
 
     let read_deny = built.filters("subpath", policy.read_deny());
     built.rule("deny", "file-read*", &read_deny);
-
-    // Network egress deny-by-default: `network*` covers outbound, inbound,
-    // and bind for every socket family (TCP, UDP, and local sockets, which
-    // also disables DNS via mDNSResponder). Tools that genuinely need the
-    // network opt in via `SandboxProfile::allow_network` (wired from the
-    // per-tool `network = true` declaration).
-    if !profile.allow_network {
-        built.text.push_str("(deny network*)\n");
-    }
 
     built
 }
@@ -166,8 +226,39 @@ mod tests {
     }
 
     #[test]
-    fn test_profile_allows_by_default() {
-        assert!(default_profile_text().contains("(allow default)"));
+    fn test_profile_denies_by_default() {
+        let profile = default_profile_text();
+        assert!(profile.contains("(deny default)"));
+        assert!(!profile.contains("(allow default)"));
+    }
+
+    #[test]
+    fn test_profile_grants_no_keychain_service_by_default() {
+        let profile = default_profile_text();
+        assert!(!profile.contains("SecurityServer"), "{profile}");
+        let profile_obj = SandboxProfile::new().with_allow_keychain(true);
+        let profile = rendered(&build_profile(&policy_for(&profile_obj), &profile_obj));
+        assert!(profile.contains("com.apple.SecurityServer"));
+    }
+
+    #[test]
+    fn test_toolchain_bin_dirs_are_write_denied() {
+        let profile = default_profile_text();
+        let deny = last_rule(&profile, "(deny file-write*");
+        for dir in [
+            ".cargo/bin",
+            ".cargo/env",
+            ".bun/bin",
+            ".deno/bin",
+            ".local/bin",
+        ] {
+            assert!(
+                deny.contains(&format!("(subpath \"{HOME}/{dir}\")")),
+                "{dir}"
+            );
+        }
+        // The directory above stays writable, and cannot be renamed.
+        assert!(deny.contains(&format!("(literal \"{HOME}/.cargo\")")));
     }
 
     #[test]
@@ -187,10 +278,18 @@ mod tests {
         ] {
             assert!(deny.contains(&format!("(subpath \"{dir}\")")), "{dir}");
         }
-        assert!(
-            !profile.contains(r#"(subpath "/usr/local")"#),
-            "/usr/local should not be blocked"
-        );
+    }
+
+    #[test]
+    fn test_only_the_write_roots_are_writable() {
+        // Nothing outside the roots is granted: no rule names the home
+        // directory, `/usr/local` or `/opt`.
+        let profile = default_profile_text();
+        assert_eq!(profile.matches("(allow file-write*").count(), 1);
+        let allow = last_rule(&profile, "(allow file-write*");
+        for path in [HOME, "/usr/local", "/opt", "/"] {
+            assert!(!allow.contains(&format!("(subpath \"{path}\")")), "{path}");
+        }
     }
 
     #[test]
@@ -203,11 +302,6 @@ mod tests {
     #[test]
     fn test_profile_locks_down_home_writes() {
         let profile = default_profile_text();
-        let home_deny = format!("(deny file-write*\n  (subpath \"{HOME}\")\n)");
-        let home_pos = profile.find(&home_deny).expect("home write deny");
-        let allow_pos = profile.find("(allow file-write*").expect("write roots");
-        assert!(home_pos < allow_pos, "roots must follow the home deny");
-
         let allow = last_rule(&profile, "(allow file-write*");
         assert!(allow.contains(&format!("(subpath \"{HOME}/code/proj\")")));
         assert!(allow.contains(r#"(subpath "/kx-sbpl-test/tmp")"#));
@@ -278,6 +372,12 @@ mod tests {
             ".kernex/config.toml",
             ".ssh",
             ".aws",
+            ".npmrc",
+            ".git-credentials",
+            ".cargo/credentials.toml",
+            ".claude",
+            ".zsh_history",
+            "Library/Keychains",
         ] {
             assert!(
                 deny.contains(&format!("(subpath \"{HOME}/{path}\")")),
@@ -355,8 +455,8 @@ mod tests {
     fn test_profile_denies_network_by_default() {
         let profile = default_profile_text();
         assert!(
-            profile.contains("(deny network*)"),
-            "default profile must deny network egress: {profile}"
+            !profile.contains("network") && !profile.contains("system-socket"),
+            "default profile must grant no socket access: {profile}"
         );
     }
 
@@ -365,8 +465,8 @@ mod tests {
         let profile_obj = SandboxProfile::new().with_allow_network(true);
         let profile = rendered(&build_profile(&policy_for(&profile_obj), &profile_obj));
         assert!(
-            !profile.contains("(deny network*)"),
-            "opt-in profile must not deny network: {profile}"
+            profile.contains("(allow network-outbound (remote ip))"),
+            "opt-in profile must allow the network: {profile}"
         );
     }
 }

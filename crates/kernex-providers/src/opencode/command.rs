@@ -105,6 +105,7 @@ impl OpenCodeProvider {
                 // it is exempt from the subprocess egress deny-by-default.
                 let mut profile = self.sandbox_profile.clone();
                 profile.allow_network = true;
+                crate::sandbox_dirs::grant_cli_state(&mut profile, &[".config/opencode"]);
                 let mut c = kernex_sandbox::try_protected_command("opencode", &scope, &profile)
                     .map_err(|e| {
                         ProviderError::Logic(format!("refusing to run opencode CLI: {e}"))

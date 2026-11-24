@@ -11,7 +11,8 @@
 //!
 //! - **Writes** are allowed under the workspace, the system temp
 //!   directories, the per-user toolchain cache directories
-//!   ([`write_allow_dirs`]) and `SandboxProfile::allowed_paths`. The data
+//!   ([`write_allow_dirs`], minus their `bin` directories) and
+//!   `SandboxProfile::allowed_paths`. The data
 //!   directory is not a write root, and its memory database, `skills/`,
 //!   `projects/` and configuration file stay denied even when the data
 //!   directory sits inside the workspace.
@@ -25,10 +26,11 @@
 //!
 //! Platform back ends:
 //!
-//! - **macOS**: Apple Seatbelt via `sandbox-exec -p <profile>`. Writes inside
-//!   `$HOME` are denied outside the write roots, and writes to `/System`,
-//!   `/bin`, `/sbin`, `/usr/{bin,sbin,lib,libexec}`, `/private/etc` and
-//!   `/Library` are denied.
+//! - **macOS**: Apple Seatbelt via `sandbox-exec -p <profile>`. The profile
+//!   denies by default: a subprocess may run programs, read files outside
+//!   the read-deny paths, write under the write roots and reach a short
+//!   list of system services. It cannot query the keychain, talk to other
+//!   applications or allocate a pseudo-terminal.
 //! - **Linux**: Landlock LSM via `pre_exec` hook (kernel 5.13+ minimum;
 //!   older kernels than 6.12 apply the rights they support). Reads are
 //!   granted everywhere except the read-deny paths, and writes only under
@@ -73,8 +75,10 @@
 //! (`SandboxProfile::allow_network = false`); tools that genuinely need
 //! egress opt in explicitly. Coverage is asymmetric by platform:
 //!
-//! - **macOS Seatbelt**: full — denies every socket operation (TCP, UDP,
+//! - **macOS Seatbelt**: full. Every socket operation is denied (TCP, UDP,
 //!   and local sockets; DNS resolution is consequently unavailable too).
+//!   A subprocess that is allowed the network also gets the system's DNS
+//!   and certificate-trust services.
 //! - **Linux Landlock**: TCP bind/connect on kernels 6.7+ (ABI v4) and
 //!   abstract Unix sockets on 6.12+ (ABI v6). Older kernels cannot restrict
 //!   the network; the gap is logged at spawn time. UDP, other non-TCP
@@ -130,6 +134,11 @@ pub struct SandboxProfile {
     /// network at all on older kernels (logged at spawn time). UDP and
     /// non-TCP sockets are never restricted on Linux.
     pub allow_network: bool,
+    /// When `true`, the sandboxed subprocess may query the macOS keychain.
+    /// Defaults to `false`. For a host that runs an agent CLI as its
+    /// provider and that CLI keeps its login in the keychain. No effect
+    /// on other platforms.
+    pub allow_keychain: bool,
 }
 
 impl SandboxProfile {
@@ -162,6 +171,13 @@ impl SandboxProfile {
     /// [`SandboxProfile::allow_network`]).
     pub fn with_allow_network(mut self, allow: bool) -> Self {
         self.allow_network = allow;
+        self
+    }
+
+    /// Allow or deny keychain queries on macOS (see
+    /// [`SandboxProfile::allow_keychain`]).
+    pub fn with_allow_keychain(mut self, allow: bool) -> Self {
+        self.allow_keychain = allow;
         self
     }
 }
@@ -243,10 +259,12 @@ use tracing::warn;
 
 mod env;
 mod gate;
+mod paths;
 mod policy;
 mod scope;
 
 pub use env::{hardened_env, BASE_ENV_ALLOWLIST};
+pub use paths::{credential_read_deny_dirs, write_allow_dirs};
 pub use scope::SandboxScope;
 
 use gate::check_workspace;
@@ -290,70 +308,6 @@ pub fn protected_command(program: &str, scope: &SandboxScope, profile: &SandboxP
     };
     hardened_env(&mut cmd);
     cmd
-}
-
-/// Credential directories/files under `$HOME` whose READS are denied to
-/// sandboxed subprocesses (the credential read-deny list).
-///
-/// Reads stay broad everywhere else; only these high-value secret stores are
-/// blocked, so an agent that is prompted (or tricked) into exfiltrating SSH
-/// keys, cloud credentials, or auth tokens is stopped at the OS layer. The
-/// list is relative-suffix joined onto the resolved `home`.
-pub fn credential_read_deny_dirs(home: &Path) -> Vec<PathBuf> {
-    [
-        ".ssh",
-        ".aws",
-        ".gnupg",
-        ".kube",
-        ".docker",
-        ".netrc",
-        ".config/gh",
-        ".config/gcloud",
-        ".config/google-chrome",
-        ".mozilla",
-        // macOS browser/credential stores
-        "Library/Application Support/Google/Chrome",
-        "Library/Application Support/Firefox",
-        "Library/Keychains",
-    ]
-    .iter()
-    .map(|p| home.join(p))
-    .collect()
-}
-
-/// Directories whose WRITES are allowed under the default lockdown posture
-/// (writes are otherwise denied inside `$HOME`).
-///
-/// Covers the per-user state/cache dirs that real toolchains write to during
-/// normal operation (cargo, rustup, npm/yarn/pnpm, deno, bun, the XDG and
-/// macOS cache trees). Writes to the workspace/data dir, `$KERNEX_DATA_DIR`,
-/// and the system temp dirs are allowed separately by the platform modules.
-///
-/// **Fallback tuning point:** if a real toolchain writes somewhere outside
-/// this list and breaks, the fix is to extend this list (or fall back to a
-/// credential-deny-list-only posture). CI cannot exercise every toolchain,
-/// so this is the most likely place to need a follow-up.
-pub fn write_allow_dirs(home: &Path) -> Vec<PathBuf> {
-    [
-        ".cache",
-        ".cargo",
-        ".rustup",
-        ".npm",
-        ".yarn",
-        ".pnpm-store",
-        ".deno",
-        ".bun",
-        ".local/state",
-        ".local/share",
-        ".gradle",
-        ".m2",
-        ".gem",
-        "Library/Caches",
-        "Library/Developer",
-    ]
-    .iter()
-    .map(|p| home.join(p))
-    .collect()
 }
 
 /// Resolve `$HOME`, falling back to `/tmp` (matches the Landlock builder's
