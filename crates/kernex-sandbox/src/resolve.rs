@@ -102,7 +102,11 @@ fn caused_by_us(stop: &Path, meta: Option<&std::fs::Metadata>) -> bool {
         let Some(parent) = stop.parent() else {
             return true;
         };
-        if parent.symlink_metadata().map_or(true, |m| m.uid() == us) {
+        // A parent that is not a directory now is not the one the walk met.
+        if parent
+            .symlink_metadata()
+            .map_or(true, |m| m.uid() == us || !m.is_dir())
+        {
             return true;
         }
         match meta {
@@ -128,7 +132,8 @@ fn searchable(dir: &Path) -> bool {
     // call, which only reads it.
     let found =
         unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
-    found == 0
+    // Only a refusal says it cannot be searched; any other error is unknown.
+    found == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES)
 }
 
 /// `path` under the stored case of its directory, its own name as written.
@@ -423,17 +428,20 @@ mod tests {
             let through_link = (hidden && link.symlink_metadata().is_err())
                 .then(|| walked(&link.join("secret")).problem);
             acl(&["-h", "-N"], &link);
-            Some((through_dir, through_link))
+            // A link of this user's that cannot be read, in root's directory.
+            let closed = acl(&["-h", "000"], &link) && std::fs::read_link(&link).is_err();
+            let unreadable = closed.then(|| walked(&link.join("secret")).problem);
+            Some((through_dir, through_link, unreadable))
         } else {
             None
         };
         let _ = std::fs::remove_file(&link);
-        let Some((through_dir, through_link)) = found else {
+        let Some((through_dir, through_link, unreadable)) = found else {
             return;
         };
         assert!(through_dir.is_some_and(|p| p.contains("cannot be looked up")));
-        if let Some(through_link) = through_link {
-            assert!(through_link.is_some_and(|p| p.contains("cannot be looked up")));
+        for problem in [through_link, unreadable].into_iter().flatten() {
+            assert!(problem.is_some_and(|p| p.contains("cannot be looked up")));
         }
     }
 
