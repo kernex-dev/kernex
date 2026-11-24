@@ -3,6 +3,7 @@
 //! Implements JSON-RPC 2.0 over newline-delimited JSON on stdin/stdout.
 //! No external MCP crate — just raw protocol using tokio + serde.
 
+pub use crate::mcp_error::McpError;
 use futures_util::StreamExt;
 use kernex_core::context::McpServer;
 use kernex_sandbox::{SandboxProfile, SandboxScope};
@@ -10,7 +11,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
-use thiserror::Error;
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
@@ -28,67 +28,14 @@ const MCP_MAX_LINE_LEN: usize = 8 * 1024 * 1024;
 const MCP_PROTOCOL_VERSION: &str = "2025-03-26";
 use tracing::{debug, warn};
 
-/// Maximum time to wait for a single MCP request/response round-trip.
-const MCP_REQUEST_TIMEOUT_SECS: u64 = 120;
+/// Directory under the runtime data directory that MCP servers start in.
+const MCP_START_DIR: &str = "mcp";
 
-/// Errors emitted by the MCP client.
-///
-/// Defining a typed error here (instead of leaking `anyhow::Error` in public
-/// signatures) keeps the option open to promote `mcp_client` from
-/// `pub(crate)` to `pub` without churn for downstream consumers.
-#[derive(Debug, Error)]
-pub enum McpError {
-    /// Spawning the MCP server process failed.
-    #[error("mcp: failed to spawn '{command}': {source}")]
-    Spawn {
-        command: String,
-        #[source]
-        source: std::io::Error,
-    },
-    /// The server's command is not in its declared command allow-list, or
-    /// no allow-list was declared.
-    #[error(
-        "mcp: '{server}' not started: command {command:?} is a relative path or is not in a declared command allow-list"
-    )]
-    NotAllowed { server: String, command: String },
-    /// stdin/stdout pipe was missing on the spawned child.
-    #[error("mcp: '{server}' missing {channel} pipe")]
-    MissingPipe {
-        server: String,
-        channel: &'static str,
-    },
-    /// I/O error reading from or writing to the server.
-    #[error("mcp: I/O error on '{server}': {source}")]
-    Io {
-        server: String,
-        #[source]
-        source: std::io::Error,
-    },
-    /// Failed to (de)serialize a JSON-RPC frame.
-    #[error("mcp: JSON error on '{server}': {source}")]
-    Json {
-        server: String,
-        #[source]
-        source: serde_json::Error,
-    },
-    /// MCP server returned a JSON-RPC error response.
-    #[error("mcp: '{server}' error on {method}: {message}")]
-    Server {
-        server: String,
-        method: String,
-        message: String,
-    },
-    /// MCP server's stdout closed mid-request.
-    #[error("mcp: '{server}' stdout closed")]
-    StdoutClosed { server: String },
-    /// Round-trip exceeded [`MCP_REQUEST_TIMEOUT_SECS`].
-    #[error("mcp: '{server}' timed out waiting for response to {method} (>{seconds}s)")]
-    Timeout {
-        server: String,
-        method: String,
-        seconds: u64,
-    },
-}
+/// Text in a server argument that is replaced with the workspace path.
+pub(crate) const WORKSPACE_PLACEHOLDER: &str = "{workspace}";
+
+/// Maximum time to wait for a single MCP request/response round-trip.
+pub(crate) const MCP_REQUEST_TIMEOUT_SECS: u64 = 120;
 
 /// A tool definition discovered from an MCP server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,7 +104,11 @@ impl McpClient {
     ///
     /// The server runs under the same scope as a tool subprocess: it writes
     /// to the workspace and nowhere in the runtime data directory, and does
-    /// not read credential stores. It gets network access only when its
+    /// not read credential stores. Its working directory is `mcp/` inside
+    /// the data directory, which no tool can write, so nothing the model
+    /// created is found by a relative lookup (a script argument, a package
+    /// directory). An argument reaches the workspace by naming it:
+    /// [`WORKSPACE_PLACEHOLDER`] is replaced with the workspace path. It gets network access only when its
     /// declaration (or the host's profile) grants it. A server whose command
     /// is not in a non-empty declared allow-list is not started.
     ///
@@ -202,6 +153,15 @@ impl McpClient {
                 ),
             });
         }
+        let start_dir = scope.data_dir.join(MCP_START_DIR);
+        std::fs::create_dir_all(&start_dir).map_err(|e| McpError::Spawn {
+            command: command.to_string(),
+            source: std::io::Error::new(
+                e.kind(),
+                format!("cannot create {}: {e}", start_dir.display()),
+            ),
+        })?;
+        let workspace = scope.workspace.to_string_lossy();
         let profile = server_profile(profile, server);
         let mut cmd =
             kernex_sandbox::try_protected_command(command, scope, &profile).map_err(|e| {
@@ -210,12 +170,17 @@ impl McpClient {
                     source: e,
                 }
             })?;
-        cmd.args(&server.args)
-            .current_dir(&scope.workspace)
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
+        cmd.args(
+            server
+                .args
+                .iter()
+                .map(|arg| arg.replace(WORKSPACE_PLACEHOLDER, &workspace)),
+        )
+        .current_dir(&start_dir)
+        .kill_on_drop(true)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
         let (safe_env, dropped) = kernex_core::spawn::filter_unsafe_env(&server.env);
         for k in &dropped {
             tracing::warn!(
@@ -540,7 +505,10 @@ done
         McpServer {
             name: "echo".into(),
             command: "sh".into(),
-            args: vec![script.to_string_lossy().into_owned()],
+            args: vec![format!(
+                "{WORKSPACE_PLACEHOLDER}/{}",
+                script.file_name().unwrap().to_string_lossy()
+            )],
             allowed_commands: allowed.iter().map(|s| s.to_string()).collect(),
             ..Default::default()
         }
@@ -610,6 +578,13 @@ done
             call(&mut client, "put_file", &workspace.join("out.txt")).await,
             "WROTE"
         );
+        // The server does not start in the workspace: a relative name is not
+        // a workspace file.
+        assert_eq!(
+            call(&mut client, "cat_file", std::path::Path::new("note.txt")).await,
+            "DENIED"
+        );
+        assert!(data_dir.join("mcp").is_dir());
 
         let required =
             std::env::var("KERNEX_TEST_REQUIRE_SANDBOX").is_ok_and(|v| !v.is_empty() && v != "0");
@@ -626,13 +601,17 @@ done
             // by policy, so only the data directory can be probed there.
             let temp = std::env::temp_dir();
             let temp = temp.canonicalize().unwrap_or(temp);
-            let mut outside = vec![data_dir.join("planted.txt")];
+            let mut outside = vec![
+                data_dir.join("planted.txt"),
+                std::path::PathBuf::from("relative.txt"),
+            ];
             if !root.starts_with(&temp) {
                 outside.push(root.join("outside.txt"));
             }
             for outside in outside {
                 assert_eq!(call(&mut client, "put_file", &outside).await, "DENIED");
                 assert!(!outside.exists(), "{}", outside.display());
+                assert!(!data_dir.join("mcp").join(&outside).exists());
             }
         }
         client.shutdown().await;
@@ -654,7 +633,7 @@ done
             args: vec![
                 "-y".into(),
                 "@modelcontextprotocol/server-filesystem".into(),
-                ".".into(),
+                WORKSPACE_PLACEHOLDER.into(),
             ],
             allowed_commands: vec!["npx".into()],
             ..Default::default()

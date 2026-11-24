@@ -7,7 +7,7 @@ trigger = "sqlite|database|sql|query|table"
 
 [mcp.sqlite]
 command = "npx"
-args = ["-y", "@modelcontextprotocol/server-sqlite", "./data.db"]
+args = ["-y", "@modelcontextprotocol/server-sqlite", "{workspace}/data.db"]
 
 [permissions]
 commands = ["npx"]

@@ -7,7 +7,7 @@ trigger = "file|read file|write file|list files|directory|folder"
 
 [mcp.filesystem]
 command = "npx"
-args = ["-y", "@modelcontextprotocol/server-filesystem", "."]
+args = ["-y", "@modelcontextprotocol/server-filesystem", "{workspace}"]
 
 [permissions]
 commands = ["npx"]

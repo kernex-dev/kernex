@@ -70,14 +70,16 @@ those limits are stated.
   informational; the OS sandbox is all-or-nothing).
 - **MCP command validation** — MCP server commands must be either an absolute
   path under a system prefix or one of a short list of well-known runners
-  (npx, uvx, uv, node, python, python3, deno, bun, docker). Relative paths
+  (npx, uvx, uv, node, python, python3, deno, bun). Relative paths
   are rejected for both MCP and toolbox commands. Skill-declared arguments
   and environment pairs are validated against control-character and
   shell-metacharacter filters.
 - **MCP servers run inside the sandbox** — a server the runtime starts gets
   the same OS profile as a tool subprocess, with no network unless its skill
   declares `permissions.network`, and it starts only if its command is listed
-  in a non-empty `permissions.commands`. The server starts in the workspace.
+  in a non-empty `permissions.commands`. The server starts in a directory
+  no tool can write (`mcp/` in the data directory) and reaches the workspace
+  through `{workspace}` in its arguments.
   With the CLI providers the external CLI starts the servers itself, inside
   its own sandbox and with its network.
 - **SSRF protection** — the in-process `web_fetch` tool resolves hostnames

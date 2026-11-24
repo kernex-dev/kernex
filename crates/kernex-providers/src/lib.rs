@@ -16,6 +16,7 @@ pub mod factory;
 pub mod gemini;
 pub mod http_retry;
 pub(crate) mod mcp_client;
+pub(crate) mod mcp_error;
 pub mod ollama;
 pub mod openai;
 pub mod opencode;

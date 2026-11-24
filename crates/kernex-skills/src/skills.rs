@@ -147,9 +147,10 @@ fn read_capped(path: &Path, max_bytes: u64) -> std::io::Result<String> {
 /// MCP servers. Real MCP servers launch through a small set of well-known
 /// runners; anything else must be an absolute path under a system prefix.
 /// Keeping this list short is the point: a skill cannot name an arbitrary
-/// binary that happens to be on `$PATH`.
+/// binary that happens to be on `$PATH`. A container runtime is not on it:
+/// the server would run in a container the OS sandbox does not confine.
 const MCP_BARE_COMMAND_ALLOWLIST: &[&str] = &[
-    "npx", "uvx", "uv", "node", "python", "python3", "deno", "bun", "docker",
+    "npx", "uvx", "uv", "node", "python", "python3", "deno", "bun",
 ];
 
 /// Shared command-token validation for skill-declared commands (MCP servers
@@ -966,6 +967,8 @@ mod tests {
         // Arbitrary bare names resolved via $PATH are rejected.
         assert!(!is_safe_mcp_command("mcp-server-fetch"));
         assert!(!is_safe_mcp_command("payload"));
+        // A container runtime would run the server outside the sandbox.
+        assert!(!is_safe_mcp_command("docker"));
         // Relative paths resolve against an influenceable cwd: rejected.
         assert!(!is_safe_mcp_command("@scope/tool"));
         assert!(!is_safe_mcp_command("bin/tool"));
