@@ -93,13 +93,14 @@ those limits are stated.
   directory under `cli/` in the data directory, which no other sandboxed
   process can read or write, not in the user's (`~/.claude`,
   `~/.config/opencode`), and reads no settings or project config files, so
-  nothing its tools write runs in the user's own CLI. OpenCode's config
-  there is read-only, its cache is new for every call and its login files
-  are removed before every call: it reaches a model provider only through
-  that provider's API key variable, of which it receives just the one it
-  is configured for. OpenCode's logins in the user's home are closed to
-  every sandboxed process. When a call times out, the CLI is killed with
-  every process it started.
+  nothing its tools write runs in the user's own CLI. OpenCode gets new
+  config, data, state and cache directories for every call, removed
+  afterwards, so nothing one call leaves there is read by the next: it has
+  no stored login and keeps no session between calls, and it reaches a
+  model provider only through that provider's API key variable, of which it
+  receives just the one it is configured for. OpenCode's logins in the
+  user's home are closed to every sandboxed process. When a call ends, by
+  a timeout or normally, the CLI's process group is killed with it.
 - **SSRF protection** — the in-process `web_fetch` tool resolves hostnames
   itself, validates every resolved address against private/link-local/
   loopback ranges, and pins the connection to the validated addresses, so a

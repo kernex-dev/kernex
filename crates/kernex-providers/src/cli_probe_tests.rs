@@ -34,7 +34,7 @@ fn stand_in(dir: &Path, name: &str, probes: &[&Path]) -> PathBuf {
         .collect();
     let script = format!(
         r#"#!/bin/sh
-text=$( {{ echo "CWD=$(pwd -P)"; {probe_lines} echo ENV; env | sort; for a in "$@"; do echo "ARG=$a"; done; }} \
+text=$( {{ echo "CWD=$(pwd -P)"; {probe_lines} if mkdir -p "${{XDG_CONFIG_HOME:-/nonexistent}}/opencode" 2>/dev/null; then echo XDGCONF=ok; else echo XDGCONF=fail; fi; echo ENV; env | sort; for a in "$@"; do echo "ARG=$a"; done; }} \
   | tr -d '\t\r' | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | awk '{{printf "%s\\n", $0}}' )
 case "$0" in
   *opencode*) printf '{{"type":"text","sessionID":"s1","part":{{"text":"%s"}}}}\n' "$text" ;;
@@ -55,6 +55,8 @@ esac
 struct Report {
     cwd: PathBuf,
     probes: Vec<String>,
+    /// Whether `mkdir -p $XDG_CONFIG_HOME/opencode` worked.
+    config_dir_ok: bool,
     env: BTreeMap<String, String>,
     args: Vec<String>,
 }
@@ -64,6 +66,7 @@ impl Report {
         let mut report = Report {
             cwd: PathBuf::new(),
             probes: Vec::new(),
+            config_dir_ok: false,
             env: BTreeMap::new(),
             args: Vec::new(),
         };
@@ -73,6 +76,8 @@ impl Report {
                 report.cwd = PathBuf::from(v);
             } else if let Some(v) = line.strip_prefix("PROBE=") {
                 report.probes.push(v.to_string());
+            } else if let Some(v) = line.strip_prefix("XDGCONF=") {
+                report.config_dir_ok = v == "ok";
             } else if line == "ENV" {
                 in_env = true;
             } else if let Some(v) = line.strip_prefix("ARG=") {
@@ -259,18 +264,8 @@ async fn opencode_gets_only_its_provider_key() {
     std::fs::create_dir_all(data_dir.join("data")).unwrap();
     let probe = data_dir.join("data").join("planted");
     let state = data_dir.join("cli").join("opencode");
-    let config_probe = state.join("config").join("written");
-    let data_probe = state.join("data").join("written");
     let claude_probe = data_dir.join("cli").join("claude").join("planted");
-    let cli = stand_in(
-        root.path(),
-        "fake-opencode",
-        &[&probe, &config_probe, &data_probe, &claude_probe],
-    );
-    // A login entry an earlier call could have planted.
-    let auth = state.join("data").join("opencode").join("auth.json");
-    std::fs::create_dir_all(auth.parent().unwrap()).unwrap();
-    std::fs::write(&auth, r#"{"x":{"type":"wellknown"}}"#).unwrap();
+    let cli = stand_in(root.path(), "fake-opencode", &[&probe, &claude_probe]);
     std::fs::create_dir_all(data_dir.join("cli").join("claude")).unwrap();
 
     let provider = OpenCodeProvider::from_config(60, None, "anthropic/claude-sonnet-4-6".into())
@@ -289,23 +284,37 @@ async fn opencode_gets_only_its_provider_key() {
         report.env.get("ANTHROPIC_API_KEY").map(String::as_str),
         Some("value-of-ANTHROPIC_API_KEY")
     );
-    // OpenCode's own directories, never the user's, and no project config.
+    // New OpenCode directories for this call, never the user's, removed
+    // afterwards; no project config.
+    let config_home = report
+        .env
+        .get("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap();
+    let run = config_home.parent().unwrap().to_path_buf();
+    assert_eq!(run.parent(), Some(state.as_path()));
+    assert!(run
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .starts_with("run-"));
     for (var, sub) in [
         ("XDG_CONFIG_HOME", "config"),
         ("XDG_DATA_HOME", "data"),
         ("XDG_STATE_HOME", "state"),
+        ("XDG_CACHE_HOME", "cache"),
     ] {
-        assert_eq!(
-            report.env.get(var).map(PathBuf::from),
-            Some(state.join(sub))
-        );
+        assert_eq!(report.env.get(var).map(PathBuf::from), Some(run.join(sub)));
     }
-    // A cache of its own for this call, gone afterwards.
-    let cache = report.env.get("XDG_CACHE_HOME").map(PathBuf::from).unwrap();
-    assert_eq!(cache.parent(), Some(state.join("cache").as_path()));
-    assert!(!cache.exists());
-    // The planted login was removed before the call.
-    assert!(!auth.exists());
+    assert!(!run.exists());
+    // OpenCode creates `$XDG_CONFIG_HOME/opencode` at startup.
+    assert!(report.config_dir_ok);
+    // No session survives the call, so none is offered for continuation.
+    let second = provider.complete(&ctx).await.unwrap();
+    assert!(second.metadata.session_id.is_none());
+    assert!(!Report::parse(&second.text)
+        .args
+        .contains(&"--session".to_string()));
     assert_eq!(
         report
             .env
@@ -345,13 +354,10 @@ async fn opencode_gets_only_its_provider_key() {
     let workspace_arg = config["mcp"]["online"]["command"][3].as_str().unwrap();
     assert_eq!(Path::new(workspace_arg).file_name(), report.cwd.file_name());
 
-    assert_eq!(report.probes[2], "WRITTEN");
     if enforcing() {
-        // Runtime state, OpenCode's config and the Claude CLI's state.
-        assert_eq!(report.probes[0], "DENIED");
-        assert_eq!(report.probes[1], "DENIED");
-        assert_eq!(report.probes[3], "DENIED");
-        assert!(!probe.exists() && !config_probe.exists() && !claude_probe.exists());
+        // Runtime state and the Claude CLI's state.
+        assert_eq!(report.probes, ["DENIED", "DENIED"]);
+        assert!(!probe.exists() && !claude_probe.exists());
     }
 }
 
@@ -382,5 +388,38 @@ async fn a_timed_out_cli_is_ended_with_what_it_started() {
     assert!(
         !marker.exists(),
         "a process the CLI started outlived the call"
+    );
+}
+
+#[tokio::test]
+async fn a_background_job_ends_with_the_call() {
+    let root = tempfile::tempdir().unwrap();
+    let marker = root.path().join("background");
+    let cli = root.path().join("quick-claude");
+    std::fs::write(
+        &cli,
+        format!(
+            r#"#!/bin/sh
+( sleep 2; : > '{}' ) > /dev/null 2>&1 &
+printf '{{"type":"result","subtype":"success","result":"ok"}}'
+"#,
+            marker.display()
+        ),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let provider = ClaudeCodeProvider::new()
+        .with_sandbox_dirs(SandboxDirs::new().with_data_dir(root.path().join("state")))
+        .with_program(cli.to_string_lossy());
+    let reply = provider.complete(&Context::new("hello")).await.unwrap();
+    assert_eq!(reply.text, "ok");
+    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    assert!(
+        !marker.exists(),
+        "a job the CLI left running outlived the call"
     );
 }

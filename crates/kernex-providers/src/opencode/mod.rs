@@ -185,11 +185,12 @@ impl OpenCodeProvider {
         self
     }
 
-    /// The directory OpenCode keeps its config, data, state and cache in
-    /// when kernex runs it: `cli/opencode` inside the runtime data directory.
-    /// The `config` directory inside it is read-only to OpenCode, and its
-    /// login files are closed, so OpenCode reaches a model provider only
-    /// through the provider's API key variable.
+    /// The directory OpenCode's per-call directories live in when kernex
+    /// runs it: `cli/opencode` inside the runtime data directory. Each call
+    /// gets new config, data, state and cache directories in a `run-*`
+    /// directory there, removed after the call, so OpenCode has no stored
+    /// login (it reaches a model provider through the provider's API key
+    /// variable) and keeps no session between calls.
     pub fn cli_state_dir(&self) -> PathBuf {
         self.sandbox_dirs
             .resolved_data_dir()

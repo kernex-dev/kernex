@@ -46,7 +46,9 @@ impl Provider for OpenCodeProvider {
         let args = Self::build_run_args(
             &prompt,
             model,
-            context.session_id.as_deref(),
+            // Every call starts with empty OpenCode directories, so there
+            // is no earlier session to continue.
+            None,
             context.agent_name.as_deref(),
         );
 
@@ -73,7 +75,7 @@ impl Provider for OpenCodeProvider {
                 processing_time_ms: start.elapsed().as_millis() as u64,
                 model: (!model.is_empty()).then(|| model.to_string()),
                 stop_reason: run.stop_reason,
-                session_id: run.session_id,
+                session_id: None,
                 ..Default::default()
             },
         })

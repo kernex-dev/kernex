@@ -139,7 +139,7 @@ pub(crate) fn servers_for_cli(
         .collect()
 }
 
-/// Ends the child's process group when dropped, unless the child finished.
+/// Ends the child's process group when dropped.
 struct GroupGuard(Option<u32>);
 
 impl Drop for GroupGuard {
@@ -153,10 +153,12 @@ impl Drop for GroupGuard {
 /// Run `cmd` to completion and collect its output, giving up after
 /// `timeout`.
 ///
-/// The child runs in its own process group. When the call times out or the
-/// caller stops waiting, the whole group is killed, so the shell commands
-/// and servers the CLI started do not outlive it. `Err(Elapsed)` is the
-/// timeout; the inner result is the spawn or wait outcome.
+/// The child runs in its own process group, and the group is killed when
+/// the call ends: on a timeout, when the caller stops waiting, and after a
+/// normal exit, so the shell commands and servers the CLI started do not
+/// outlive it. A process that left the group (`setsid`) is not reached.
+/// `Err(Elapsed)` is the timeout; the inner result is the spawn or wait
+/// outcome.
 pub(crate) async fn run_with_timeout(
     mut cmd: tokio::process::Command,
     timeout: std::time::Duration,
@@ -175,14 +177,13 @@ pub(crate) async fn run_with_timeout(
     let group = child.id();
     let wait = child.wait_with_output();
     tokio::pin!(wait);
-    // Declared after `wait`, so it is dropped first: the group is killed
-    // while the child is still unreaped and its id still names the group.
-    let mut guard = GroupGuard(group);
-    let result = tokio::time::timeout(timeout, &mut wait).await;
-    if result.is_ok() {
-        guard.0 = None;
-    }
-    result
+    // Declared after `wait`, so it is dropped first: on a timeout or a
+    // cancellation the group is killed while the child is still unreaped and
+    // its id still names the group. After a normal exit the id names the
+    // group for as long as any member is alive, and a free id is not handed
+    // out again within the moment before the kill.
+    let _guard = GroupGuard(group);
+    tokio::time::timeout(timeout, &mut wait).await
 }
 
 /// ASCII letters, digits, `_` and `-`, at least one character.

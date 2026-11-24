@@ -68,7 +68,7 @@ impl OpenCodeProvider {
         workspace: &Path,
         model: &str,
     ) -> Result<std::process::Output, KernexError> {
-        let (mut cmd, _cache) = self.base_command(workspace, model)?;
+        let (mut cmd, _run) = self.base_command(workspace, model)?;
         cmd.env("OPENCODE_CONFIG_CONTENT", config_json);
         cmd.args(args);
         debug!("executing: opencode run --format json <prompt>");
@@ -96,8 +96,8 @@ impl OpenCodeProvider {
 
     /// Build the base `Command`: OpenCode sandboxed in `workspace`, with its
     /// own directories, network access and the key of the model provider
-    /// `model` names. The returned directory is this call's cache; it is
-    /// removed when dropped, after the call.
+    /// `model` names. The returned directory holds this call's OpenCode
+    /// directories; it is removed when dropped, after the call.
     ///
     /// Errors when OS-level sandbox enforcement is required (profile flag or
     /// `KERNEX_REQUIRE_SANDBOX=1`) and the host cannot provide it.
@@ -113,45 +113,35 @@ impl OpenCodeProvider {
                 state.display()
             ))
         };
-        for (_, sub) in XDG_DIRS {
-            crate::cli_support::create_private_dir(&state.join(sub)).map_err(refuse)?;
-        }
-        // OpenCode's tools run in OpenCode's own sandbox and can write what it
-        // writes. So that nothing one call leaves there steers the next:
-        // - its config directory is read-only (no agent, plugin or command
-        //   can be added);
-        // - its login files are removed before every call (logins come from
-        //   API key variables only, and a planted entry could make OpenCode
-        //   fetch and merge a remote config);
-        // - its cache, where it installs plugin packages and skills, is new
-        //   for every call.
-        for file in ["auth.json", "mcp-auth.json"] {
-            let path = state.join("data").join("opencode").join(file);
-            match std::fs::remove_file(&path) {
-                Ok(()) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => return Err(refuse(e).into()),
-            }
-        }
-        let cache = tempfile::Builder::new()
+        // OpenCode's tools run in OpenCode's own sandbox and can write what
+        // it writes: its config (agents, plugins), its logins (a planted
+        // entry makes it fetch and merge a remote config) and its cache
+        // (plugin packages, skills, model metadata, binaries). So every call
+        // gets new, empty directories, removed afterwards, and nothing one
+        // call leaves behind is read by the next.
+        crate::cli_support::create_private_dir(&state).map_err(refuse)?;
+        let run = tempfile::Builder::new()
             .prefix("run-")
-            .tempdir_in(state.join("cache"))
+            .tempdir_in(&state)
+            .map_err(refuse)?;
+        for (_, sub) in XDG_DIRS {
+            crate::cli_support::create_private_dir(&run.path().join(sub)).map_err(refuse)?;
+        }
+        // OpenCode creates `$XDG_CONFIG_HOME/opencode` at startup.
+        crate::cli_support::create_private_dir(&run.path().join("config").join("opencode"))
             .map_err(refuse)?;
         let scope = self.sandbox_dirs.scope(workspace);
         // OpenCode IS the provider: it must reach the model API, so it is
         // exempt from the subprocess egress deny-by-default.
         let mut profile = self.sandbox_profile.clone();
         profile.allow_network = true;
-        for sub in ["data", "state", "cache"] {
-            profile.allowed_paths.push(state.join(sub));
-        }
+        profile.allowed_paths.push(state.clone());
         let mut cmd = kernex_sandbox::try_protected_command(&self.program, &scope, &profile)
             .map_err(|e| ProviderError::Logic(format!("refusing to run opencode CLI: {e}")))?;
         cmd.current_dir(workspace);
         for (var, sub) in XDG_DIRS {
-            cmd.env(var, state.join(sub));
+            cmd.env(var, run.path().join(sub));
         }
-        cmd.env("XDG_CACHE_HOME", cache.path());
         // Neither `opencode.json` nor `.opencode/` from the workspace, which
         // the model can write.
         cmd.env("OPENCODE_DISABLE_PROJECT_CONFIG", "1");
@@ -173,6 +163,6 @@ impl OpenCodeProvider {
                 }
             }
         }
-        Ok((cmd, cache))
+        Ok((cmd, run))
     }
 }

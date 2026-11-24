@@ -573,12 +573,12 @@ mod tests {
         };
         let scope = SandboxScope::new(p("code/proj"), p("tmp/state"));
         let others = Policy::with_host(&scope, &SandboxProfile::default(), &host);
-        for dir in ["cli/claude", "cli/opencode/data", "cli/opencode/state"] {
+        for dir in ["cli/claude", "cli/opencode"] {
             let file = p(&format!("tmp/state/{dir}/f"));
             assert_eq!(others.check_write(&file), Err(Denial::Protected), "{dir}");
             assert_eq!(others.check_read(&file), Err(Denial::Protected), "{dir}");
         }
-        for dir in ["cli/mcp-config", "cli/opencode/config", "mcp"] {
+        for dir in ["cli/mcp-config", "mcp"] {
             let file = p(&format!("tmp/state/{dir}/f"));
             assert_eq!(others.check_write(&file), Err(Denial::Protected), "{dir}");
             assert_eq!(others.check_read(&file), Ok(()), "{dir}");
@@ -588,7 +588,7 @@ mod tests {
         let claude = Policy::with_host(&scope, &claude, &host);
         assert_eq!(claude.check_write(&p("tmp/state/cli/claude/f")), Ok(()));
         assert_eq!(
-            claude.check_write(&p("tmp/state/cli/opencode/data/f")),
+            claude.check_write(&p("tmp/state/cli/opencode/run-1/f")),
             Err(Denial::Protected)
         );
         // Naming a directory above the state lifts nothing.
