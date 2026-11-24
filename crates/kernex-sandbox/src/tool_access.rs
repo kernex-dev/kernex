@@ -66,18 +66,24 @@ pub fn tool_write_path(
 
 /// The read-deny paths at or below `root`, resolved.
 ///
-/// A search tool that walks `root` leaves these out of its results.
+/// A search tool that walks `root` leaves these out of its results. A
+/// policy that cannot be used is refused, as the path checks refuse it: its
+/// deny list may name only part of what it protects.
 pub fn tool_search_exclusions(
     root: &Path,
     scope: &SandboxScope,
     profile: &SandboxProfile,
-) -> Vec<PathBuf> {
-    Policy::new(scope, profile)
+) -> Result<Vec<PathBuf>, ToolPathDenied> {
+    let policy = Policy::new(scope, profile);
+    if policy.invalid().is_some() {
+        return Err(ToolPathDenied);
+    }
+    Ok(policy
         .read_deny()
         .iter()
         .filter(|denied| denied.starts_with(root))
         .cloned()
-        .collect()
+        .collect())
 }
 
 /// `path` with its symlinks resolved, the way the tool checks resolve it:
@@ -266,10 +272,21 @@ mod tests {
             Err(ToolPathDenied)
         );
 
-        let exclusions = tool_search_exclusions(&root.join("ws"), &scope, &profile);
+        let exclusions = tool_search_exclusions(&root.join("ws"), &scope, &profile).unwrap();
         assert!(exclusions.contains(&root.join("ws/secrets")));
         assert!(exclusions.contains(&root.join("ws/.agent/memory.db")));
         assert!(exclusions.iter().all(|p| p.starts_with(root.join("ws"))));
+    }
+
+    #[test]
+    fn test_search_exclusions_refuse_an_unusable_policy() {
+        let (_dir, root, scope) = fixture();
+        // A relative path makes the policy unusable.
+        let profile = SandboxProfile::new().with_blocked_paths(vec![PathBuf::from("secrets")]);
+        assert_eq!(
+            tool_search_exclusions(&root.join("ws"), &scope, &profile),
+            Err(ToolPathDenied)
+        );
     }
 
     #[cfg(unix)]
