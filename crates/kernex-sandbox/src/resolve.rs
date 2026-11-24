@@ -133,8 +133,11 @@ fn searchable(dir: &Path, before: &std::fs::Metadata) -> bool {
     };
     // SAFETY: `name` is a valid NUL-terminated string that outlives the
     // call, which only reads it.
-    let flags = libc::AT_EACCESS | libc::AT_SYMLINK_NOFOLLOW;
-    let found = unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), libc::X_OK, flags) };
+    // `AT_EACCESS` alone: other flags send some C libraries to an emulation
+    // that ignores ACLs, or to an error. The identity check below is what
+    // keeps a link swapped in at `dir` from counting.
+    let found =
+        unsafe { libc::faccessat(libc::AT_FDCWD, name.as_ptr(), libc::X_OK, libc::AT_EACCESS) };
     // Only a refusal says it cannot be searched; any other error is unknown.
     if found == 0 || std::io::Error::last_os_error().raw_os_error() != Some(libc::EACCES) {
         return true;
@@ -474,6 +477,7 @@ mod tests {
 
     #[test]
     fn an_unknown_answer_about_a_stops_directory_counts_as_ours() {
+        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let before = dir.path().symlink_metadata().unwrap();
         // Gone, or a file in its place: not the directory that was checked.
@@ -482,6 +486,16 @@ mod tests {
         std::fs::write(&file, "x").unwrap();
         assert!(searchable(&file, &before));
         assert!(caused_by_us(&dir.path().join("missing/x"), None));
+        // A closed directory counts only as the one that was looked at.
+        let closed = dir.path().join("closed");
+        std::fs::create_dir(&closed).unwrap();
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&closed).is_err() {
+            let seen = closed.symlink_metadata().unwrap();
+            assert!(!searchable(&closed, &seen));
+            assert!(searchable(&closed, &before));
+        }
+        std::fs::set_permissions(&closed, std::fs::Permissions::from_mode(0o700)).unwrap();
         // A file of root's as the stop's directory.
         let hosts = ["/private/etc/hosts", "/etc/hosts"]
             .into_iter()
