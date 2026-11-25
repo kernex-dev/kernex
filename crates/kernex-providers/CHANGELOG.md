@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/kernex-dev/kernex/compare/v0.11.0...v0.12.0) - 2026-11-25
+
+### Added
+
+- [**breaking**] run the agent CLI providers under the tool policy
+- *(providers)* [**breaking**] start MCP servers outside the workspace
+- *(providers)* [**breaking**] start MCP servers inside the sandbox
+- *(providers)* [**breaking**] enforce allowed_tools and match permission rules per argument
+- *(providers)* [**breaking**] turn web_fetch off by default and gate it by host
+- *(providers)* [**breaking**] confine the file tools to the workspace
+- *(sandbox)* [**breaking**] deny by default in the macOS profile
+- *(sandbox)* [**breaking**] scope tool writes to the workspace through one path policy
+
+### Fixed
+
+- *(sandbox)* [**breaking**] check a search root and its exclusions against one policy
+- *(sandbox)* guard links on the way to a write root, keep root metadata writable
+- *(sandbox)* keep write roots from being swapped for a symlink
+- *(providers)* [**breaking**] give OpenCode new directories for every call
+- *(providers)* refuse relative MCP commands and undeclared servers for CLI providers
+- *(providers)* match file rules on the resolved path and filter search results
+- *(providers)* close address and pinning gaps in web_fetch
+- *(sandbox)* let Linux subprocesses list directories above a protected path
+- *(providers)* keep skills readable and bound what the read tool opens
+
+### Other
+
+- describe the 0.12.0 sandbox, tools and memory as they now work
+- declare Rust 1.86 as the minimum and check it in CI
+- *(providers)* name what the policy must refuse in the MCP probe
+- *(providers)* let the sandbox policy pick which MCP writes to probe
+- *(providers)* probe MCP server writes the same way from any checkout
+- *(providers)* make the process group probes need a real survivor
+
 ## [0.11.0](https://github.com/kernex-dev/kernex/compare/v0.10.0...v0.11.0) - 2026-11-21
 
 ### Added
