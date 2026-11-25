@@ -169,7 +169,7 @@ impl Store {
     /// statement, so when several pollers (an HTTP server, an open REPL, a
     /// one-shot drain) share a store, each due task is handed to exactly one
     /// of them. Claims left behind by a dead claimer become reclaimable
-    /// after [`CLAIM_STALE_MINUTES`].
+    /// after 10 minutes (`CLAIM_STALE_MINUTES`).
     ///
     /// The claim is released by [`Store::complete_task`] (recurring tasks
     /// return to 'pending' at the next due time) or [`Store::fail_task`]

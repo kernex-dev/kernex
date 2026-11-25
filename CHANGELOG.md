@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Planned as 0.12.0. Sandbox and tool-policy release: the OS sandbox, the in-process tools, MCP servers and the agent CLI providers now share one path policy, and several defaults are stricter. Read "Changed defaults" and "Breaking" before upgrading. [SECURITY.md](SECURITY.md) describes the resulting posture and its platform limits.
+
+### Changed defaults
+
+- **Subprocess writes** (`bash`, toolboxes, MCP servers, agent CLIs) are allowed only under the workspace, the system temp directories, the per-user toolchain cache directories and `allowed_paths`. The runtime data directory is no longer a write root (its database, config, `skills/`, `projects/` and `mcp/` stay unwritable even when it sits inside one), nor are sibling directories of the workspace. Programs and startup files inside the cache directories (`~/.cargo/bin`, `~/.cargo/env`, `~/.bun/bin`, ...) are read-only, and `~/.rustup` and `~/.local/share` are no longer write roots. A workspace that is `$HOME`, one of its ancestors or `/` is not a write root.
+- **macOS** profile denies by default. A sandboxed subprocess can no longer write outside the write roots (`/usr/local` and `/opt/homebrew` included), query the keychain, talk to other applications, allocate a pseudo-terminal or connect to a local socket. A write root and the directories between it and an enclosing root cannot be created, removed or renamed from inside the sandbox, so a toolchain cache directory that does not exist yet must be created outside it.
+- **Linux** grants rights only where the policy allows them. A kernel older than 6.2 (Landlock ABI 3) no longer counts as enforcing. Files cannot be created directly inside a directory on the way to a protected path (`/`, the home directory, the data directory).
+- **More files are unreadable** to subprocesses: `.npmrc`, `.git-credentials`, the cargo credential files, agent CLI state (`~/.claude`, `~/.claude.json`, `~/.codex`, `~/.config/opencode`) and shell and REPL history files.
+- **File tools** (`read`, `write`, `edit`, `grep`, `glob`) refuse paths outside the workspace, `allowed_paths` and the new `read_paths` (reads also reach the data directory's `skills/` and `projects/`). `read` opens regular files only and reads up to the output cap.
+- **`web_fetch`** is off by default and not offered to the model. Redirects are now followed (up to five), each hop checked like the first URL. A URL with credentials is refused.
+- **Tool gates**: `allowed_tools` offers exactly the tools it names (built-in, toolbox and MCP); for the HTTP providers any non-empty list used to enable every tool. Permission rules match one value per call (the command, the resolved path, the URL, or the serialized arguments of other tools); a value over 64 KiB is denied when any rule is set. A `Bash(...)` allow rule no longer admits a chained, piped or redirected command.
+- **MCP servers** run inside the OS sandbox, start only when their command is listed in the skill's non-empty `permissions.commands`, have no network unless the skill grants it (`permissions.network`, or `network = true` on its `[mcp.<name>]` frontmatter entry; `mcp.json` has no such field) or the host profile already allows the network, and start in `mcp/` inside the data directory instead of the workspace. Relative commands and the bare `docker` command are refused.
+- **Agent CLI providers** (`claude-code`, `opencode`) always run inside the OS sandbox; without a workspace each call gets an empty temporary directory. Both CLIs, and everything they run, always have the network; claude-code also gets the macOS keychain for its login. An empty `allowed_tools` means no tools, and the CLI's permission bypass is off unless `cli_permission_bypass` is set. Each CLI keeps its state under `cli/` in the data directory and reads none of the user's config. The CLIs' fetch and search tools run only with `WebFetchPolicy::AllowAll`. Only MCP servers that declare network access are passed to a CLI. OpenCode receives only its model provider's API key, gets new directories for every call and keeps no session between calls. The CLI's process group is killed when a call ends.
+- **Recalled memory** goes into the system prompt inside one `<recalled_memory>` block marked as data, after the base rules (the compaction summary included). Lines in a flattened prompt that read as a section header are escaped.
+- **No-project conversations**: a runtime without a project now reads its history from the `"default"` conversation, where its exchanges were always stored, so it sees its own past messages.
+
+### Added
+
+- **kernex-sandbox**: `SandboxScope`, `SandboxProfile::new` and `with_*` builders, `SandboxProfile::read_paths` and `allow_keychain`, `landlock_abi_version`, `tool_read_path`, `tool_write_path`, `tool_search_root`, `ToolPathDenied`, `resolved_path`, `no_follow` and `kill_process_group`.
+- **kernex-providers**: `WebFetchPolicy`, `SandboxDirs`, and `with_sandbox_dirs` and `with_web_fetch_policy` on the providers; `ClaudeCodeProvider::with_permission_bypass` and `cli_config_dir`, `OpenCodeProvider::with_permission_bypass` and `cli_state_dir`.
+- **kernex-core**: `ContextNeeds::store`, `RunConfig::needs`, `McpServer::network` and `allowed_commands`, `mcp_command_allowed`, and `PermissionRules::subject`, `check_subject`, `check_subjects` and `denies`.
+
+### Breaking
+
+- **kernex-sandbox**: `protected_command`, `try_protected_command`, `is_read_blocked` and `is_write_blocked` take a `&SandboxScope` in place of `data_dir: &Path`, and the two checks take `&SandboxProfile` in place of `Option<&SandboxProfile>` (`is_read_blocked` also loses its `config_path` argument, now `SandboxScope::config_path`). `SandboxProfile` is `#[non_exhaustive]`, so it can no longer be built with a struct literal. `try_protected_command` returns an error for a relative scope or `blocked_paths` entry, and, when enforcement is required, for a workspace that is `$HOME`, one of its ancestors, `/` or inside a protected directory, and on Linux when the ruleset cannot be built. `os_enforcement_available` on Linux needs Landlock ABI 3.
+- **kernex-core**: `ContextNeeds` (`store`), `RunConfig` (`needs`) and `McpServer` (`network`, `allowed_commands`) have new public fields, so struct literals must set them or use `..Default::default()`.
+- **kernex-providers**: `ProviderConfig` has five new public fields (`data_dir`, `config_path`, `db_path`, `web_fetch`, `cli_permission_bypass`). The `opencode` provider no longer continues a session; the session ID in its response is always empty. claude-code no longer uses the login in `~/.claude`.
+- **Skills**: a relative path in an MCP server's arguments no longer names a workspace file. A skill whose MCP server command is not in its `permissions.commands` no longer starts that server.
+
+### Migration notes
+
+- Build profiles with `SandboxProfile::new().with_allowed_paths(...)` and so on, and scopes with `SandboxScope::new(workspace, data_dir)` (plus `with_config_path` / `with_db_path` when those live outside the data directory).
+- Set `ProviderConfig::data_dir` (or pass `SandboxDirs`) to the directory the runtime really uses. Unset, the default data directory is protected and a warning says so.
+- Agents that read outside the workspace (a dependency's source, shared docs) need those directories in `SandboxProfile::read_paths`; tools that write elsewhere need them in `allowed_paths`.
+- To keep `web_fetch`, set `ProviderConfig::web_fetch` to `WebFetchPolicy::AllowHosts(...)` or `AllowAll`.
+- Pass `None` as `allowed_tools` for every tool; an empty list now means none. Rewrite permission rules that matched text in other arguments.
+- Each skill with an MCP server lists the server's command in `permissions.commands`, declares `permissions.network` if the server needs the network (`npx -y` downloads its package), and writes `{workspace}/...` where it used a relative path.
+- claude-code: pass an OAuth token, set `ANTHROPIC_API_KEY`, or log in once with `CLAUDE_CONFIG_DIR` set to `ClaudeCodeProvider::cli_config_dir()`. opencode: export the model provider's API key; name other variables with `with_env_passthrough`.
+- Hosts that need the keychain for an agent CLI's login set `SandboxProfile::allow_keychain` (the claude-code provider sets it).
+- Calls that must leave no trace set `ContextNeeds::store = false` (`complete_with_needs`, `complete_stream_with_needs` or `RunConfig::needs`).
+
+### Security
+
+- Bumped `url` to 2.5.9, closing RUSTSEC-2026-0592. Lockfile only.
+
 ## [0.11.0] - 2026-11-21
 
 ### Added

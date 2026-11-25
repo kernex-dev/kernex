@@ -10,7 +10,9 @@ Most consumers should start here. `RuntimeBuilder` composes:
 - Tool execution with sandbox enforcement from [`kernex-sandbox`](https://crates.io/crates/kernex-sandbox)
 - Multi-agent pipelines from [`kernex-pipelines`](https://crates.io/crates/kernex-pipelines)
 
-A typical request flows: build context from memory → enrich with matched skills → call provider → persist exchange → record token usage. `Runtime::complete` and `Runtime::complete_stream` cover the standard and streaming paths; `Runtime::run` chains a `RunConfig` of multiple steps.
+A typical request flows: build context from memory → enrich with matched skills → call provider → persist exchange → record token usage. `Runtime::complete` and `Runtime::complete_stream` cover the standard and streaming paths; `Runtime::run` chains a `RunConfig` of multiple steps. Recalled memory reaches the provider inside a block marked as data. A call whose `ContextNeeds::store` is `false` (`complete_with_needs`, `complete_stream_with_needs`, or `RunConfig::needs`) leaves memory as it was.
+
+The runtime does not build providers. Give a provider the runtime's data directory (`ProviderConfig::data_dir`, or `SandboxDirs`) so its tool calls cannot write the runtime's own state, and turn `web_fetch` on through `ProviderConfig::web_fetch` if your agents need it.
 
 ## Quick start
 

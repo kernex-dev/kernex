@@ -20,9 +20,9 @@ Security fixes land on the current minor and the immediately previous minor.
 
 | Version | Supported           |
 |---------|---------------------|
-| 0.11.x  | Yes (current)       |
-| 0.10.x  | Yes (previous)      |
-| < 0.10  | No                  |
+| 0.12.x  | Yes (current)       |
+| 0.11.x  | Yes (previous)      |
+| < 0.11  | No                  |
 
 ## Security Design
 
@@ -33,21 +33,34 @@ those limits are stated.
 ### Subprocess isolation
 
 - **Environment isolation** — every spawned subprocess (bash/toolbox/grep/find
-  tools, MCP servers, the Claude CLI) starts from a cleared environment plus a
+  tools, MCP servers, the agent CLIs) starts from a cleared environment plus a
   minimal base allowlist (`PATH`, `HOME`, locale, proxy/TLS configuration).
   Provider API keys and cloud credentials never reach a subprocess implicitly;
   anything beyond the base set is an explicit, declared opt-in at the spawn
   site.
 - **Filesystem sandbox** — Seatbelt (macOS) and Landlock (Linux 5.13+)
-  restrict tool subprocesses: writes inside `$HOME` are denied except the
-  workspace/data dir, `$KERNEX_DATA_DIR`, system temp, and common toolchain
-  cache/state dirs; reads of credential stores (`~/.ssh`, `~/.aws`,
-  `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.netrc`, gh/gcloud configs,
-  browser/keychain stores) are denied; the runtime's own database and config
-  are unreadable and unwritable. On macOS a directory write root (or the
-  directory of a file root), a symlink on the way to a root or a protected
-  path, and every directory between either of them and an enclosing write
-  root cannot be created, removed or renamed inside the sandbox. A directory
+  restrict tool subprocesses through one path policy built from the
+  workspace, the runtime data directory and the `SandboxProfile`. Writes are
+  allowed only under the workspace, the system temp directories, common
+  toolchain cache/state dirs (the programs and startup files inside them,
+  such as `~/.cargo/bin` and `~/.cargo/env`, stay read-only) and
+  `allowed_paths`. The runtime data directory is not a write root: its
+  database, config, `skills/`, `projects/` and `mcp/` stay unwritable even
+  when it sits inside one. A workspace that is `$HOME`, one of its
+  ancestors or `/` is not accepted as a write root. Reads stay broad except
+  for credential stores (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`,
+  `~/.docker`, `~/.netrc`, `~/.npmrc`, `~/.git-credentials`, cargo
+  credentials, gh/gcloud configs, agent CLI state such as `~/.claude`,
+  shell and REPL history, browser/keychain stores) and the runtime's own
+  database and config; every read-denied path is write-denied too. On macOS
+  the profile denies by default: a subprocess can run programs, read and
+  write as above and reach a short list of system services, but cannot
+  query the keychain (unless `allow_keychain` is set), talk to other
+  applications or allocate a pseudo-terminal. On macOS a directory write
+  root (or the directory of a file root), a symlink on the way to a root or
+  a protected path, and every directory between either of them and an
+  enclosing write root cannot be created, removed or renamed inside the
+  sandbox. A directory
   root's contents, timestamps and mode stay writable; a directory above a
   protected path cannot be written at all. So a toolchain cache directory
   that does not exist yet must be created outside the sandbox. A host path
@@ -58,12 +71,19 @@ those limits are stated.
 - **Network egress deny-by-default** — sandboxed tool subprocesses cannot open
   network connections unless the tool declares `network = true`. On macOS
   this covers every socket family (TCP, UDP, local sockets, and therefore
-  DNS). On Linux it covers TCP bind/connect on kernels 6.7+ (Landlock ABI v4);
-  older kernels cannot restrict the network and the gap is logged at spawn
-  time. UDP and non-TCP sockets are never restricted on Linux.
+  DNS). A subprocess that is allowed the network on macOS gets IP sockets
+  and the resolver only; local sockets (a container runtime, an SSH agent)
+  stay closed. On Linux it covers TCP bind/connect on kernels 6.7+ (Landlock
+  ABI v4); older kernels cannot restrict the network and the gap is logged
+  at spawn time. Abstract Unix sockets are scoped to the sandbox on 6.12+
+  (ABI v6). UDP, other non-TCP sockets and pathname Unix sockets are never
+  restricted on Linux.
 - **Fail mode** — when the host cannot apply OS-level enforcement, the library
   default through 0.x is to warn loudly (once per process, on stderr) and run
-  the subprocess unsandboxed with code-level checks only. Set
+  the subprocess unsandboxed with code-level checks only. On Linux a kernel
+  older than 6.2 (Landlock ABI 3) does not count as enforcing, because it
+  cannot stop a file outside the write roots from being truncated; the
+  rules it supports are still applied. Set
   `SandboxProfile::require_os_enforcement = true` or export
   `KERNEX_REQUIRE_SANDBOX=1` to refuse to spawn instead. The default flips to
   fail-closed in kernex 1.0.
@@ -85,16 +105,21 @@ those limits are stated.
   shell-metacharacter filters.
 - **MCP servers run inside the sandbox** — a server the runtime starts gets
   the same OS profile as a tool subprocess, with no network unless its skill
-  declares `permissions.network`, and it starts only if its command is listed
+  grants it (`permissions.network`, or `network = true` on its
+  `[mcp.<name>]` frontmatter entry) or the host profile already allows the
+  network, and it starts only
+  if its command is listed
   in a non-empty `permissions.commands`. The server starts in a directory
   no tool can write (`mcp/` in the data directory) and reaches the workspace
   through `{workspace}` in its arguments.
   With the CLI providers the external CLI starts the servers itself, inside
-  its own sandbox and with its network, so only servers that declare
-  `permissions.network` are passed to it.
+  its own sandbox and with its network, so only servers granted the
+  network are passed to it.
 - **Agent CLI providers** — `claude-code` and `opencode` always run inside
   the OS sandbox; without a configured workspace each call gets an empty
-  temporary directory. The tool allowlist is passed to the CLI as its own
+  temporary directory. Both CLIs, and every command they run, always have
+  the network, and claude-code also gets the macOS keychain, where its
+  login is kept. The tool allowlist is passed to the CLI as its own
   permission settings, and the CLI's permission bypass is off unless the
   host sets `cli_permission_bypass`. The CLIs' own fetch and search tools
   run only when `web_fetch` allows every host, since neither CLI can be held
@@ -110,10 +135,38 @@ those limits are stated.
   receives just the one it is configured for. OpenCode's logins in the
   user's home are closed to every sandboxed process. When a call ends, by
   a timeout or normally, the CLI's process group is killed with it.
-- **SSRF protection** — the in-process `web_fetch` tool resolves hostnames
-  itself, validates every resolved address against private/link-local/
-  loopback ranges, and pins the connection to the validated addresses, so a
-  DNS answer cannot change between check and connect. Redirects are disabled.
+- **In-process file tools.** `read`, `write` and `edit` run inside the
+  host process, with no OS profile behind them; `grep` and `glob` start
+  `grep` and `find` under the OS profile as well. Their reach is narrower
+  than a subprocess's: reads under the workspace,
+  `allowed_paths`, `SandboxProfile::read_paths` and the data directory's
+  `skills/` and `projects/`; writes under the workspace and `allowed_paths`
+  only. The protected paths stay denied inside those roots. A path is
+  checked after symlink resolution and the resolved path is opened without
+  following a symlink at its last component. `read` opens regular files
+  only. `grep` and `glob` drop result lines that name a protected path.
+  Reads through `bash` follow the subprocess policy above.
+- **Tool gates.** `allowed_tools` is enforced for every provider: `None`
+  offers every tool, an empty list none, and a list exactly the tools it
+  names (built-in, toolbox and MCP). A tool outside the list is not offered
+  to the model and is refused before hooks and permission rules run. A
+  permission rule sees one value per call: the command of `bash`, the
+  resolved path of a file tool, the URL of `web_fetch`, and the serialized
+  arguments of any other tool. A value over 64 KiB is denied when any rule
+  is set. A `Bash(...)` allow rule never matches a command that contains a
+  shell control operator, and it is a convenience, not a boundary: the
+  command an allowed program runs is not inspected.
+- **`web_fetch` policy and SSRF protection.** The in-process `web_fetch`
+  tool is off by default (`WebFetchPolicy::Disabled`: not offered to the
+  model, every call refused). The host turns it on with `AllowHosts` (exact
+  hosts or `*.example.com`) or `AllowAll`. The tool resolves hostnames
+  itself, validates every resolved address against private, link-local,
+  loopback and other non-public ranges (IPv4-mapped IPv6 judged as IPv4),
+  and pins the connection to the validated addresses, so a DNS answer
+  cannot change between check and connect. Up to five redirects are
+  followed, and every hop goes through the same scheme, address and host
+  checks as the first URL. A URL that carries credentials is refused, the
+  body is read up to the output cap, and one call is bounded at 60 seconds.
 
 ### Secret hygiene
 
@@ -166,10 +219,17 @@ Stated so deployments can plan around them:
   supported third-party replacement API; if a future macOS removes it, the
   fail-mode policy above applies.
 - **Linux** — Landlock enforcement depth depends on the kernel ABI (5.13
-  minimum; 6.7+ for TCP restrictions; 6.12+ for ABI v5). Between 5.13 and
-  6.11 some access rights cannot be enforced and the sandbox degrades to
-  what the kernel supports; the degradation is logged at spawn time but is
-  not observable programmatically by callers. UDP and non-TCP sockets are
-  never restricted by Landlock.
+  minimum; 6.2+ (ABI 3) to count as enforcing; 6.7+ for TCP restrictions;
+  6.10+ for device `ioctl`; 6.12+ (ABI 6) for scoping abstract Unix
+  sockets and signals). Below 6.12 some access rights cannot be enforced
+  and the sandbox degrades to what the kernel supports; below 6.2 and
+  below 6.7 the gap is logged at spawn time, the missing rights between
+  6.7 and 6.11 are not, and callers can read the ABI with
+  `kernex_sandbox::landlock_abi_version()`. UDP, other non-TCP sockets and
+  pathname Unix sockets are never restricted by Landlock. Landlock can only
+  grant rights, so files cannot be created directly inside a directory on
+  the way to a protected path (`/`, the home directory and its ancestors,
+  the data directory), and the file names inside a protected directory are
+  visible, though not their contents.
 - **Other platforms** — no OS-level sandbox; code-level path checks only,
   and the fail-mode policy applies.

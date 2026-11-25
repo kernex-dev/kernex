@@ -14,8 +14,8 @@
 //!   ([`write_allow_dirs`], minus their `bin` directories) and
 //!   `SandboxProfile::allowed_paths`. The data
 //!   directory is not a write root, and its memory database, `skills/`,
-//!   `projects/` and configuration file stay denied even when the data
-//!   directory sits inside the workspace.
+//!   `projects/`, `mcp/` and configuration file stay denied even when the
+//!   data directory sits inside the workspace.
 //! - **Reads** stay broad, minus the credential stores
 //!   ([`credential_read_deny_dirs`]), the memory database, the configuration
 //!   file and `SandboxProfile::blocked_paths`.
@@ -29,12 +29,13 @@
 //! - **macOS**: Apple Seatbelt via `sandbox-exec -p <profile>`. The profile
 //!   denies by default: a subprocess may run programs, read files outside
 //!   the read-deny paths, write under the write roots and reach a short
-//!   list of system services. It cannot query the keychain, talk to other
-//!   applications or allocate a pseudo-terminal.
-//! - **Linux**: Landlock LSM via `pre_exec` hook (kernel 5.13+ minimum;
-//!   older kernels than 6.12 apply the rights they support). Reads are
-//!   granted everywhere except the read-deny paths, and writes only under
-//!   the write roots.
+//!   list of system services. It cannot query the keychain (unless
+//!   `SandboxProfile::allow_keychain` is set), talk to other applications,
+//!   connect to a local socket or allocate a pseudo-terminal.
+//! - **Linux**: Landlock LSM via `pre_exec` hook (kernel 5.13+ minimum,
+//!   6.2+ to count as enforcing; kernels older than 6.12 apply the rights
+//!   they support). Reads are granted everywhere except the read-deny
+//!   paths, and writes only under the write roots.
 //! - **Other**: Falls back to a plain command with a warning.
 //!
 //! [`protected_command`] is best-effort and never fails: when the host
@@ -59,11 +60,13 @@
 //!   release removes it, [`os_enforcement_available`] returns `false` and
 //!   the fail-mode policy above applies.
 //! - **Linux**: Landlock enforcement depth depends on the kernel ABI
-//!   (5.13 minimum; 5.19 adds cross-directory rename and link control; 6.7
-//!   adds TCP restrictions; 6.12 adds scoping of abstract Unix sockets and
+//!   (5.13 minimum; 5.19 adds cross-directory rename and link control; 6.2
+//!   adds truncation control; 6.7 adds TCP restrictions; 6.10 adds device
+//!   `ioctl` control; 6.12 adds scoping of abstract Unix sockets and
 //!   signals). An older kernel enforces the rights it knows.
-//!   [`os_enforcement_available`] reports Landlock presence and
-//!   [`landlock_abi_version`] the depth. Landlock denies a path by giving it
+//!   [`os_enforcement_available`] reports `true` from 6.2 (ABI 3), since an
+//!   older kernel cannot stop a file outside the write roots from being
+//!   truncated, and [`landlock_abi_version`] reports the depth. Landlock denies a path by giving it
 //!   no rule, so files cannot be created directly inside a directory on the
 //!   way to a protected path; with the default policy those are `/`, the
 //!   home directory and its ancestors, and the data directory. Such a

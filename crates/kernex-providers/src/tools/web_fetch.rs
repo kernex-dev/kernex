@@ -20,8 +20,8 @@ const FETCH_TIMEOUT_SECS: u64 = 60;
 /// Which hosts the `web_fetch` tool may reach.
 ///
 /// The policy governs the runtime's own `web_fetch` tool. A provider that
-/// is itself an agent CLI brings its own tools, which this policy does not
-/// see.
+/// is itself an agent CLI brings its own fetch and search tools, which
+/// cannot be held to a host list: they run only under `AllowAll`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum WebFetchPolicy {

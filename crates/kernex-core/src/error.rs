@@ -39,7 +39,7 @@ pub type BoxedError = Box<dyn std::error::Error + Send + Sync + 'static>;
 ///
 /// Cross-crate variants (`Provider`, `Store`, `Sandbox`, `Pipeline`, `Skill`)
 /// carry the originating typed error inside a [`BoxedError`]; recover the
-/// concrete type with [`std::error::Error::downcast_ref`] on the boxed value.
+/// concrete type with `<dyn std::error::Error>::downcast_ref` on the boxed value.
 /// Crate-local variants (`Config`, `Guardrail`) carry a plain `String` since
 /// they have no foreign source to preserve.
 #[derive(Debug, thiserror::Error)]

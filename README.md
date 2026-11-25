@@ -42,7 +42,7 @@ For running examples:
 
 ## Features
 
-- **Sandbox-first execution** — OS-level protection via Seatbelt (macOS) and Landlock (Linux, kernel 5.13+) combined with highly configurable `SandboxProfile` allow/deny lists
+- **Sandbox-first execution** — tool subprocesses, MCP servers and the agent CLI providers run under Seatbelt (macOS, deny by default) or Landlock (Linux 5.13+, enforcing from 6.2). Writes are confined to the workspace, temp and toolchain cache directories; credential stores and the runtime's own database and config are unreadable; network is off unless a tool declares it, except for the agent CLI providers, which always get the network. In-process file tools reach the workspace and `allowed_paths`, plus `read_paths` and the runtime's `skills/` and `projects/` for reads. See [SECURITY.md](SECURITY.md) for the limits per platform
 - **12 AI providers** — Claude Code CLI, OpenCode CLI, Anthropic, OpenAI, Ollama, OpenRouter, Gemini, Groq, Mistral, DeepSeek, Fireworks, xAI; AWS Bedrock via optional `bedrock` feature
 - **OpenAI-compatible base URL** — works with LiteLLM, Cerebras, Hugging Face, and any OpenAI-compatible endpoint
 - **Dynamic instantiation** — instantiate any provider from a config map at runtime via `ProviderFactory`
@@ -51,7 +51,7 @@ For running examples:
 - **Hook system** — intercept every tool call with `HookRunner`: allow, block, audit, or rate-limit before execution
 - **Guardrails** — `GuardrailRunner` trait for semantic input/output filtering: Allow, Block, or Sanitize at the pipeline layer
 - **Typed tool schemas** — Auto-generated JSON Schema for tool parameters via `schemars`
-- **MCP client** — stdio-based Model Context Protocol for external tool integration
+- **MCP client** — stdio-based Model Context Protocol for external tool integration; servers start inside the sandbox, only when the skill lists their command in `permissions.commands`, and without network unless the skill declares it
 - **Persistent memory** — SQLite-backed conversations, facts, reward-based learning, scheduled tasks
 - **Pipeline checkpointing** — crash-safe phase state stored to SQLite; resume pipelines after failure via `PhaseCheckpoint`
 - **Parallel pipeline phases** — declare `parallel_group` on consecutive topology phases to run them concurrently
@@ -59,7 +59,7 @@ For running examples:
 - **Multi-agent pipelines** — TOML-defined topologies with corrective loops and file-mediated handoffs
 - **Declarative agent definitions** — `RuntimeBuilder::from_file(path)` loads TOML or YAML agent config without Rust code
 - **Trait-based composition** — implement `Provider` or `Store` to plug in your own backends
-- **Secure by default** — API keys protected in memory via `secrecy::SecretString`; prompt caching support for Anthropic
+- **Secure by default** — subprocesses start from a cleared environment, `web_fetch` is off until the host allows hosts, `allowed_tools` offers only the tools it names, recalled memory is marked as data, and provider configs redact API keys in `Debug` output; prompt caching support for Anthropic
 - **OpenTelemetry** — optional `opentelemetry` feature exports traces to Jaeger, Honeycomb, Grafana, and any OTel backend
 - **Configurable HTTP timeouts** — per-provider `timeout_secs` in `ProviderConfig` (default: 120 s)
 
@@ -119,9 +119,9 @@ Add Kernex to your project:
 
 ```toml
 [dependencies]
-kernex-runtime = "0.11"
-kernex-core = "0.11"
-kernex-providers = "0.11"
+kernex-runtime = "0.12"
+kernex-core = "0.12"
+kernex-providers = "0.12"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 ```
@@ -192,7 +192,7 @@ Two completion methods:
 ```rust
 use kernex_core::run::{RunConfig, RunOutcome};
 
-let config = RunConfig { max_turns: 20, token_budget: Some(200_000) };
+let config = RunConfig { max_turns: 20, token_budget: Some(200_000), ..Default::default() };
 
 match runtime.run(&provider, &request, &config).await? {
     RunOutcome::EndTurn(response) => println!("{}", response.text),
@@ -239,8 +239,8 @@ Kernex ships with 12 built-in AI providers, plus AWS Bedrock behind an optional 
 
 | Provider | Module | API Key Required |
 |----------|--------|-----------------|
-| Claude Code CLI | `claude_code` | No (uses local CLI) |
-| OpenCode CLI | `opencode` | No (uses local CLI and its configured model provider) |
+| Claude Code CLI | `claude_code` | OAuth token or `ANTHROPIC_API_KEY` (or a login in the CLI's own state directory) |
+| OpenCode CLI | `opencode` | The API key variable of the model's provider (none for local Ollama) |
 | Anthropic | `anthropic` | Yes |
 | OpenAI | `openai` | Yes |
 | Ollama | `ollama` | No (local) |
@@ -255,7 +255,7 @@ Kernex ships with 12 built-in AI providers, plus AWS Bedrock behind an optional 
 
 ### Sandboxed coding agents without vendor lock-in
 
-`claude-code` and `opencode` both run a full coding agent CLI inside the kernex OS sandbox (Seatbelt on macOS, Landlock on Linux) when a workspace path is set. `opencode` works with any model OpenCode supports, local Ollama models included. Pass the model as `provider/model`:
+`claude-code` and `opencode` both run a full coding agent CLI inside the kernex OS sandbox (Seatbelt on macOS, Landlock on Linux). Without a workspace path each call gets an empty temporary directory. `opencode` works with any model OpenCode supports, local Ollama models included. Pass the model as `provider/model`:
 
 ```rust
 use kernex_providers::factory::{ProviderConfig, ProviderFactory};
@@ -267,7 +267,7 @@ let provider = ProviderFactory::create("opencode", ProviderConfig {
 })?;
 ```
 
-Tool permissions (`Context::allowed_tools`) and MCP servers are injected per call through `OPENCODE_CONFIG_CONTENT`; your OpenCode config files are never modified. Permissions are always `allow` or `deny`, never `ask`, so a headless run cannot stall on a prompt. Model provider keys stored with `opencode auth login` work as is; keys in environment variables pass through for the common providers, and `OpenCodeProvider::with_env_passthrough` adds others.
+Tool permissions (`Context::allowed_tools`) and MCP servers are injected per call through `OPENCODE_CONFIG_CONTENT`. Permissions are always `allow` or `deny`, never `ask`, so a headless run cannot stall on a prompt. `None` offers every tool, an empty list none. Without a list the CLI keeps its own permission checks; set `ProviderConfig::cli_permission_bypass` to turn them off. Only MCP servers that declare network access are passed to a CLI, since the CLI starts them itself. The CLIs' own fetch and search tools run only when `web_fetch` is `AllowAll`. Both CLIs keep their state under `cli/` in the data directory and read none of your own config (`~/.claude`, `~/.config/opencode`). Claude Code needs an OAuth token, `ANTHROPIC_API_KEY`, or a login made once with `CLAUDE_CONFIG_DIR` set to `ClaudeCodeProvider::cli_config_dir()`. OpenCode gets new config, data and cache directories for every call, does not use `opencode auth login` logins and keeps no session between calls. It receives only the API key variable of the provider its model names; `OpenCodeProvider::with_env_passthrough` adds others.
 
 ### Prompt caching (Anthropic)
 
