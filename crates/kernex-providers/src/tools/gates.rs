@@ -42,7 +42,7 @@ impl ToolExecutor {
                 .mcp_tool_map
                 .get(tool_name)
                 .is_some_and(|owner| owner == server);
-            return owned && tool.map_or(true, |tool| tool == "*" || tool == tool_name);
+            return owned && tool.is_none_or(|tool| tool == "*" || tool == tool_name);
         }
         let fold = |name: &str| -> String {
             name.chars()

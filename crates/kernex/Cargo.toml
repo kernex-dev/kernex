@@ -2,6 +2,7 @@
 name = "kernex"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Umbrella crate for the Kernex AI agent runtime. Re-exports kernex-runtime."

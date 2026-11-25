@@ -10,12 +10,12 @@ resolver = "2"
 [workspace.package]
 version = "0.11.0"
 edition = "2021"
-# Conservative MSRV. If you need a newer language feature, run
-# `cargo install cargo-msrv && cargo msrv verify` before bumping this so the
-# new floor is supported by an actual toolchain check rather than a guess.
-# Crates.io will surface the version to downstream consumers via
-# `package.rust-version`, so dropping below this is a breaking change.
-rust-version = "1.74"
+# MSRV. The `msrv` CI job builds the workspace with exactly this toolchain
+# and the committed lockfile, so raise it only together with that job's
+# toolchain. The floor is set by the code: trait upcasting (a
+# `dyn StreamingProvider` used as `dyn Provider`) is stable since 1.86.
+# Crates.io surfaces it to downstream consumers via `package.rust-version`.
+rust-version = "1.86"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/kernex-dev/kernex"
 description = "The Rust runtime for AI agents"

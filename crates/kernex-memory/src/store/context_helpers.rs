@@ -241,7 +241,7 @@ fn is_language_name(name: &str) -> bool {
         let main = words(main);
         main.len() <= 2 && main.iter().all(|word| letters(word))
     };
-    let region_ok = region.map_or(true, |region| {
+    let region_ok = region.is_none_or(|region| {
         let region = words(region);
         region.len() <= 2
             && region
