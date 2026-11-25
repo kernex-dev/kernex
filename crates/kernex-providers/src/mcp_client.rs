@@ -597,29 +597,38 @@ done
                 call(&mut client, "cat_file", &data_dir.join("memory.db")).await,
                 "DENIED"
             );
-            // The runtime's own state is never writable.
+            // Every target the policy refuses must be refused by the OS
+            // sandbox too. A target the policy allows (anything below a
+            // build directory under a temp or cache directory, say) says
+            // nothing about the sandbox and is skipped.
             let db = data_dir.join("memory.db");
-            assert_eq!(call(&mut client, "put_file", &db).await, "DENIED");
-            assert_eq!(std::fs::read_to_string(&db).unwrap(), "memory-fixture");
-            // Anything else outside the write roots can be probed only when
-            // the build directory is not under a temp directory (the
-            // system one, `/tmp` or `/var/tmp`), which policy makes
-            // writable along with whatever this test puts below it.
-            let in_temp = [std::env::temp_dir(), "/tmp".into(), "/var/tmp".into()]
-                .into_iter()
-                .any(|temp| root.starts_with(temp.canonicalize().unwrap_or(temp)));
-            if !in_temp {
-                for outside in [
-                    data_dir.join("planted.txt"),
+            let probes = [
+                (db.clone(), db.clone()),
+                (data_dir.join("config.toml"), data_dir.join("config.toml")),
+                (data_dir.join("planted.txt"), data_dir.join("planted.txt")),
+                // The server starts in the data directory's `mcp` folder.
+                (
                     std::path::PathBuf::from("relative.txt"),
-                    root.join("outside.txt"),
-                ] {
-                    let answer = call(&mut client, "put_file", &outside).await;
-                    assert_eq!(answer, "DENIED", "{}", outside.display());
-                    assert!(!outside.exists(), "{}", outside.display());
-                    assert!(!data_dir.join("mcp").join(&outside).exists());
+                    data_dir.join("mcp").join("relative.txt"),
+                ),
+                (root.join("outside.txt"), root.join("outside.txt")),
+            ];
+            let mut probed = 0;
+            for (sent, target) in probes {
+                if !kernex_sandbox::is_write_blocked(&target, &scope, &profile) {
+                    continue;
+                }
+                probed += 1;
+                let answer = call(&mut client, "put_file", &sent).await;
+                assert_eq!(answer, "DENIED", "{}", sent.display());
+                if target != db {
+                    assert!(!target.exists(), "{}", target.display());
                 }
             }
+            // The database, the configuration and the start folder are
+            // refused wherever the build directory is.
+            assert!(probed >= 3, "only {probed} probes refused by policy");
+            assert_eq!(std::fs::read_to_string(&db).unwrap(), "memory-fixture");
         }
         client.shutdown().await;
     }
