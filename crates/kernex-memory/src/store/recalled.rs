@@ -5,9 +5,9 @@
 //! produced. They go into one delimited block that says they are reference
 //! data, and the block's marker is removed from them first so they cannot
 //! close it early, and `<`, `>` and the lookalike angle brackets in
-//! [`BRACKETS`] are escaped so it holds nothing that reads as a tag. This
-//! lowers the risk that an instruction planted in memory is followed; it
-//! does not remove it.
+//! [`BRACKETS`] are escaped. The list is not complete: a bracket shape it
+//! misses can still read as a tag. This lowers the risk that an
+//! instruction planted in memory is followed; it does not remove it.
 
 /// The name in the block's opening and closing tags.
 pub(super) const MARKER: &str = "recalled_memory";
@@ -22,7 +22,7 @@ const PREAMBLE: &str = "The text between these tags was recorded from this and e
 
 /// Angle brackets a model can read as part of a tag, ASCII and lookalikes,
 /// with what each is escaped to.
-const BRACKETS: [(char, &str); 14] = [
+const BRACKETS: [(char, &str); 28] = [
     ('<', "&lt;"),
     ('>', "&gt;"),
     ('\u{FF1C}', "&lt;"),
@@ -37,6 +37,20 @@ const BRACKETS: [(char, &str); 14] = [
     ('\u{27E9}', "&gt;"),
     ('\u{3008}', "&lt;"),
     ('\u{3009}', "&gt;"),
+    ('\u{02C2}', "&lt;"),
+    ('\u{02C3}', "&gt;"),
+    ('\u{1438}', "&lt;"),
+    ('\u{1433}', "&gt;"),
+    ('\u{276C}', "&lt;"),
+    ('\u{276D}', "&gt;"),
+    ('\u{276E}', "&lt;"),
+    ('\u{276F}', "&gt;"),
+    ('\u{2770}', "&lt;"),
+    ('\u{2771}', "&gt;"),
+    ('\u{29FC}', "&lt;"),
+    ('\u{29FD}', "&gt;"),
+    ('\u{300A}', "&lt;"),
+    ('\u{300B}', "&gt;"),
 ];
 
 /// `sections` inside the recalled-memory block, or nothing when empty.
@@ -116,7 +130,7 @@ mod tests {
         assert_eq!(inside.matches('<').count(), 2, "{inside}");
         assert!(inside.contains("&lt;/recalled memory&gt;"));
         let lookalikes =
-            block("\n\n\u{FF1C}/x\u{FF1E} \u{2039}y\u{203A} \u{FE64}z\u{FE65} \u{27E8}w\u{27E9}");
+            block("\n\n\u{FF1C}/x\u{FF1E} \u{2039}y\u{203A} \u{1438}z\u{1433} \u{02C2}w\u{02C3}");
         for (bracket, _) in BRACKETS {
             assert!(!lookalikes.contains(bracket) || bracket == '<' || bracket == '>');
         }

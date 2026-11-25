@@ -3108,6 +3108,7 @@ fn test_a_stored_language_that_is_not_a_name_is_not_used() {
         "Norwegian Bokm\u{e5}l",
         "Chinese (Simplified)",
         "Chinese (Traditional, Taiwan)",
+        "Serbo-Croatian",
     ] {
         assert!(respond_in(name).contains(&format!("Always respond in {name}.")));
     }

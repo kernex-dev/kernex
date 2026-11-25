@@ -204,11 +204,20 @@ fn instructions(prompt: &mut String, ctx: &SystemPromptContext<'_>) {
 }
 
 /// Whether `name` reads as a language name, at most 32 characters: one or
-/// two words of letters ("Spanish", "Norwegian Bokmål") or a language tag
-/// ("pt-BR", "zh_Hant_TW"), optionally followed by up to two words of
-/// letters in parentheses ("Chinese (Traditional, Taiwan)").
+/// two words of letters, each at most two parts joined by a hyphen
+/// ("Spanish", "Norwegian Bokmål", "Serbo-Croatian"), or a language tag
+/// ("pt-BR", "zh_Hant_TW"), optionally followed by up to two such words in
+/// parentheses ("Chinese (Traditional, Taiwan)"). This narrows what a
+/// stored value can say outside the recalled block; a short phrase of
+/// letters still passes.
 fn is_language_name(name: &str) -> bool {
-    let letters = |word: &str| !word.is_empty() && word.chars().all(char::is_alphabetic);
+    let letters = |word: &str| {
+        let parts: Vec<&str> = word.split('-').collect();
+        parts.len() <= 2
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.chars().all(char::is_alphabetic))
+    };
     fn words(text: &str) -> Vec<&str> {
         text.split(' ').collect()
     }
