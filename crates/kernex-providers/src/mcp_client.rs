@@ -597,21 +597,28 @@ done
                 call(&mut client, "cat_file", &data_dir.join("memory.db")).await,
                 "DENIED"
             );
-            // A build directory under the system temp directory is writable
-            // by policy, so only the data directory can be probed there.
-            let temp = std::env::temp_dir();
-            let temp = temp.canonicalize().unwrap_or(temp);
-            let mut outside = vec![
-                data_dir.join("planted.txt"),
-                std::path::PathBuf::from("relative.txt"),
-            ];
-            if !root.starts_with(&temp) {
-                outside.push(root.join("outside.txt"));
-            }
-            for outside in outside {
-                assert_eq!(call(&mut client, "put_file", &outside).await, "DENIED");
-                assert!(!outside.exists(), "{}", outside.display());
-                assert!(!data_dir.join("mcp").join(&outside).exists());
+            // The runtime's own state is never writable.
+            let db = data_dir.join("memory.db");
+            assert_eq!(call(&mut client, "put_file", &db).await, "DENIED");
+            assert_eq!(std::fs::read_to_string(&db).unwrap(), "memory-fixture");
+            // Anything else outside the write roots can be probed only when
+            // the build directory is not under a temp directory (the
+            // system one, `/tmp` or `/var/tmp`), which policy makes
+            // writable along with whatever this test puts below it.
+            let in_temp = [std::env::temp_dir(), "/tmp".into(), "/var/tmp".into()]
+                .into_iter()
+                .any(|temp| root.starts_with(temp.canonicalize().unwrap_or(temp)));
+            if !in_temp {
+                for outside in [
+                    data_dir.join("planted.txt"),
+                    std::path::PathBuf::from("relative.txt"),
+                    root.join("outside.txt"),
+                ] {
+                    let answer = call(&mut client, "put_file", &outside).await;
+                    assert_eq!(answer, "DENIED", "{}", outside.display());
+                    assert!(!outside.exists(), "{}", outside.display());
+                    assert!(!data_dir.join("mcp").join(&outside).exists());
+                }
             }
         }
         client.shutdown().await;
