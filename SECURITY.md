@@ -132,11 +132,15 @@ those limits are stated.
 - **FTS5 injection prevention** — sanitizes full-text search queries.
 - **Recalled memory is marked as data.** Past messages, summaries, facts,
   tasks, lessons and outcomes go into the system prompt inside one
-  `<recalled_memory>` block that says they are reference data, with the tag
-  removed from the recalled text first. This lowers the risk that an
-  instruction stored in memory is followed; it does not remove it. A call
-  with `ContextNeeds::store` set to `false` leaves memory as it was: nothing
-  is stored and no conversation or fact is created.
+  `<recalled_memory>` block that says they are data with no authority. The
+  tag is removed from the recalled text and `<` and `>` in it are escaped,
+  so it cannot close the block or open another tag. When a context is
+  flattened into one prompt, a line in it that reads as a section header
+  (`[System]`, `[User]`, `[Assistant]`) is escaped as well. This lowers the
+  risk that an instruction stored in memory is followed; it does not remove
+  it. A call with `ContextNeeds::store` set to `false` leaves memory as it
+  was: nothing is stored, no conversation, fact or usage record is created,
+  and an existing conversation is read without being touched.
 
 ### Extension seams (not active protections by themselves)
 

@@ -34,8 +34,8 @@ impl Store {
     ///
     /// When `needs.compact` is [`CompactionStrategy::Summarize`] and a
     /// `summarizer` is provided, overflow messages (those beyond
-    /// `max_context_messages`) are summarized and prepended to the system
-    /// prompt instead of being silently dropped.
+    /// `max_context_messages`) are summarized into the system prompt's
+    /// recalled memory block instead of being silently dropped.
     pub async fn build_context(
         &self,
         channel: &str,
@@ -45,7 +45,8 @@ impl Store {
         active_project: Option<&str>,
         summarizer: Option<&dyn Summarizer>,
     ) -> Result<Context, MemoryError> {
-        let project_key = active_project.unwrap_or("");
+        // The runtime stores exchanges without a project under "default".
+        let project_key = active_project.unwrap_or("default");
         // Without storing, an existing conversation is read and none is
         // created or touched; an empty id matches no message.
         let conv_id = if needs.store {
@@ -60,9 +61,9 @@ impl Store {
         let history_fut = async {
             let rows: Vec<(String, String)> = sqlx::query_as(
                 "SELECT role, content FROM (\
-                     SELECT role, content, timestamp FROM messages \
-                     WHERE conversation_id = ? ORDER BY timestamp DESC LIMIT ?\
-                 ) ORDER BY timestamp ASC",
+                     SELECT role, content, timestamp, rowid AS seq FROM messages \
+                     WHERE conversation_id = ? ORDER BY timestamp DESC, rowid DESC LIMIT ?\
+                 ) ORDER BY timestamp ASC, seq ASC",
             )
             .bind(&conv_id)
             .bind(self.max_context_messages as i64)
@@ -162,7 +163,7 @@ impl Store {
             if let (CompactionStrategy::Summarize, Some(s)) = (&needs.compact, summarizer) {
                 let overflow_rows: Vec<(String, String)> = sqlx::query_as(
                     "SELECT role, content FROM messages \
-                     WHERE conversation_id = ? ORDER BY timestamp ASC LIMIT ?",
+                     WHERE conversation_id = ? ORDER BY timestamp ASC, rowid ASC LIMIT ?",
                 )
                 .bind(&conv_id)
                 .bind(overflow_count as i64)
