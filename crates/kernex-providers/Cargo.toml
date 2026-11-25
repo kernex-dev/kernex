@@ -2,6 +2,7 @@
 name = "kernex-providers"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "AI backend providers for Kernex (Claude Code, Anthropic, OpenAI, Ollama, OpenRouter, Gemini, MCP)"

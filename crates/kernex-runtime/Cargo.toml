@@ -2,6 +2,7 @@
 name = "kernex-runtime"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "The Rust runtime for AI agents. A composable engine with sandbox, providers, learning, and pipelines."
