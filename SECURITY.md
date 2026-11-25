@@ -141,14 +141,14 @@ those limits are stated.
   read as a tag. The current conversation's recent messages are sent as
   ordinary turns, outside the block. When a context is flattened into one
   prompt, a line that starts like a section header (`[System]`, `[User]`,
-  `[Assistant]`, in any case, with inner spaces, invisible characters,
-  fullwidth letters, other bracket shapes or text after it) is escaped;
-  markdown prefixes and lookalike letters from other scripts are not
-  recognised. This lowers the risk that an instruction stored in memory is
-  followed; it does not remove it. A call with `ContextNeeds::store` set to
-  `false` leaves memory as it was: nothing is stored, no conversation, fact
-  or usage record is created, and an existing conversation is read without
-  being touched.
+  `[Assistant]`, in any case, with inner spaces, listed invisible
+  characters, fullwidth letters, three other bracket pairs or text after
+  it) is escaped; markdown prefixes and lookalike letters from other
+  scripts are not recognised. This lowers the risk that an instruction
+  stored in memory is followed; it does not remove it. A call with
+  `ContextNeeds::store` set to `false` leaves memory as it was: nothing is
+  stored, no conversation, fact or usage record is created, and an
+  existing conversation is read without being touched.
 
 ### Extension seams (not active protections by themselves)
 
