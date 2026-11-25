@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0](https://github.com/kernex-dev/kernex/compare/v0.11.0...v0.12.0) - 2026-11-25
+
+### Added
+
+- [**breaking**] mark recalled memory as data and let a call store nothing
+- *(providers)* [**breaking**] start MCP servers inside the sandbox
+- *(providers)* [**breaking**] enforce allowed_tools and match permission rules per argument
+
+### Fixed
+
+- *(core)* spot a forged header however far it is indented
+- *(memory)* ignore invisible characters when spotting forged headers
+- *(memory)* widen the escaping around recalled memory and make it linear
+- *(memory)* close the gaps left around the recalled memory block
+- *(providers)* match file rules on the resolved path and filter search results
+
+### Other
+
+- describe the 0.12.0 sandbox, tools and memory as they now work
+- declare Rust 1.86 as the minimum and check it in CI
+
 ## [0.11.0](https://github.com/kernex-dev/kernex/compare/v0.10.0...v0.11.0) - 2026-11-21
 
 ### Fixed

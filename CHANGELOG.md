@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Planned as 0.12.0. Sandbox and tool-policy release: the OS sandbox, the in-process tools, MCP servers and the agent CLI providers now share one path policy, and several defaults are stricter. Read "Changed defaults" and "Breaking" before upgrading. [SECURITY.md](SECURITY.md) describes the resulting posture and its platform limits.
+## [0.12.0] - 2026-11-25
+
+Sandbox and tool-policy release: the OS sandbox, the in-process tools, MCP servers and the agent CLI providers now share one path policy, and several defaults are stricter. Read "Changed defaults" and "Breaking" before upgrading. [SECURITY.md](SECURITY.md) describes the resulting posture and its platform limits.
 
 ### Changed defaults
 
