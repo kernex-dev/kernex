@@ -203,20 +203,43 @@ fn instructions(prompt: &mut String, ctx: &SystemPromptContext<'_>) {
     );
 }
 
-/// Whether `name` reads as a language name: one or two words of letters,
-/// hyphens and parentheses ("English", "pt-BR", "Chinese (Simplified)"),
-/// at most 30 characters.
+/// Whether `name` reads as a language name, at most 32 characters: one or
+/// two words of letters ("Spanish", "Norwegian Bokmål") or a language tag
+/// ("pt-BR", "zh_Hant_TW"), optionally followed by up to two words of
+/// letters in parentheses ("Chinese (Traditional, Taiwan)").
 fn is_language_name(name: &str) -> bool {
-    let words = name.split(' ').collect::<Vec<_>>();
-    !name.is_empty()
-        && name.chars().count() <= 30
-        && words.len() <= 2
-        && words.iter().all(|word| {
-            !word.is_empty()
-                && word
-                    .chars()
-                    .all(|c| c.is_alphabetic() || matches!(c, '-' | '(' | ')'))
-        })
+    let letters = |word: &str| !word.is_empty() && word.chars().all(char::is_alphabetic);
+    fn words(text: &str) -> Vec<&str> {
+        text.split(' ').collect()
+    }
+    let (main, region) = match name.split_once(" (") {
+        Some((main, rest)) => match rest.strip_suffix(')') {
+            Some(region) => (main, Some(region)),
+            None => return false,
+        },
+        None => (name, None),
+    };
+    let tag = |text: &str| {
+        let parts: Vec<&str> = text.split(['-', '_']).collect();
+        (2..=3).contains(&parts.len())
+            && (2..=3).contains(&parts[0].len())
+            && parts[0].chars().all(|c| c.is_ascii_alphabetic())
+            && parts[1..].iter().all(|part| {
+                (2..=4).contains(&part.len()) && part.chars().all(|c| c.is_ascii_alphanumeric())
+            })
+    };
+    let main_ok = tag(main) || {
+        let main = words(main);
+        main.len() <= 2 && main.iter().all(|word| letters(word))
+    };
+    let region_ok = region.map_or(true, |region| {
+        let region = words(region);
+        region.len() <= 2
+            && region
+                .iter()
+                .all(|word| letters(word.strip_suffix(',').unwrap_or(word)))
+    });
+    name.chars().count() <= 32 && main_ok && region_ok
 }
 
 /// Detect the most likely language of a text using stop-word heuristics.

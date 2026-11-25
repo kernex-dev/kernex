@@ -36,6 +36,12 @@ impl Store {
     /// `summarizer` is provided, overflow messages (those beyond
     /// `max_context_messages`) are summarized into the system prompt's
     /// recalled memory block instead of being silently dropped.
+    ///
+    /// With `active_project` set to `None`, the conversation read (and, when
+    /// storing, created) is the one under project `"default"`, which is where
+    /// [`Store::store_exchange`] callers such as the runtime keep exchanges
+    /// made without a project. Outcomes and lessons are still read for no
+    /// project.
     pub async fn build_context(
         &self,
         channel: &str,
