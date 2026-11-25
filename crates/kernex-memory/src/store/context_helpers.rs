@@ -203,14 +203,20 @@ fn instructions(prompt: &mut String, ctx: &SystemPromptContext<'_>) {
     );
 }
 
-/// Whether `name` reads as a language name: letters, spaces and hyphens,
-/// at most 40 characters.
+/// Whether `name` reads as a language name: one or two words of letters,
+/// hyphens and parentheses ("English", "pt-BR", "Chinese (Simplified)"),
+/// at most 30 characters.
 fn is_language_name(name: &str) -> bool {
+    let words = name.split(' ').collect::<Vec<_>>();
     !name.is_empty()
-        && name.chars().count() <= 40
-        && name
-            .chars()
-            .all(|c| c.is_alphabetic() || c == ' ' || c == '-')
+        && name.chars().count() <= 30
+        && words.len() <= 2
+        && words.iter().all(|word| {
+            !word.is_empty()
+                && word
+                    .chars()
+                    .all(|c| c.is_alphabetic() || matches!(c, '-' | '(' | ')'))
+        })
 }
 
 /// Detect the most likely language of a text using stop-word heuristics.

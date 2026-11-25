@@ -54,7 +54,12 @@ mod tests {
     use kernex_core::stream::StreamEvent;
     use kernex_core::traits::{Provider, StreamingProvider};
 
-    struct Echo;
+    /// Answers "noted", reports 123 tokens and keeps the length of the
+    /// history it was last given.
+    #[derive(Default)]
+    struct Echo {
+        history: std::sync::atomic::AtomicUsize,
+    }
 
     #[async_trait::async_trait]
     impl Provider for Echo {
@@ -64,10 +69,15 @@ mod tests {
         fn requires_api_key(&self) -> bool {
             false
         }
-        async fn complete(&self, _ctx: &Context) -> Result<Response, KernexError> {
+        async fn complete(&self, ctx: &Context) -> Result<Response, KernexError> {
+            self.history
+                .store(ctx.history.len(), std::sync::atomic::Ordering::SeqCst);
             Ok(Response {
                 text: "noted".to_string(),
-                metadata: CompletionMeta::default(),
+                metadata: CompletionMeta {
+                    tokens_used: Some(123),
+                    ..CompletionMeta::default()
+                },
             })
         }
         async fn is_available(&self) -> bool {
@@ -101,11 +111,66 @@ mod tests {
     /// exchange time to finish.
     async fn stream(runtime: &crate::Runtime, request: &Request, needs: &ContextNeeds) {
         let mut rx = runtime
-            .complete_stream_with_needs(&Echo, request, needs)
+            .complete_stream_with_needs(&Echo::default(), request, needs)
             .await
             .unwrap();
         while rx.recv().await.is_some() {}
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+
+    async fn runtime(dir: &tempfile::TempDir) -> crate::Runtime {
+        RuntimeBuilder::new()
+            .data_dir(dir.path().to_str().unwrap())
+            .build()
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_call_that_does_not_store_records_no_usage() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir).await;
+        let off = ContextNeeds {
+            store: false,
+            ..ContextNeeds::default()
+        };
+        let request = Request::text("someone", "hello there");
+        let echo = Echo::default();
+
+        runtime
+            .complete_with_needs(&echo, &request, &off)
+            .await
+            .unwrap();
+        let config = RunConfig {
+            needs: off,
+            ..RunConfig::default()
+        };
+        runtime.run(&echo, &request, &config).await.unwrap();
+        assert_eq!(
+            runtime.store.get_total_usage().await.unwrap().request_count,
+            0
+        );
+
+        runtime.complete(&echo, &request).await.unwrap();
+        let usage = runtime.store.get_total_usage().await.unwrap();
+        assert_eq!((usage.request_count, usage.total_tokens), (1, 123));
+    }
+
+    #[tokio::test]
+    async fn a_runtime_without_a_project_reads_back_what_it_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = runtime(&dir).await;
+        let echo = Echo::default();
+
+        runtime
+            .complete(&echo, &Request::text("someone", "first"))
+            .await
+            .unwrap();
+        runtime
+            .complete(&echo, &Request::text("someone", "second"))
+            .await
+            .unwrap();
+        assert_eq!(echo.history.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -124,7 +189,7 @@ mod tests {
         // A new sender: nothing is created for it on any path.
         let fresh = Request::text("fresh", "hello there");
         runtime
-            .complete_with_needs(&Echo, &fresh, &off)
+            .complete_with_needs(&Echo::default(), &fresh, &off)
             .await
             .unwrap();
         stream(&runtime, &fresh, &off).await;
@@ -132,26 +197,32 @@ mod tests {
             needs: off.clone(),
             ..RunConfig::default()
         };
-        runtime.run(&Echo, &fresh, &config).await.unwrap();
+        runtime
+            .run(&Echo::default(), &fresh, &config)
+            .await
+            .unwrap();
         assert_eq!(rows(&runtime, "fresh").await, (0, 0, 0));
 
         // A sender with a stored conversation: it is read, not extended.
         let known = Request::text("known", "hello there");
-        runtime.complete(&Echo, &known).await.unwrap();
+        runtime.complete(&Echo::default(), &known).await.unwrap();
         let before = rows(&runtime, "known").await;
         assert_eq!(before.1, 2);
         runtime
-            .complete_with_needs(&Echo, &known, &off)
+            .complete_with_needs(&Echo::default(), &known, &off)
             .await
             .unwrap();
         stream(&runtime, &known, &off).await;
-        runtime.run(&Echo, &known, &config).await.unwrap();
+        runtime
+            .run(&Echo::default(), &known, &config)
+            .await
+            .unwrap();
         assert_eq!(rows(&runtime, "known").await, before);
 
         // Storing on: each path adds the exchange.
         stream(&runtime, &known, &ContextNeeds::default()).await;
         runtime
-            .run(&Echo, &known, &RunConfig::default())
+            .run(&Echo::default(), &known, &RunConfig::default())
             .await
             .unwrap();
         assert_eq!(rows(&runtime, "known").await.1, before.1 + 4);

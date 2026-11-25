@@ -287,7 +287,7 @@ impl Runtime {
 
         // Record token usage if the provider reported a count.
         #[cfg(feature = "sqlite-store")]
-        if let Some(tokens) = response.metadata.tokens_used {
+        if let Some(tokens) = response.metadata.tokens_used.filter(|_| needs.store) {
             let model = response.metadata.model.as_deref().unwrap_or("unknown");
             let session = response.metadata.session_id.as_deref().unwrap_or("default");
             let breakdown = UsageBreakdown {
@@ -622,7 +622,7 @@ impl Runtime {
         // billed even when the run exhausts its turn budget, so this runs
         // before the max-turns branch below.
         #[cfg(feature = "sqlite-store")]
-        if let Some(tokens) = response.metadata.tokens_used {
+        if let Some(tokens) = response.metadata.tokens_used.filter(|_| needs.store) {
             let model = response.metadata.model.as_deref().unwrap_or("unknown");
             let session = response.metadata.session_id.as_deref().unwrap_or("default");
             let breakdown = UsageBreakdown {
@@ -840,8 +840,8 @@ impl RuntimeBuilder {
     /// When enabled, every call into the runtime that builds context (e.g.
     /// [`Runtime::complete`], [`Runtime::complete_stream`], [`Runtime::run`])
     /// will, on overflow past `max_context_messages`, summarize the dropped
-    /// rows via the active provider and prepend the summary to the system
-    /// prompt under `[Earlier conversation summary]`. The summarization
+    /// rows via the active provider and add the summary to the recalled
+    /// memory block of the system prompt under `[Earlier conversation summary]`. The summarization
     /// adds one extra provider round-trip per overflow event (not per turn),
     /// uses a fixed instruction prompt that never reveals the agent's own
     /// system prompt, and falls back to the default Drop behavior if the
