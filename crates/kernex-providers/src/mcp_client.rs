@@ -613,21 +613,33 @@ done
                 ),
                 (root.join("outside.txt"), root.join("outside.txt")),
             ];
-            let mut probed = 0;
+            let blocked =
+                |path: &std::path::Path| kernex_sandbox::is_write_blocked(path, &scope, &profile);
+            // What the policy must refuse: the database, the configuration
+            // and the start folder wherever the build directory is, and the
+            // data directory too when the build directory is outside every
+            // write root.
+            let mut required = vec![
+                db.clone(),
+                data_dir.join("config.toml"),
+                data_dir.join("mcp").join("relative.txt"),
+            ];
+            if blocked(&root.join("outside.txt")) {
+                required.push(data_dir.join("planted.txt"));
+            }
+            for target in &required {
+                assert!(blocked(target), "policy allows {}", target.display());
+            }
             for (sent, target) in probes {
-                if !kernex_sandbox::is_write_blocked(&target, &scope, &profile) {
+                if !blocked(&target) {
                     continue;
                 }
-                probed += 1;
                 let answer = call(&mut client, "put_file", &sent).await;
                 assert_eq!(answer, "DENIED", "{}", sent.display());
                 if target != db {
                     assert!(!target.exists(), "{}", target.display());
                 }
             }
-            // The database, the configuration and the start folder are
-            // refused wherever the build directory is.
-            assert!(probed >= 3, "only {probed} probes refused by policy");
             assert_eq!(std::fs::read_to_string(&db).unwrap(), "memory-fixture");
         }
         client.shutdown().await;
