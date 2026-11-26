@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1](https://github.com/kernex-dev/kernex/compare/v0.13.0...v0.13.1) - 2026-11-26
+
+### Added
+
+- *(core)* price OpenAI's GPT-6 models
+- *(providers)* move the openai defaults to gpt-6-luna
+
 ## [0.12.0](https://github.com/kernex-dev/kernex/compare/v0.11.0...v0.12.0) - 2026-11-25
 
 ### Added
