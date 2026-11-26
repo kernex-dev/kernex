@@ -27,7 +27,7 @@ fn test_default_provider() {
 fn test_from_config_with_timeout() {
     let provider = ClaudeCodeProvider::from_config(
         5,
-        vec!["Bash".into()],
+        Some(vec!["Bash".into()]),
         300,
         None,
         3,
@@ -40,9 +40,11 @@ fn test_from_config_with_timeout() {
     assert_eq!(provider.max_resume_attempts, 3);
     assert_eq!(provider.model, "claude-sonnet-4-6");
     assert_eq!(provider.allowed_tools, Some(vec!["Bash".to_string()]));
-    // An empty list sets no default.
-    let none = ClaudeCodeProvider::from_config(5, vec![], 300, None, 3, String::new(), None);
+    // `None` sets no default; an empty list is a default of no tools.
+    let none = ClaudeCodeProvider::from_config(5, None, 300, None, 3, String::new(), None);
     assert!(none.allowed_tools.is_none());
+    let empty = ClaudeCodeProvider::from_config(5, Some(vec![]), 300, None, 3, String::new(), None);
+    assert_eq!(empty.allowed_tools, Some(vec![]));
 }
 
 #[test]
@@ -50,7 +52,7 @@ fn test_from_config_with_working_dir() {
     let dir = PathBuf::from("/home/user/.kernex/workspace");
     let provider = ClaudeCodeProvider::from_config(
         10,
-        vec!["Bash".into()],
+        Some(vec!["Bash".into()]),
         600,
         Some(dir.clone()),
         5,

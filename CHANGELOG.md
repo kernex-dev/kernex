@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **kernex-providers**: `ClaudeCodeProvider::from_config` takes `allowed_tools: Option<Vec<String>>`. `Some(vec![])` is now a default of no tools; with `Vec<String>` an empty list meant no default, which offered every tool, so a provider could not be configured to offer none. Pass `None` where you passed a literal `vec![]` to mean no default. Where you pass a list you build, pass `Some(list)`: wrapping it keeps an empty list as no tools, while `None` would offer every tool. `ProviderFactory` passes `None`, as before.
+
 ## [0.12.0] - 2026-11-25
 
 Sandbox and tool-policy release: the OS sandbox, the in-process tools, MCP servers and the agent CLI providers now share one path policy, and several defaults are stricter. Read "Changed defaults" and "Breaking" before upgrading. [SECURITY.md](SECURITY.md) describes the resulting posture and its platform limits.

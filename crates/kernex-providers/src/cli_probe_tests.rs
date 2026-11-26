@@ -229,7 +229,7 @@ async fn claude_code_works_in_the_configured_workspace() {
 
     let provider = ClaudeCodeProvider::from_config(
         3,
-        vec![],
+        None,
         60,
         Some(workspace.clone()),
         0,
@@ -251,6 +251,50 @@ async fn claude_code_works_in_the_configured_workspace() {
         .args
         .contains(&"--dangerously-skip-permissions".to_string()));
     assert_eq!(report.value_of("--tools"), Some("Read"));
+}
+
+#[tokio::test]
+async fn claude_code_keeps_a_provider_default_of_no_tools() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = root.path().join("ws");
+    std::fs::create_dir_all(&workspace).unwrap();
+    let cli = stand_in(root.path(), "fake-claude", &[]);
+    let provider = |tools: Option<Vec<String>>| {
+        ClaudeCodeProvider::from_config(
+            3,
+            tools,
+            60,
+            Some(workspace.clone()),
+            0,
+            String::new(),
+            None,
+        )
+        .with_sandbox_dirs(SandboxDirs::new().with_data_dir(root.path().join("state")))
+        .with_permission_bypass(true)
+        .with_program(cli.to_string_lossy())
+    };
+    let mut ctx = Context::new("hello");
+    ctx.mcp_servers = mcp_servers();
+
+    // A default of no tools reaches the CLI as no tools: no bypass, no
+    // built-in tool, no MCP server.
+    let none = Report::parse(&provider(Some(vec![])).complete(&ctx).await.unwrap().text);
+    assert_eq!(none.value_of("--tools"), Some(""));
+    assert_eq!(none.value_of("--permission-mode"), Some("dontAsk"));
+    assert!(!none
+        .args
+        .contains(&"--dangerously-skip-permissions".to_string()));
+    assert!(!none.args.contains(&"--allowedTools".to_string()));
+    assert!(!none.args.contains(&"--mcp-config".to_string()));
+
+    // No default leaves the request to the bypass the embedder chose, and
+    // the MCP server that the empty default kept out is passed.
+    let unset = Report::parse(&provider(None).complete(&ctx).await.unwrap().text);
+    assert!(unset
+        .args
+        .contains(&"--dangerously-skip-permissions".to_string()));
+    assert_eq!(unset.value_of("--tools"), None);
+    assert!(unset.args.contains(&"--mcp-config".to_string()));
 }
 
 fn fake_key(name: &str) -> Option<String> {
@@ -382,7 +426,7 @@ async fn a_timed_out_cli_is_ended_with_what_it_started() {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
-    let provider = ClaudeCodeProvider::from_config(1, vec![], 1, None, 0, String::new(), None)
+    let provider = ClaudeCodeProvider::from_config(1, None, 1, None, 0, String::new(), None)
         .with_sandbox_dirs(SandboxDirs::new().with_data_dir(root.path().join("state")))
         .with_program(cli.to_string_lossy());
     let err = provider.complete(&Context::new("hello")).await.unwrap_err();
@@ -445,7 +489,7 @@ async fn a_cli_state_directory_replaced_by_a_link_is_refused() {
     let dirs = SandboxDirs::new().with_data_dir(&data_dir);
 
     let cli = stand_in(root.path(), "fake-claude", &[&probe]);
-    let claude = ClaudeCodeProvider::from_config(3, vec![], 60, None, 0, String::new(), None)
+    let claude = ClaudeCodeProvider::from_config(3, None, 60, None, 0, String::new(), None)
         .with_sandbox_dirs(dirs.clone())
         .with_program(cli.to_string_lossy());
     assert!(claude.complete(&Context::new("hello")).await.is_err());

@@ -282,9 +282,9 @@ impl ProviderFactory {
             }
             "claude-code" => {
                 let p = crate::claude_code::ClaudeCodeProvider::from_config(
-                    25,     // default turns
-                    vec![], // allowed tools
-                    3600,   // timeout
+                    25,   // default turns
+                    None, // no default tool list: each request decides
+                    3600, // timeout
                     config.workspace_path,
                     5, // max resumes
                     config.model.unwrap_or_default(),

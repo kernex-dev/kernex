@@ -25,7 +25,7 @@ fn provider(workspace: &Path, data_dir: &Path) -> ClaudeCodeProvider {
         .filter(|t| !t.is_empty());
     ClaudeCodeProvider::from_config(
         4,
-        vec![],
+        None,
         300,
         Some(workspace.to_path_buf()),
         0,

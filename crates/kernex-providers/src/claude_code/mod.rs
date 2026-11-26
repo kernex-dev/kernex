@@ -96,13 +96,14 @@ impl ClaudeCodeProvider {
 
     /// Create a provider from config values.
     ///
-    /// `allowed_tools` is used when a request names no tools itself. An
-    /// empty list sets no default: such a request is offered every tool,
-    /// under the CLI's permission checks unless
+    /// `allowed_tools` is used when a request names no tools itself.
+    /// `Some(list)` offers exactly the tools it names, and `Some(vec![])`
+    /// offers none. `None` sets no default: such a request is offered every
+    /// tool, under the CLI's permission checks unless
     /// [`with_permission_bypass`](Self::with_permission_bypass) is set.
     pub fn from_config(
         max_turns: u32,
-        allowed_tools: Vec<String>,
+        allowed_tools: Option<Vec<String>>,
         timeout_secs: u64,
         working_dir: Option<PathBuf>,
         max_resume_attempts: u32,
@@ -111,7 +112,7 @@ impl ClaudeCodeProvider {
     ) -> Self {
         Self {
             max_turns,
-            allowed_tools: (!allowed_tools.is_empty()).then_some(allowed_tools),
+            allowed_tools,
             timeout: Duration::from_secs(timeout_secs),
             working_dir,
             max_resume_attempts,
