@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **kernex-core**: `pricing_for` knows OpenAI's GPT-6 models at standard-tier rates per 1M tokens: `gpt-6.2-astra` $8 / $40, `gpt-6.2-sol` $2 / $10, `gpt-6.1-terra` $1 / $5 and `gpt-6-luna` $0.10 / $0.50 (input / output). Usage on the new `openai` default is no longer recorded at a cost of zero.
+
 ### Changed
 
 - **kernex-providers**, **kernex-core**: the `openai` provider's default model and both tiers move from `gpt-4o` and `gpt-4o-mini` to `gpt-6-luna`. OpenAI shuts down `gpt-4o` and `gpt-4o-mini` on 2027-01-14 and names `gpt-6-luna` as the replacement for both. Set `model` to use another one.

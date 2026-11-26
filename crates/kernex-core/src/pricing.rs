@@ -113,6 +113,32 @@ pub fn pricing_for(model: &str) -> Option<ModelPricing> {
         });
     }
 
+    // OpenAI GPT-6, standard tier.
+    if m.contains("gpt-6.2-astra") {
+        return Some(ModelPricing {
+            input_per_mtok: 8.0,
+            output_per_mtok: 40.0,
+        });
+    }
+    if m.contains("gpt-6.2-sol") {
+        return Some(ModelPricing {
+            input_per_mtok: 2.0,
+            output_per_mtok: 10.0,
+        });
+    }
+    if m.contains("gpt-6.1-terra") {
+        return Some(ModelPricing {
+            input_per_mtok: 1.0,
+            output_per_mtok: 5.0,
+        });
+    }
+    if m.contains("gpt-6-luna") {
+        return Some(ModelPricing {
+            input_per_mtok: 0.10,
+            output_per_mtok: 0.50,
+        });
+    }
+
     // OpenAI — order matters: check more specific names first.
     if m.contains("o1-mini") {
         return Some(ModelPricing {
@@ -297,6 +323,21 @@ mod tests {
     fn test_pricing_for_gpt4o_not_mini() {
         let p = pricing_for("gpt-4o").unwrap();
         assert_eq!(p.input_per_mtok, 2.5);
+    }
+
+    #[test]
+    fn test_pricing_for_gpt6() {
+        for (model, input, output) in [
+            ("gpt-6.2-astra", 8.0, 40.0),
+            ("gpt-6.2-sol", 2.0, 10.0),
+            ("gpt-6.1-terra", 1.0, 5.0),
+            ("gpt-6-luna", 0.10, 0.50),
+            ("GPT-6-Luna", 0.10, 0.50),
+        ] {
+            let p = pricing_for(model).unwrap();
+            assert_eq!(p.input_per_mtok, input, "{model}");
+            assert_eq!(p.output_per_mtok, output, "{model}");
+        }
     }
 
     #[test]
