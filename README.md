@@ -346,6 +346,8 @@ impl Provider for MyProvider {
 ~/.kernex/                  # Default data directory
 ├── config.toml             # Runtime configuration
 ├── memory.db               # SQLite persistent memory
+├── cli/                    # State for the claude-code and opencode CLIs
+├── mcp/                    # Working directory for MCP servers
 ├── skills/                 # Skill definitions
 │   └── my-skill/
 │       └── SKILL.md        # TOML/YAML frontmatter + instructions
@@ -362,6 +364,7 @@ impl Provider for MyProvider {
 
 | Example | Description | Prerequisites | Run |
 |---------|-------------|---------------|-----|
+| `hello_world` | One request to a local LLM, no memory or skills | Ollama running | `cargo run --example hello_world` |
 | `simple_chat` | Interactive chat with local LLM | Ollama running | `cargo run --example simple_chat` |
 | `memory_agent` | Persistent facts and lessons | None | `cargo run --example memory_agent` |
 | `skill_loader` | Load skills and match triggers | None | `cargo run --example skill_loader` |
