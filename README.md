@@ -65,7 +65,7 @@ For running examples:
 
 ## Architecture
 
-Kernex is a Cargo workspace with 9 composable crates published to crates.io:
+Kernex is a Cargo workspace with 9 composable crates published to crates.io. Two more, `kernex-brain` and `kernex-presets`, are workspace-internal scaffolds (`publish = false`), and `bench/` holds the criterion benchmarks. The published crates:
 
 ```mermaid
 graph TD
@@ -477,7 +477,7 @@ cargo fmt --check
 
 ## Versioning
 
-This project follows [Semantic Versioning](https://semver.org/). All crates in the workspace share the same version number.
+This project follows [Semantic Versioning](https://semver.org/). All published crates share the same version number. Before 1.0, a minor bump (0.12 to 0.13) can break the API; see the Breaking sections in [CHANGELOG.md](CHANGELOG.md).
 
 - **MAJOR** — breaking API changes
 - **MINOR** — new features, backward compatible
