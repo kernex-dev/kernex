@@ -216,13 +216,16 @@ pub fn enforcement_required(profile: &SandboxProfile) -> bool {
 }
 
 fn env_requires_sandbox() -> bool {
-    match std::env::var(REQUIRE_SANDBOX_ENV) {
-        Ok(v) => {
-            let v = v.trim();
-            !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
-        }
-        Err(_) => false,
-    }
+    requires_sandbox_value(std::env::var(REQUIRE_SANDBOX_ENV).ok().as_deref())
+}
+
+/// How a value of [`REQUIRE_SANDBOX_ENV`] is read: unset, empty, `0` and
+/// `false` (case-insensitive, surrounding whitespace ignored) mean not set.
+fn requires_sandbox_value(value: Option<&str>) -> bool {
+    value.is_some_and(|v| {
+        let v = v.trim();
+        !(v.is_empty() || v == "0" || v.eq_ignore_ascii_case("false"))
+    })
 }
 
 static UNSANDBOXED_WARNING_EMITTED: std::sync::atomic::AtomicBool =
@@ -666,27 +669,75 @@ mod tests {
         }
     }
 
+    /// Values of [`REQUIRE_SANDBOX_ENV`] and whether each one requires the
+    /// sandbox. Both tests below run the whole table.
+    const REQUIRE_SANDBOX_VALUES: &[(&str, bool)] = &[
+        ("1", true),
+        ("true", true),
+        ("TRUE", true),
+        ("yes", true),
+        (" 1 ", true),
+        ("0", false),
+        (" 0 ", false),
+        ("false", false),
+        ("False", false),
+        ("FALSE", false),
+        ("", false),
+        ("  ", false),
+    ];
+
     #[test]
     fn test_env_requires_sandbox_value_parsing() {
-        // Exercises the value parser via a save/restore cycle. Runs in one
-        // test to avoid interleaving env mutation across parallel tests.
-        let saved = std::env::var_os(REQUIRE_SANDBOX_ENV);
+        // Tests the parser on values, not by setting the variable: other
+        // tests in this binary read it in parallel, and a set here made them
+        // fail intermittently.
+        for &(v, want) in REQUIRE_SANDBOX_VALUES {
+            assert_eq!(requires_sandbox_value(Some(v)), want, "{v:?}");
+        }
+        assert!(!requires_sandbox_value(None));
+    }
 
-        std::env::set_var(REQUIRE_SANDBOX_ENV, "1");
-        assert!(env_requires_sandbox());
-        std::env::set_var(REQUIRE_SANDBOX_ENV, "true");
-        assert!(env_requires_sandbox());
-        std::env::set_var(REQUIRE_SANDBOX_ENV, "0");
-        assert!(!env_requires_sandbox());
-        std::env::set_var(REQUIRE_SANDBOX_ENV, "false");
-        assert!(!env_requires_sandbox());
-        std::env::set_var(REQUIRE_SANDBOX_ENV, "");
-        assert!(!env_requires_sandbox());
-        std::env::remove_var(REQUIRE_SANDBOX_ENV);
-        assert!(!env_requires_sandbox());
+    /// Set in the child runs of the test below to the value
+    /// `env_requires_sandbox` must return there.
+    const ENV_PROBE_EXPECT: &str = "KERNEX_SANDBOX_TEST_ENV_PROBE_EXPECT";
 
-        if let Some(v) = saved {
-            std::env::set_var(REQUIRE_SANDBOX_ENV, v);
+    #[test]
+    fn test_env_requires_sandbox_reads_the_variable() {
+        // The variable is process-wide, so it is set only in child runs of
+        // this test binary, never in this process.
+        if let Some(expect) = std::env::var_os(ENV_PROBE_EXPECT) {
+            assert_eq!(env_requires_sandbox(), expect == "set");
+            return;
+        }
+        let mut cases: Vec<(Option<std::ffi::OsString>, bool)> = REQUIRE_SANDBOX_VALUES
+            .iter()
+            .map(|&(v, want)| (Some(v.into()), want))
+            .collect();
+        cases.push((None, false));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let not_utf8 = std::ffi::OsStr::from_bytes(b"1\xff");
+            cases.push((Some(not_utf8.to_os_string()), false));
+        }
+        let exe = std::env::current_exe().unwrap();
+        for (value, want) in cases {
+            let mut cmd = std::process::Command::new(&exe);
+            cmd.args([
+                "--exact",
+                "tests::test_env_requires_sandbox_reads_the_variable",
+                "--test-threads=1",
+            ])
+            .env(ENV_PROBE_EXPECT, if want { "set" } else { "unset" });
+            match &value {
+                Some(v) => cmd.env(REQUIRE_SANDBOX_ENV, v),
+                None => cmd.env_remove(REQUIRE_SANDBOX_ENV),
+            };
+            let out = cmd.output().unwrap();
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            assert!(out.status.success(), "{value:?}: {stdout}");
+            // A filter that matched nothing would also exit 0.
+            assert!(stdout.contains("1 passed"), "{value:?}: {stdout}");
         }
     }
 
