@@ -286,7 +286,7 @@ let runtime = RuntimeBuilder::new()
     .build().await?;
 ```
 
-Text before the marker gets `cache_control: ephemeral`. Text after is sent as a plain block each turn. The `anthropic-beta: prompt-caching-2024-07-31` header is added automatically when the boundary is present.
+Text before the marker gets `cache_control: ephemeral`. Text after is sent as a plain block each turn. Prompt caching is generally available, so no `anthropic-beta` header is sent.
 
 ### Using any OpenAI-compatible endpoint
 
