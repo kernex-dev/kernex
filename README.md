@@ -478,6 +478,10 @@ cargo clippy --workspace -- -D warnings
 cargo fmt --check
 ```
 
+### Benchmarks
+
+`cargo bench -p kernex-bench` runs the criterion benchmarks in [`bench/`](bench/). CI fails a change that pushes the `memory_search_cold_start` median past 50 ms. Committed baseline: [`docs/bench-baseline-2026-05-10-cold-start.txt`](docs/bench-baseline-2026-05-10-cold-start.txt).
+
 ## Versioning
 
 This project follows [Semantic Versioning](https://semver.org/). All published crates share the same version number. Before 1.0, a minor bump (0.12 to 0.13) can break the API; see the Breaking sections in [CHANGELOG.md](CHANGELOG.md).
@@ -486,7 +490,7 @@ This project follows [Semantic Versioning](https://semver.org/). All published c
 - **MINOR** — new features, backward compatible
 - **PATCH** — bug fixes, backward compatible
 
-See [CHANGELOG.md](CHANGELOG.md) for release history.
+See [CHANGELOG.md](CHANGELOG.md) for release history. Security fixes land on the current and previous minor; see [SECURITY.md](SECURITY.md#supported-versions).
 
 ## Contributing
 
