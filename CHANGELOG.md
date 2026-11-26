@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-26
+
 ### Breaking
 
 - **kernex-providers**: `ClaudeCodeProvider::from_config` takes `allowed_tools: Option<Vec<String>>`. `Some(vec![])` is now a default of no tools; with `Vec<String>` an empty list meant no default, which offered every tool, so a provider could not be configured to offer none. Pass `None` where you passed a literal `vec![]` to mean no default. Where you pass a list you build, pass `Some(list)`: wrapping it keeps an empty list as no tools, while `None` would offer every tool. `ProviderFactory` passes `None`, as before.
