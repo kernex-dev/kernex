@@ -55,9 +55,9 @@ For running examples:
 - **Persistent memory** — SQLite-backed conversations, facts, reward-based learning, scheduled tasks
 - **Pipeline checkpointing** — crash-safe phase state stored to SQLite; resume pipelines after failure via `PhaseCheckpoint`
 - **Parallel pipeline phases** — declare `parallel_group` on consecutive topology phases to run them concurrently
-- **Skills.sh compatible** — load skills from `SKILL.md` files with TOML/YAML frontmatter; 12 builtin agent personas included
+- **Skills.sh compatible** — load skills from `SKILL.md` files with TOML/YAML frontmatter; 12 agent persona skills in `examples/skills/builtin/`
 - **Multi-agent pipelines** — TOML-defined topologies with corrective loops and file-mediated handoffs
-- **Declarative agent definitions** — `RuntimeBuilder::from_file(path)` loads TOML or YAML agent config without Rust code
+- **Declarative agent definitions** — `RuntimeBuilder::from_file(path)` loads TOML agent config without Rust code; YAML (`.yaml` / `.yml`) needs `kernex-core` with the `yaml` feature
 - **Trait-based composition** — implement `Provider` or `Store` to plug in your own backends
 - **Secure by default** — subprocesses start from a cleared environment, `web_fetch` is off until the host allows hosts, `allowed_tools` offers only the tools it names, recalled memory is marked as data, and provider configs redact API keys in `Debug` output; prompt caching support for Anthropic
 - **OpenTelemetry** — optional `opentelemetry` feature exports traces to Jaeger, Honeycomb, Grafana, and any OTel backend
