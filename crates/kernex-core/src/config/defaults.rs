@@ -23,7 +23,7 @@ pub fn default_anthropic_model() -> String {
     "claude-sonnet-4-6".to_string()
 }
 pub fn default_openai_model() -> String {
-    "gpt-4o".to_string()
+    "gpt-6-luna".to_string()
 }
 pub fn default_openai_base_url() -> String {
     "https://api.openai.com/v1".to_string()

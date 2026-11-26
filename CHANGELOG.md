@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **kernex-providers**, **kernex-core**: the `openai` provider's default model and both tiers move from `gpt-4o` and `gpt-4o-mini` to `gpt-6-luna`. OpenAI shuts down `gpt-4o` and `gpt-4o-mini` on 2027-01-14 and names `gpt-6-luna` as the replacement for both. Set `model` to use another one.
+- **kernex-providers**: when it offers tools to a `gpt-6-luna` model, the `openai` provider sends `reasoning_effort: "none"`. Luna calls tools on Chat Completions only at that effort, and its default is `medium`. OpenRouter and the providers that share the Chat Completions code (Groq, Mistral, DeepSeek, Fireworks, xAI) send nothing new.
+- **kernex-providers**: a tool-carrying request to `gpt-6.2-*` or `gpt-6.1-terra` on `api.openai.com` (or a regional host under it, such as `eu.api.openai.com`) now fails before it is sent, with an error saying these models call tools only through OpenAI's Responses API, which the provider does not use yet. Requests without tools, and requests to any other base URL, are unchanged.
+
 ## [0.13.0] - 2026-11-26
 
 ### Breaking

@@ -142,6 +142,7 @@ impl Provider for OpenRouterProvider {
             model: effective_model.to_string(),
             messages,
             tools: None,
+            reasoning_effort: None,
         };
 
         debug!("openrouter: POST {url} model={effective_model} (no tools)");

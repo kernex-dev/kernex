@@ -124,8 +124,8 @@ fn resolve_model(provider: &str, model: Option<String>, tier: Option<ModelTier>)
 /// Map a provider name + tier to a concrete model identifier.
 fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
     match (provider, tier) {
-        ("openai", ModelTier::Standard) => "gpt-4o-mini",
-        ("openai", ModelTier::Flagship) => "gpt-4o",
+        ("openai", ModelTier::Standard) => "gpt-6-luna",
+        ("openai", ModelTier::Flagship) => "gpt-6-luna",
         ("anthropic", ModelTier::Standard) => "claude-sonnet-4-6",
         ("anthropic", ModelTier::Flagship) => "claude-opus-4-8",
         ("gemini", ModelTier::Standard) => "gemini-3.6-flash",
@@ -180,7 +180,7 @@ impl ProviderFactory {
     /// `bedrock` is answered whether or not the `bedrock` feature is compiled.
     pub fn default_model(provider: &str) -> Option<&'static str> {
         match provider {
-            "openai" => Some("gpt-4o"),
+            "openai" => Some("gpt-6-luna"),
             "anthropic" => Some("claude-sonnet-4-6"),
             "gemini" => Some("gemini-3.6-flash"),
             "ollama" => Some("llama3.2"),
@@ -694,10 +694,7 @@ mod tests {
             model_from_tier("anthropic", ModelTier::Standard),
             "claude-sonnet-4-6"
         );
-        assert_eq!(
-            model_from_tier("openai", ModelTier::Standard),
-            "gpt-4o-mini"
-        );
+        assert_eq!(model_from_tier("openai", ModelTier::Standard), "gpt-6-luna");
         assert_eq!(
             model_from_tier("gemini", ModelTier::Standard),
             "gemini-3.6-flash"
@@ -715,7 +712,7 @@ mod tests {
             model_from_tier("anthropic", ModelTier::Flagship),
             "claude-opus-4-8"
         );
-        assert_eq!(model_from_tier("openai", ModelTier::Flagship), "gpt-4o");
+        assert_eq!(model_from_tier("openai", ModelTier::Flagship), "gpt-6-luna");
         assert_eq!(
             model_from_tier("gemini", ModelTier::Flagship),
             "gemini-3.8-flash"

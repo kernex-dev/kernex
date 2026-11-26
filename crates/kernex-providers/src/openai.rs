@@ -12,13 +12,12 @@ use kernex_core::{
     traits::Provider,
 };
 use secrecy::{ExposeSecret, SecretString};
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::http_retry::{read_truncated_error_body, send_with_retry};
-use crate::tools::{build_response, tools_enabled, ToolDef, ToolExecutor};
+use crate::tools::{build_response, tools_enabled, ToolExecutor};
 
 /// Default max agentic loop iterations.
 const DEFAULT_MAX_TURNS: u32 = 50;
@@ -100,108 +99,10 @@ impl OpenAiProvider {
     }
 }
 
-// --- Serde types ---
-
-/// Build OpenAI-format messages from context (system as a message role).
-pub(crate) fn build_openai_messages(system: &str, api_messages: &[ApiMessage]) -> Vec<ChatMessage> {
-    let mut messages = Vec::with_capacity(api_messages.len() + 1);
-    if !system.is_empty() {
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: Some(system.to_string()),
-            tool_calls: None,
-            tool_call_id: None,
-        });
-    }
-    for m in api_messages {
-        messages.push(ChatMessage {
-            role: m.role.clone(),
-            content: Some(m.content.clone()),
-            tool_calls: None,
-            tool_call_id: None,
-        });
-    }
-    messages
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub(crate) struct ChatMessage {
-    pub role: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_calls: Option<Vec<ToolCallMsg>>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<String>,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub(crate) struct ToolCallMsg {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub call_type: String,
-    pub function: FunctionCall,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub(crate) struct FunctionCall {
-    pub name: String,
-    pub arguments: String,
-}
-
-#[derive(Serialize)]
-pub(crate) struct ChatCompletionRequest {
-    pub model: String,
-    pub messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<OpenAiToolDef>>,
-}
-
-#[derive(Serialize, Clone)]
-pub(crate) struct OpenAiToolDef {
-    #[serde(rename = "type")]
-    pub tool_type: String,
-    pub function: OpenAiFunctionDef,
-}
-
-#[derive(Serialize, Clone)]
-pub(crate) struct OpenAiFunctionDef {
-    pub name: String,
-    pub description: String,
-    pub parameters: serde_json::Value,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ChatCompletionResponse {
-    pub choices: Option<Vec<ChatChoice>>,
-    pub model: Option<String>,
-    pub usage: Option<ChatUsage>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ChatChoice {
-    pub message: Option<ChatMessage>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct ChatUsage {
-    pub total_tokens: Option<u64>,
-}
-
-// --- Helper: convert ToolDef -> OpenAI format ---
-
-pub(crate) fn to_openai_tools(defs: &[ToolDef]) -> Vec<OpenAiToolDef> {
-    defs.iter()
-        .map(|d| OpenAiToolDef {
-            tool_type: "function".to_string(),
-            function: OpenAiFunctionDef {
-                name: d.name.clone(),
-                description: d.description.clone(),
-                parameters: d.parameters.clone(),
-            },
-        })
-        .collect()
-}
+pub(crate) use crate::openai_wire::{
+    build_openai_messages, chat_tool_effort, is_openai_host, needs_responses_for_tools,
+    to_openai_tools, ChatCompletionRequest, ChatCompletionResponse, ChatMessage,
+};
 
 // --- Shared agentic loop ---
 
@@ -241,6 +142,7 @@ pub(crate) async fn openai_agentic_complete(
             model: model.to_string(),
             messages: messages.clone(),
             tools: tools.clone(),
+            reasoning_effort: chat_tool_effort(provider_name, model).filter(|_| tools.is_some()),
         };
 
         debug!("{provider_name}: POST {url} model={model} turn={turn}");
@@ -389,6 +291,12 @@ impl Provider for OpenAiProvider {
 
         if has_tools {
             if let Some(ref ws) = self.workspace_path {
+                if is_openai_host(&self.base_url) && needs_responses_for_tools(effective_model) {
+                    return Err(ProviderError::Logic(format!(
+                        "{name}: {effective_model} calls tools only through OpenAI's Responses API, which this provider does not use yet; use gpt-6-luna, or call it without tools"
+                    ))
+                    .into());
+                }
                 let mut executor = ToolExecutor::new(ws.clone())
                     .with_sandbox_profile(self.sandbox_profile.clone())
                     .with_sandbox_dirs(&self.sandbox_dirs)
@@ -425,6 +333,7 @@ impl Provider for OpenAiProvider {
             model: effective_model.to_string(),
             messages,
             tools: None,
+            reasoning_effort: None,
         };
 
         debug!("{name}: POST {url} model={effective_model} (no tools)");
@@ -621,9 +530,11 @@ mod tests {
                 tool_call_id: None,
             }],
             tools: None,
+            reasoning_effort: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").is_none());
+        assert!(json.get("reasoning_effort").is_none());
     }
 
     #[test]
@@ -638,8 +549,218 @@ mod tests {
                 tool_call_id: None,
             }],
             tools: Some(to_openai_tools(&defs)),
+            reasoning_effort: None,
         };
         let json = serde_json::to_value(&req).unwrap();
         assert!(json.get("tools").unwrap().as_array().unwrap().len() == 7);
+    }
+
+    /// A Chat Completions stub that answers every request with a final text
+    /// message and records each request body.
+    async fn spawn_chat_stub() -> (
+        std::net::SocketAddr,
+        std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let bodies_srv = bodies.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let bodies = bodies_srv.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 262_144];
+                    let mut read = 0usize;
+                    let mut body_start = 0usize;
+                    loop {
+                        let n = sock.read(&mut buf[read..]).await.unwrap_or(0);
+                        if n == 0 {
+                            break;
+                        }
+                        read += n;
+                        let s = String::from_utf8_lossy(&buf[..read]);
+                        if let Some(h_end) = s.find("\r\n\r\n") {
+                            body_start = h_end + 4;
+                            let cl = s.lines().find_map(|l| {
+                                let low = l.to_ascii_lowercase();
+                                low.strip_prefix("content-length:")
+                                    .and_then(|v| v.trim().parse::<usize>().ok())
+                            });
+                            if read - body_start >= cl.unwrap_or(0) {
+                                break;
+                            }
+                        }
+                        if read == buf.len() {
+                            break;
+                        }
+                    }
+                    if let Ok(v) = serde_json::from_slice(&buf[body_start..read]) {
+                        bodies.lock().unwrap().push(v);
+                    }
+                    let body = r#"{"choices":[{"message":{"role":"assistant","content":"done"}}],"model":"stub","usage":{"total_tokens":3}}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.shutdown().await;
+                });
+            }
+        });
+        (addr, bodies)
+    }
+
+    /// Run one request through `provider` and return the single body sent.
+    async fn sent_body(
+        provider: OpenAiProvider,
+        bodies: &std::sync::Mutex<Vec<serde_json::Value>>,
+    ) -> serde_json::Value {
+        let resp = provider.complete(&Context::new("hi")).await.unwrap();
+        assert_eq!(resp.text, "done");
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        bodies[0].clone()
+    }
+
+    #[tokio::test]
+    async fn luna_with_tools_is_sent_reasoning_effort_none() {
+        let ws = tempfile::tempdir().unwrap();
+        let (addr, bodies) = spawn_chat_stub().await;
+        let p = OpenAiProvider::from_config(
+            format!("http://{addr}/v1"),
+            "k".into(),
+            "gpt-6-luna".into(),
+            Some(ws.path().to_path_buf()),
+        )
+        .unwrap();
+        let body = sent_body(p, &bodies).await;
+        assert!(body["tools"].as_array().is_some_and(|t| !t.is_empty()));
+        assert_eq!(body["reasoning_effort"], "none");
+    }
+
+    #[tokio::test]
+    async fn luna_without_tools_gets_no_reasoning_effort() {
+        let (addr, bodies) = spawn_chat_stub().await;
+        let p = OpenAiProvider::from_config(
+            format!("http://{addr}/v1"),
+            "k".into(),
+            "gpt-6-luna".into(),
+            None,
+        )
+        .unwrap();
+        let body = sent_body(p, &bodies).await;
+        assert!(body.get("tools").is_none());
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn compatible_providers_get_no_reasoning_effort() {
+        let ws = tempfile::tempdir().unwrap();
+        let (addr, bodies) = spawn_chat_stub().await;
+        let p = OpenAiProvider::from_config(
+            format!("http://{addr}/v1"),
+            "k".into(),
+            "gpt-6-luna".into(),
+            Some(ws.path().to_path_buf()),
+        )
+        .unwrap()
+        .with_name("groq");
+        let body = sent_body(p, &bodies).await;
+        assert!(body["tools"].as_array().is_some_and(|t| !t.is_empty()));
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
+
+        // OpenRouter runs the same loop under its own name.
+        let (addr, bodies) = spawn_chat_stub().await;
+        let mut executor = ToolExecutor::new(ws.path().to_path_buf());
+        let resp = openai_agentic_complete(
+            &reqwest::Client::new(),
+            &format!("http://{addr}/v1/chat/completions"),
+            "Bearer k",
+            "gpt-6-luna",
+            "",
+            &[ApiMessage {
+                role: "user".into(),
+                content: "hi".into(),
+            }],
+            &mut executor,
+            2,
+            None,
+            "openrouter",
+        )
+        .await
+        .unwrap();
+        assert_eq!(resp.text, "done");
+        let bodies = bodies.lock().unwrap();
+        assert!(bodies[0]["tools"].as_array().is_some_and(|t| !t.is_empty()));
+        assert!(bodies[0].get("reasoning_effort").is_none(), "{}", bodies[0]);
+    }
+
+    /// A provider for OpenAI's own host whose HTTP client sends every
+    /// request to the local stub at `addr` instead, so a regression cannot
+    /// reach the real API.
+    fn openai_host_via_stub(
+        addr: std::net::SocketAddr,
+        model: &str,
+        ws: Option<PathBuf>,
+    ) -> OpenAiProvider {
+        let mut p = OpenAiProvider::from_config(
+            "http://api.openai.com/v1".into(),
+            "k".into(),
+            model.into(),
+            ws,
+        )
+        .unwrap();
+        p.client = reqwest::Client::builder()
+            .proxy(reqwest::Proxy::http(format!("http://{addr}")).unwrap())
+            .build()
+            .unwrap();
+        p
+    }
+
+    #[tokio::test]
+    async fn responses_only_model_with_tools_is_refused_for_openai_itself() {
+        let ws = tempfile::tempdir().unwrap();
+        let (addr, bodies) = spawn_chat_stub().await;
+        let p = openai_host_via_stub(addr, "gpt-6.2-sol", Some(ws.path().to_path_buf()));
+        let err = p
+            .complete(&Context::new("hi"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("gpt-6.2-sol"), "{err}");
+        assert!(err.contains("Responses API"), "{err}");
+        assert!(bodies.lock().unwrap().is_empty(), "a request was sent");
+    }
+
+    #[tokio::test]
+    async fn responses_only_model_without_tools_is_called_on_openai_itself() {
+        let (addr, bodies) = spawn_chat_stub().await;
+        let p = openai_host_via_stub(addr, "gpt-6.2-sol", None);
+        let body = sent_body(p, &bodies).await;
+        assert_eq!(body["model"], "gpt-6.2-sol");
+        assert!(body.get("tools").is_none());
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn responses_only_model_with_tools_passes_through_a_proxy() {
+        // A proxy may translate the call itself, so only OpenAI's own host
+        // gets the refusal.
+        let ws = tempfile::tempdir().unwrap();
+        let (addr, bodies) = spawn_chat_stub().await;
+        let p = OpenAiProvider::from_config(
+            format!("http://{addr}/v1"),
+            "k".into(),
+            "gpt-6.2-sol".into(),
+            Some(ws.path().to_path_buf()),
+        )
+        .unwrap();
+        let body = sent_body(p, &bodies).await;
+        assert!(body["tools"].as_array().is_some_and(|t| !t.is_empty()));
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
     }
 }
