@@ -10,6 +10,9 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # uuid 1.27 and later need Rust 1.89; the workspace supports 1.86.
+      - dependency-name: "uuid"
+        versions: [">= 1.27"]
     # One PR a week for every minor and patch bump, instead of one each.
     groups:
       cargo-minor-and-patch:
