@@ -10,6 +10,11 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    # One PR a week for every minor and patch bump, instead of one each.
+    groups:
+      cargo-minor-and-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "github-actions"
     directory: "/"
@@ -17,3 +22,6 @@ updates:
       interval: "weekly"
     labels:
       - "dependencies"
+    groups:
+      github-actions:
+        patterns: ["*"]
