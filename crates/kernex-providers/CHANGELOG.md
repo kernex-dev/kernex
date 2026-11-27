@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1](https://github.com/kernex-dev/kernex/compare/v0.14.0...v0.14.1) - 2026-11-27
+
+### Fixed
+
+- *(core)* use llama3.2 as the ollama config default
+- *(providers)* keep credentials in a base URL out of errors and logs
+
 ## [0.14.0](https://github.com/kernex-dev/kernex/compare/v0.13.1...v0.14.0) - 2026-11-27
 
 ### Added
