@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/kernex-dev/kernex/compare/v0.13.1...v0.14.0) - 2026-11-27
+
+### Changed
+
+- *(providers)* move the openai default model to gpt-6.2-sol
+
 ## [0.13.1](https://github.com/kernex-dev/kernex/compare/v0.13.0...v0.13.1) - 2026-11-26
 
 ### Added

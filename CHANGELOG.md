@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-27
+
 ### Added
 
 - **kernex-providers**: the `openai` provider speaks OpenAI's Responses API (`POST {base_url}/responses`), with and without tools. Requests are stateless (`store: false`); reasoning and function-call items are passed back unchanged between turns, and a response whose `status` is set to anything but `completed` is an error that says why. Reasoning models (GPT-6, GPT-5 apart from its `-chat` variants, the o-series, and models fine-tuned from them) get `reasoning: {effort: "low"}` and their encrypted reasoning back; other models, such as `gpt-4o`, get neither field, since Responses rejects both for them. The new `OpenAiApi` enum picks the API, `OpenAiProvider::with_api` sets it on a provider, and `ProviderConfig::openai_api` sets it through the factory.
