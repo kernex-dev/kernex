@@ -47,6 +47,7 @@ pub(crate) mod mcp_client;
 pub(crate) mod mcp_error;
 pub mod ollama;
 pub mod openai;
+mod openai_responses;
 mod openai_wire;
 pub mod opencode;
 pub mod openrouter;
