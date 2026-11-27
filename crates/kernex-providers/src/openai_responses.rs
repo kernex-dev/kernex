@@ -435,41 +435,37 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// A turn with a reasoning item and two function calls, in the shapes
-    /// OpenAI documents for `store: false`. To be replaced with a body
-    /// captured from the live run.
-    const TURN_WITH_CALLS: &str = r#"{
-        "id": "resp_1", "object": "response", "status": "completed",
-        "model": "gpt-6.2-sol-2026-11-01",
-        "output": [
-            {"id": "rs_1", "type": "reasoning", "summary": [],
-             "encrypted_content": "gAAAAopaque-reasoning-1"},
-            {"id": "fc_1", "type": "function_call", "status": "completed",
-             "call_id": "call_a", "name": "read",
-             "arguments": "{\"file_path\":\"a.txt\"}"},
-            {"id": "fc_2", "type": "function_call", "status": "completed",
-             "call_id": "call_b", "name": "read",
-             "arguments": "{\"file_path\":\"b.txt\"}"}
-        ],
-        "usage": {"input_tokens": 90, "output_tokens": 30,
-                  "output_tokens_details": {"reasoning_tokens": 20},
-                  "total_tokens": 120}
-    }"#;
+    /// The first turn of a live `gpt-6.2-sol` run: two `read` calls, for
+    /// `/a.txt` and `/b.txt`. Captured 2026-11-27 with the request `run`
+    /// sends (effort low, `store: false`, encrypted reasoning included).
+    /// Both bodies are as returned except the 16-character prefix that every
+    /// `resp_`, `fc_` and `msg_` ID shared, which is zeroed. The model
+    /// returned no reasoning item, at low or at medium.
+    const TURN_WITH_CALLS: &str = include_str!("../testdata/openai_responses/turn-with-calls.json");
 
-    /// The final answer after the function call outputs.
-    const FINAL_MESSAGE: &str = r#"{
-        "id": "resp_2", "object": "response", "status": "completed",
-        "model": "gpt-6.2-sol-2026-11-01",
-        "output": [
-            {"id": "rs_2", "type": "reasoning", "summary": [],
-             "encrypted_content": "gAAAAopaque-reasoning-2"},
-            {"id": "msg_1", "type": "message", "status": "completed",
-             "role": "assistant",
-             "content": [{"type": "output_text", "annotations": [],
-                          "text": "a.txt says alpha; b.txt says beta."}]}
-        ],
-        "usage": {"input_tokens": 150, "output_tokens": 30, "total_tokens": 180}
-    }"#;
+    /// The second turn of the same run: the final answer.
+    const FINAL_MESSAGE: &str = include_str!("../testdata/openai_responses/final-message.json");
+
+    /// The answer `FINAL_MESSAGE` carries.
+    const FINAL_TEXT: &str = "- `a.txt`: `alpha`\n- `b.txt`: `beta`";
+
+    /// `TURN_WITH_CALLS` with its two paths moved into the test workspace,
+    /// and with a reasoning item in front of the calls when `reasoning` is
+    /// set, in the shape OpenAI documents for `store: false`.
+    fn turn_with_calls(ws: &std::path::Path, reasoning: bool) -> String {
+        let ws = ws.display();
+        let body = TURN_WITH_CALLS
+            .replace(r#"\"/a.txt\""#, &format!(r#"\"{ws}/a.txt\""#))
+            .replace(r#"\"/b.txt\""#, &format!(r#"\"{ws}/b.txt\""#));
+        if !reasoning {
+            return body;
+        }
+        let mut turn: Value = serde_json::from_str(&body).unwrap();
+        let item = json!({"id": "rs_1", "type": "reasoning", "summary": [],
+                          "encrypted_content": "gAAAAopaque-reasoning-1"});
+        turn["output"].as_array_mut().unwrap().insert(0, item);
+        turn.to_string()
+    }
 
     type Bodies = Arc<Mutex<Vec<Value>>>;
 
@@ -568,16 +564,20 @@ mod tests {
 
     #[tokio::test]
     async fn a_tool_turn_round_trips_its_items_unchanged() {
-        let (url, bodies) = spawn_stub(vec![ok(TURN_WITH_CALLS), ok(FINAL_MESSAGE)]).await;
-        let (_dir, mut executor) = workspace();
+        for reasoning in [false, true] {
+            round_trip(reasoning).await;
+        }
+    }
+
+    async fn round_trip(reasoning: bool) {
+        let (dir, mut executor) = workspace();
+        let first = turn_with_calls(&dir.path().canonicalize().unwrap(), reasoning);
+        let (url, bodies) = spawn_stub(vec![ok(&first), ok(FINAL_MESSAGE)]).await;
         let resp = run(&url, &mut executor, 10, None).await.unwrap();
 
-        assert_eq!(resp.text, "a.txt says alpha; b.txt says beta.");
-        assert_eq!(resp.metadata.tokens_used, Some(300));
-        assert_eq!(
-            resp.metadata.model.as_deref(),
-            Some("gpt-6.2-sol-2026-11-01")
-        );
+        assert_eq!(resp.text, FINAL_TEXT);
+        assert_eq!(resp.metadata.tokens_used, Some(148 + 188));
+        assert_eq!(resp.metadata.model.as_deref(), Some("gpt-6.2-sol"));
         assert_eq!(resp.metadata.stop_reason, None);
 
         let bodies = bodies.lock().unwrap();
@@ -604,36 +604,47 @@ mod tests {
         );
 
         // The second request carries the first turn's items as returned,
-        // reasoning first, then one output per call in call order.
+        // reasoning included, then one output per call in call order.
         let input = bodies[1]["input"].as_array().unwrap();
-        let first: Value = serde_json::from_str(TURN_WITH_CALLS).unwrap();
+        let first: Value = serde_json::from_str(&first).unwrap();
         let returned = first["output"].as_array().unwrap();
+        assert_eq!(returned.len(), 2 + usize::from(reasoning));
+        if reasoning {
+            assert_eq!(input[1]["type"], "reasoning");
+        }
         assert_eq!(input.len(), 1 + returned.len() + 2);
         assert_eq!(&input[1..1 + returned.len()], returned.as_slice());
         let outputs = &input[1 + returned.len()..];
         assert_eq!(outputs[0]["type"], "function_call_output");
-        assert_eq!(outputs[0]["call_id"], "call_a");
+        assert_eq!(
+            outputs[0]["call_id"],
+            "call_6f52549108b046acb0a88c3866b5c2be"
+        );
         assert!(outputs[0]["output"].as_str().unwrap().contains("alpha"));
-        assert_eq!(outputs[1]["call_id"], "call_b");
+        assert_eq!(
+            outputs[1]["call_id"],
+            "call_fde1267e1e2244348737d0e65e03d650"
+        );
         assert!(outputs[1]["output"].as_str().unwrap().contains("beta"));
     }
 
     #[tokio::test]
     async fn the_loop_stops_at_max_turns_and_at_the_budget() {
-        let (url, bodies) = spawn_stub(vec![ok(TURN_WITH_CALLS)]).await;
-        let (_dir, mut executor) = workspace();
+        let (dir, mut executor) = workspace();
+        let turn = turn_with_calls(&dir.path().canonicalize().unwrap(), false);
+        let (url, bodies) = spawn_stub(vec![ok(&turn)]).await;
         let resp = run(&url, &mut executor, 3, None).await.unwrap();
         assert_eq!(resp.text, "");
         assert_eq!(resp.metadata.stop_reason.as_deref(), Some("max_turns"));
         assert_eq!(bodies.lock().unwrap().len(), 3);
 
-        let (url, bodies) = spawn_stub(vec![ok(TURN_WITH_CALLS)]).await;
+        let (url, bodies) = spawn_stub(vec![ok(&turn)]).await;
         let resp = run(&url, &mut executor, 10, Some(100)).await.unwrap();
         assert_eq!(
             resp.metadata.stop_reason.as_deref(),
             Some("budget_exhausted")
         );
-        assert_eq!(resp.metadata.tokens_used, Some(120));
+        assert_eq!(resp.metadata.tokens_used, Some(148));
         assert_eq!(bodies.lock().unwrap().len(), 1);
     }
 
@@ -684,7 +695,7 @@ mod tests {
         let (url, bodies) = spawn_stub(vec![ok(turn), ok(FINAL_MESSAGE)]).await;
         let (dir, mut executor) = workspace();
         let resp = run(&url, &mut executor, 5, None).await.unwrap();
-        assert_eq!(resp.text, "a.txt says alpha; b.txt says beta.");
+        assert_eq!(resp.text, FINAL_TEXT);
         assert!(!dir.path().join("x.txt").exists());
 
         // The message sent with the call goes back too, before the output.
@@ -705,7 +716,7 @@ mod tests {
         let (url, _) = spawn_stub(vec![ok(FINAL_MESSAGE)]).await;
         let (_dir, mut executor) = workspace();
         let resp = run(&url, &mut executor, 5, Some(1)).await.unwrap();
-        assert_eq!(resp.text, "a.txt says alpha; b.txt says beta.");
+        assert_eq!(resp.text, FINAL_TEXT);
         assert_eq!(resp.metadata.stop_reason, None);
     }
 
@@ -863,12 +874,9 @@ mod tests {
     async fn a_call_without_tools_sends_one_stateless_request() {
         let (url, bodies) = spawn_stub(vec![ok(FINAL_MESSAGE)]).await;
         let resp = single(&url).await.unwrap();
-        assert_eq!(resp.text, "a.txt says alpha; b.txt says beta.");
-        assert_eq!(resp.metadata.tokens_used, Some(180));
-        assert_eq!(
-            resp.metadata.model.as_deref(),
-            Some("gpt-6.2-sol-2026-11-01")
-        );
+        assert_eq!(resp.text, FINAL_TEXT);
+        assert_eq!(resp.metadata.tokens_used, Some(188));
+        assert_eq!(resp.metadata.model.as_deref(), Some("gpt-6.2-sol"));
 
         let bodies = bodies.lock().unwrap();
         assert_eq!(bodies.len(), 1);
