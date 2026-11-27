@@ -334,6 +334,7 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("groq")
+                .with_api(crate::openai::OpenAiApi::ChatCompletions)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
                 .with_sandbox_dirs(sandbox_dirs)
                 .with_web_fetch_policy(web_fetch);
@@ -353,6 +354,7 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("mistral")
+                .with_api(crate::openai::OpenAiApi::ChatCompletions)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
                 .with_sandbox_dirs(sandbox_dirs)
                 .with_web_fetch_policy(web_fetch);
@@ -372,6 +374,7 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("deepseek")
+                .with_api(crate::openai::OpenAiApi::ChatCompletions)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
                 .with_sandbox_dirs(sandbox_dirs)
                 .with_web_fetch_policy(web_fetch);
@@ -391,6 +394,7 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("fireworks")
+                .with_api(crate::openai::OpenAiApi::ChatCompletions)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
                 .with_sandbox_dirs(sandbox_dirs)
                 .with_web_fetch_policy(web_fetch);
@@ -410,6 +414,7 @@ impl ProviderFactory {
                 )?
                 .with_timeout(config.timeout_secs)
                 .with_name("xai")
+                .with_api(crate::openai::OpenAiApi::ChatCompletions)
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
                 .with_sandbox_dirs(sandbox_dirs)
                 .with_web_fetch_policy(web_fetch);
@@ -948,5 +953,29 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(err.contains("set to Chat Completions"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn compatible_providers_stay_on_chat_completions_whatever_the_host() {
+        // Pointed at OpenAI's own host, each one still uses Chat Completions,
+        // so a Responses-only model with tools is refused before sending.
+        for name in ["groq", "mistral", "deepseek", "fireworks", "xai"] {
+            let ws = tempfile::tempdir().unwrap();
+            let cfg = ProviderConfig {
+                api_key: Some("k".into()),
+                base_url: Some("https://api.openai.com/v1".into()),
+                model: Some("gpt-6.2-sol".into()),
+                workspace_path: Some(ws.path().to_path_buf()),
+                ..Default::default()
+            };
+            let p = ProviderFactory::create(name, cfg).unwrap();
+            let err = p
+                .complete(&kernex_core::context::Context::new("hi"))
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(&format!("{name}: gpt-6.2-sol")), "{err}");
+            assert!(err.contains("set to Chat Completions"), "{err}");
+        }
     }
 }
