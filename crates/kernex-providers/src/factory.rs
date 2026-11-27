@@ -816,12 +816,39 @@ mod tests {
         }
         assert_eq!(ProviderFactory::default_model("nope"), None);
 
-        // The factory and an empty `[provider.openai]` config agree.
-        let core: kernex_core::config::OpenAiConfig = serde_json::from_str("{}").unwrap();
-        assert_eq!(core.model, "gpt-6.2-sol");
+        // The factory and an empty `[provider.<name>]` config agree.
+        use kernex_core::config::{AnthropicConfig, GeminiConfig, OllamaConfig, OpenAiConfig};
+        let empty = "{}";
+        let core = [
+            (
+                "openai",
+                serde_json::from_str::<OpenAiConfig>(empty).unwrap().model,
+            ),
+            (
+                "anthropic",
+                serde_json::from_str::<AnthropicConfig>(empty)
+                    .unwrap()
+                    .model,
+            ),
+            (
+                "gemini",
+                serde_json::from_str::<GeminiConfig>(empty).unwrap().model,
+            ),
+            (
+                "ollama",
+                serde_json::from_str::<OllamaConfig>(empty).unwrap().model,
+            ),
+        ];
+        for (name, model) in core {
+            assert_eq!(
+                ProviderFactory::default_model(name),
+                Some(model.as_str()),
+                "{name}"
+            );
+        }
         assert_eq!(
             ProviderFactory::default_model("openai"),
-            Some(core.model.as_str())
+            Some("gpt-6.2-sol")
         );
     }
 

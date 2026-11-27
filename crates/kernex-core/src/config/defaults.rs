@@ -32,7 +32,7 @@ pub fn default_ollama_base_url() -> String {
     "http://localhost:11434".to_string()
 }
 pub fn default_ollama_model() -> String {
-    "llama3".to_string()
+    "llama3.2".to_string()
 }
 pub fn default_gemini_model() -> String {
     "gemini-3.6-flash".to_string()

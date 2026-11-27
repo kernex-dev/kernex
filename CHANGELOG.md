@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **kernex-core**: the `ollama` config default model moves from `llama3` to `llama3.2`, the model the provider factory already used. An empty `[provider.ollama]` and the factory now pick the same model.
+
+### Fixed
+
+- **kernex-providers**: a `base_url` with a user, password, query string or fragment no longer shows them in errors, log lines or `ProviderConfig`'s `Debug` output. These show scheme, host, port and path only, and text that is not an http or https URL with a host is shown as `<not an http(s) URL>`.
+
 ## [0.14.0] - 2026-11-27
 
 ### Added
