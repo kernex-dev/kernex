@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0](https://github.com/kernex-dev/kernex/compare/v0.13.1...v0.14.0) - 2026-11-27
+
+### Added
+
+- *(providers)* [**breaking**] send OpenAI's own host through the Responses API
+- *(providers)* add a Responses API loop for OpenAI
+
+### Fixed
+
+- *(providers)* keep the compatible providers on Chat Completions
+
 ## [0.13.1](https://github.com/kernex-dev/kernex/compare/v0.13.0...v0.13.1) - 2026-11-26
 
 ### Changed

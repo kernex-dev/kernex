@@ -7,7 +7,7 @@ feels more natural in your `Cargo.toml`.
 
 ```toml
 [dependencies]
-kernex = "0.13"
+kernex = "0.14"
 ```
 
 ## Quick start
