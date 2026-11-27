@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **kernex-providers**: the `openai` provider speaks OpenAI's Responses API (`POST {base_url}/responses`), with and without tools. Requests are stateless (`store: false`); reasoning and function-call items are passed back unchanged between turns, and a response whose `status` is set to anything but `completed` is an error that says why. Reasoning models (GPT-6, GPT-5 apart from its `-chat` variants, the o-series, and models fine-tuned from them) get `reasoning: {effort: "low"}` and their encrypted reasoning back; other models, such as `gpt-4o`, get neither field, since Responses rejects both for them. The new `OpenAiApi` enum picks the API, `OpenAiProvider::with_api` sets it on a provider, and `ProviderConfig::openai_api` sets it through the factory.
+
+### Changed
+
+- **kernex-providers**: by default the `openai` provider sends requests to `api.openai.com` and its regional hosts through the Responses API, and to any other base URL through Chat Completions, as before. `gpt-6.2-*`, `gpt-6.1-sol`, `gpt-6.1-terra` and `gpt-6-astra` can now call tools on OpenAI. The refusal of those models with tools on OpenAI's host now applies only when the provider is set to `OpenAiApi::ChatCompletions`, and now also covers `gpt-6.1-sol` and `gpt-6-astra`.
+- **kernex-providers**, **kernex-core**: the `openai` provider's default model and its flagship tier move from `gpt-6-luna` to `gpt-6.2-sol`. The standard tier stays `gpt-6-luna`. With a `base_url` other than OpenAI's, the provider stays on Chat Completions, where `gpt-6.2-sol` cannot call tools: set `model` (for example `gpt-6-luna`) or set the API to `OpenAiApi::Responses` if the server implements it.
+- **kernex-providers** (breaking): `ProviderConfig` has a new public field, `openai_api`. Code that builds it with a struct literal needs `..Default::default()` or the field.
+
 ## [0.13.1] - 2026-11-26
 
 ### Added

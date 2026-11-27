@@ -50,6 +50,11 @@ pub struct ProviderConfig {
     pub tier: Option<ModelTier>,
     /// HTTP request timeout in seconds (default: 120). Applies to all HTTP-based providers.
     pub timeout_secs: u64,
+    /// For the `openai` provider: the API to send requests to. `None`
+    /// follows the base URL: Responses for `api.openai.com` and its
+    /// regional hosts, Chat Completions for any other. Set it for a proxy
+    /// that implements Responses, or to keep OpenAI on Chat Completions.
+    pub openai_api: Option<crate::openai::OpenAiApi>,
 }
 
 impl Default for ProviderConfig {
@@ -68,6 +73,7 @@ impl Default for ProviderConfig {
             cli_permission_bypass: false,
             tier: None,
             timeout_secs: 120,
+            openai_api: None,
         }
     }
 }
@@ -88,6 +94,7 @@ impl std::fmt::Debug for ProviderConfig {
             .field("cli_permission_bypass", &self.cli_permission_bypass)
             .field("tier", &self.tier)
             .field("timeout_secs", &self.timeout_secs)
+            .field("openai_api", &self.openai_api)
             .finish()
     }
 }
@@ -125,7 +132,7 @@ fn resolve_model(provider: &str, model: Option<String>, tier: Option<ModelTier>)
 fn model_from_tier(provider: &str, tier: ModelTier) -> &'static str {
     match (provider, tier) {
         ("openai", ModelTier::Standard) => "gpt-6-luna",
-        ("openai", ModelTier::Flagship) => "gpt-6-luna",
+        ("openai", ModelTier::Flagship) => "gpt-6.2-sol",
         ("anthropic", ModelTier::Standard) => "claude-sonnet-4-6",
         ("anthropic", ModelTier::Flagship) => "claude-opus-4-8",
         ("gemini", ModelTier::Standard) => "gemini-3.6-flash",
@@ -180,7 +187,7 @@ impl ProviderFactory {
     /// `bedrock` is answered whether or not the `bedrock` feature is compiled.
     pub fn default_model(provider: &str) -> Option<&'static str> {
         match provider {
-            "openai" => Some("gpt-6-luna"),
+            "openai" => Some("gpt-6.2-sol"),
             "anthropic" => Some("claude-sonnet-4-6"),
             "gemini" => Some("gemini-3.6-flash"),
             "ollama" => Some("llama3.2"),
@@ -219,6 +226,10 @@ impl ProviderFactory {
                 .with_sandbox_profile(config.sandbox_profile.unwrap_or_default())
                 .with_sandbox_dirs(sandbox_dirs)
                 .with_web_fetch_policy(web_fetch);
+                let p = match config.openai_api {
+                    Some(api) => p.with_api(api),
+                    None => p,
+                };
                 Ok(Box::new(p))
             }
             "anthropic" => {
@@ -557,6 +568,7 @@ mod tests {
             cli_permission_bypass: false,
             tier: None,
             timeout_secs: 60,
+            openai_api: Some(crate::openai::OpenAiApi::ChatCompletions),
         };
         assert_eq!(config.base_url, Some("https://api.example.com".to_string()));
         assert_eq!(config.model, Some("gpt-4".to_string()));
@@ -712,7 +724,10 @@ mod tests {
             model_from_tier("anthropic", ModelTier::Flagship),
             "claude-opus-4-8"
         );
-        assert_eq!(model_from_tier("openai", ModelTier::Flagship), "gpt-6-luna");
+        assert_eq!(
+            model_from_tier("openai", ModelTier::Flagship),
+            "gpt-6.2-sol"
+        );
         assert_eq!(
             model_from_tier("gemini", ModelTier::Flagship),
             "gemini-3.8-flash"
@@ -763,6 +778,14 @@ mod tests {
             }
         }
         assert_eq!(ProviderFactory::default_model("nope"), None);
+
+        // The factory and an empty `[provider.openai]` config agree.
+        let core: kernex_core::config::OpenAiConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(core.model, "gpt-6.2-sol");
+        assert_eq!(
+            ProviderFactory::default_model("openai"),
+            Some(core.model.as_str())
+        );
     }
 
     #[test]
@@ -904,5 +927,26 @@ mod tests {
         );
         assert_eq!(model_from_tier("xai", ModelTier::Standard), "grok-4.3");
         assert_eq!(model_from_tier("xai", ModelTier::Flagship), "grok-4.7");
+    }
+
+    #[tokio::test]
+    async fn the_openai_api_override_reaches_the_provider() {
+        // Kept on Chat Completions, OpenAI's own host refuses a Responses-only
+        // model with tools before sending anything.
+        let ws = tempfile::tempdir().unwrap();
+        let cfg = ProviderConfig {
+            api_key: Some("k".into()),
+            model: Some("gpt-6.2-sol".into()),
+            workspace_path: Some(ws.path().to_path_buf()),
+            openai_api: Some(crate::openai::OpenAiApi::ChatCompletions),
+            ..Default::default()
+        };
+        let p = ProviderFactory::create("openai", cfg).unwrap();
+        let err = p
+            .complete(&kernex_core::context::Context::new("hi"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("set to Chat Completions"), "{err}");
     }
 }

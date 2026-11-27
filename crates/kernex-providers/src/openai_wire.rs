@@ -126,9 +126,27 @@ pub(crate) fn chat_tool_effort(provider_name: &str, model: &str) -> Option<&'sta
 }
 
 /// Whether OpenAI documents this model as calling tools only through the
-/// Responses API (GPT-6.2 Sol and Astra, GPT-6.1 Terra).
+/// Responses API (GPT-6.2 Sol and Astra, GPT-6.1 Sol and Terra, GPT-6
+/// Astra).
 pub(crate) fn needs_responses_for_tools(model: &str) -> bool {
-    model.starts_with("gpt-6.2-") || model.starts_with("gpt-6.1-terra")
+    ["gpt-6.2-", "gpt-6.1-sol", "gpt-6.1-terra", "gpt-6-astra"]
+        .iter()
+        .any(|prefix| model.starts_with(prefix))
+}
+
+/// Whether OpenAI's model takes a `reasoning` effort and returns encrypted
+/// reasoning: the GPT-6 and GPT-5 families (not their `-chat` variants) and
+/// the o-series, fine-tuned ones (`ft:<base>:...`) by their base model.
+/// Responses rejects both fields for any other model.
+pub(crate) fn is_reasoning_model(model: &str) -> bool {
+    let model = match model.strip_prefix("ft:") {
+        Some(rest) => rest.split(':').next().unwrap_or(rest),
+        None => model,
+    };
+    let family = ["gpt-6", "gpt-5", "o1", "o3", "o4"]
+        .iter()
+        .any(|prefix| model.starts_with(prefix));
+    family && !model.contains("-chat")
 }
 
 /// Whether `base_url` points at OpenAI's own API host: `api.openai.com`
@@ -165,8 +183,38 @@ mod tests {
         assert!(needs_responses_for_tools("gpt-6.2-sol"));
         assert!(needs_responses_for_tools("gpt-6.2-astra"));
         assert!(needs_responses_for_tools("gpt-6.1-terra"));
+        assert!(needs_responses_for_tools("gpt-6.1-sol"));
+        assert!(needs_responses_for_tools("gpt-6-astra"));
         assert!(!needs_responses_for_tools("gpt-6-luna"));
+        assert!(!needs_responses_for_tools("gpt-6-luna-astra-tuned"));
         assert!(!needs_responses_for_tools("gpt-4o"));
+    }
+
+    #[test]
+    fn reasoning_models() {
+        for m in [
+            "gpt-6.2-sol",
+            "gpt-6-luna",
+            "gpt-5.1",
+            "o3",
+            "o4-mini",
+            "ft:o4-mini-2025-04-16:org::abc",
+            "ft:o4-mini-2025-04-16:acme:support-chat:abc",
+            "ft:o4-mini-2025-04-16:my-chat-co::abc",
+        ] {
+            assert!(is_reasoning_model(m), "{m}");
+        }
+        for m in [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4.1",
+            "gpt-5-chat-latest",
+            "omni",
+            "ft:gpt-4o-mini-2024-07-18:org::abc",
+            "ft:gpt-5-chat-latest:org::abc",
+        ] {
+            assert!(!is_reasoning_model(m), "{m}");
+        }
     }
 
     #[test]

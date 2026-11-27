@@ -1,15 +1,12 @@
 //! OpenAI's Responses API (`POST {base_url}/responses`): the request and
 //! response types and the agentic loop for the `openai` provider.
 //!
-//! GPT-6.2 Sol and Astra and GPT-6.1 Terra call tools only through this
-//! API. The loop runs stateless: every request sets `store: false` and
-//! carries the whole conversation, and each turn's output items (reasoning
-//! included, with its encrypted content) go back to the model unchanged, as
-//! OpenAI requires for reasoning models that call tools.
-
-// The provider selects this API in a later change; until then only the
-// tests below call it.
-#![cfg_attr(not(test), allow(dead_code))]
+//! GPT-6.2 Sol and Astra, GPT-6.1 Sol and Terra, and GPT-6 Astra call tools
+//! only through this API. The loop runs stateless: every request sets
+//! `store: false` and carries the whole conversation, and each turn's
+//! output items (reasoning included, with its encrypted content) go back to
+//! the model unchanged, as OpenAI requires for reasoning models that call
+//! tools.
 
 use kernex_core::{context::ApiMessage, error::KernexError, message::Response};
 use serde::{Deserialize, Serialize};
@@ -19,6 +16,7 @@ use tracing::{debug, info};
 
 use crate::error::ProviderError;
 use crate::http_retry::{read_truncated_error_body, send_with_retry};
+use crate::openai_wire::is_reasoning_model;
 use crate::tools::{build_response, ToolDef, ToolExecutor};
 
 /// Reasoning effort for every request of a run. GPT-6.2 Sol and Astra
@@ -39,9 +37,11 @@ pub(crate) struct ResponsesRequest<'a> {
     pub input: &'a [Value],
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tools: Option<&'a [ResponsesTool]>,
-    pub reasoning: Reasoning,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning: Option<Reasoning>,
     pub store: bool,
-    pub include: [&'static str; 1],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include: Option<[&'static str; 1]>,
 }
 
 #[derive(Serialize)]
@@ -264,6 +264,63 @@ async fn post(
     })?)
 }
 
+/// The request for one turn: always stateless. A reasoning model gets the
+/// run's effort and its encrypted reasoning back; any other model, such as
+/// `gpt-4o`, rejects both fields, so they are left out.
+fn request<'a>(
+    model: &'a str,
+    system: &'a str,
+    input: &'a [Value],
+    tools: Option<&'a [ResponsesTool]>,
+) -> ResponsesRequest<'a> {
+    let reasons = is_reasoning_model(model);
+    ResponsesRequest {
+        model,
+        instructions: system,
+        input,
+        tools,
+        reasoning: reasons.then_some(Reasoning {
+            effort: REASONING_EFFORT,
+        }),
+        store: false,
+        include: reasons.then_some(INCLUDE),
+    }
+}
+
+/// One request without tools: the text of the answer. A function call in
+/// the answer is ignored, since no tool was offered.
+pub(crate) async fn responses_complete(
+    client: &reqwest::Client,
+    url: &str,
+    auth_header: &str,
+    model: &str,
+    system: &str,
+    api_messages: &[ApiMessage],
+    provider_name: &str,
+) -> Result<Response, KernexError> {
+    let start = Instant::now();
+    let input = build_input(api_messages);
+    let body = request(model, system, &input, None);
+    debug!("{provider_name}: POST {url} model={model} (no tools)");
+    let parsed = post(client, url, auth_header, &body, provider_name).await?;
+    check_status(&parsed, provider_name)?;
+    let text = read_turn(&parsed.output, provider_name)?.text;
+    let text = if text.is_empty() {
+        format!("No response from {provider_name}.")
+    } else {
+        text
+    };
+    let tokens = parsed.usage.and_then(|u| u.total()).unwrap_or(0);
+    let elapsed_ms = start.elapsed().as_millis() as u64;
+    Ok(build_response(
+        text,
+        provider_name,
+        tokens,
+        elapsed_ms,
+        parsed.model,
+    ))
+}
+
 /// Run the Responses agentic loop: infer, run the function calls, send the
 /// results back, until a response has no function call or `max_turns` is
 /// reached. Same contract as `openai_agentic_complete`: a final text, or an
@@ -290,17 +347,7 @@ pub(crate) async fn responses_agentic_complete(
     let mut total_tokens: u64 = 0;
 
     for turn in 0..max_turns {
-        let body = ResponsesRequest {
-            model,
-            instructions: system,
-            input: &input,
-            tools: tools.as_deref(),
-            reasoning: Reasoning {
-                effort: REASONING_EFFORT,
-            },
-            store: false,
-            include: INCLUDE,
-        };
+        let body = request(model, system, &input, tools.as_deref());
         debug!("{provider_name}: POST {url} model={model} turn={turn}");
         let parsed = post(client, url, auth_header, &body, provider_name).await?;
 
@@ -774,20 +821,72 @@ mod tests {
     #[test]
     fn an_empty_system_prompt_sends_no_instructions() {
         let input = build_input(&user("hi"));
-        let body = ResponsesRequest {
-            model: "gpt-6-luna",
-            instructions: "",
-            input: &input,
-            tools: None,
-            reasoning: Reasoning {
-                effort: REASONING_EFFORT,
-            },
-            store: false,
-            include: INCLUDE,
-        };
-        let json = serde_json::to_value(&body).unwrap();
+        let json = serde_json::to_value(request("gpt-6-luna", "", &input, None)).unwrap();
         assert!(json.get("instructions").is_none());
         assert!(json.get("tools").is_none());
         assert_eq!(json["input"], json!([{"role": "user", "content": "hi"}]));
+    }
+
+    #[test]
+    fn only_a_reasoning_model_gets_reasoning_fields() {
+        let input = build_input(&user("hi"));
+        let json = serde_json::to_value(request("gpt-4o", "", &input, None)).unwrap();
+        assert!(json.get("reasoning").is_none(), "{json}");
+        assert!(json.get("include").is_none(), "{json}");
+        assert_eq!(json["store"], false);
+
+        let json = serde_json::to_value(request("gpt-6-luna", "", &input, None)).unwrap();
+        assert_eq!(json["reasoning"], json!({"effort": "low"}));
+        assert_eq!(json["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    async fn single(url: &str) -> Result<Response, KernexError> {
+        responses_complete(
+            &reqwest::Client::new(),
+            url,
+            "Bearer k",
+            "gpt-6.2-sol",
+            "Be brief.",
+            &user("hi"),
+            "openai",
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn a_call_without_tools_sends_one_stateless_request() {
+        let (url, bodies) = spawn_stub(vec![ok(FINAL_MESSAGE)]).await;
+        let resp = single(&url).await.unwrap();
+        assert_eq!(resp.text, "a.txt says alpha; b.txt says beta.");
+        assert_eq!(resp.metadata.tokens_used, Some(180));
+        assert_eq!(
+            resp.metadata.model.as_deref(),
+            Some("gpt-6.2-sol-2026-11-01")
+        );
+
+        let bodies = bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        let body = &bodies[0];
+        assert_eq!(body["model"], "gpt-6.2-sol");
+        assert_eq!(body["instructions"], "Be brief.");
+        assert_eq!(body["input"], json!([{"role": "user", "content": "hi"}]));
+        assert_eq!(body["store"], false);
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert!(body.get("tools").is_none(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn a_call_without_tools_reports_a_cut_off_or_empty_answer() {
+        let cut = r#"{"status": "incomplete", "incomplete_details": {"reason": "max_output_tokens"},
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "par"}]}]}"#;
+        let (url, _) = spawn_stub(vec![ok(cut)]).await;
+        let err = single(&url).await.unwrap_err().to_string();
+        assert!(err.contains("incomplete (max_output_tokens)"), "{err}");
+
+        let empty = r#"{"status": "completed", "output": [], "usage": {"input_tokens": 4, "output_tokens": 0}}"#;
+        let (url, _) = spawn_stub(vec![ok(empty)]).await;
+        let resp = single(&url).await.unwrap();
+        assert_eq!(resp.text, "No response from openai.");
+        assert_eq!(resp.metadata.tokens_used, Some(4));
     }
 }

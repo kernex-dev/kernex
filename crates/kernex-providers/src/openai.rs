@@ -17,15 +17,41 @@ use std::time::Instant;
 use tracing::{debug, info, warn};
 
 use crate::http_retry::{read_truncated_error_body, send_with_retry};
+use crate::openai_responses::{responses_agentic_complete, responses_complete};
 use crate::tools::{build_response, tools_enabled, ToolExecutor};
 
 /// Default max agentic loop iterations.
 const DEFAULT_MAX_TURNS: u32 = 50;
 
+/// Which OpenAI API a provider sends its requests to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OpenAiApi {
+    /// `POST {base_url}/chat/completions`, which every OpenAI-compatible
+    /// server implements.
+    ChatCompletions,
+    /// `POST {base_url}/responses`, OpenAI's Responses API. GPT-6.2 Sol and
+    /// Astra, GPT-6.1 Sol and Terra, and GPT-6 Astra call tools only here.
+    Responses,
+}
+
+impl OpenAiApi {
+    /// The API for a base URL: Responses for OpenAI's own host
+    /// (`api.openai.com` and its regional hosts), Chat Completions for any
+    /// other, which may implement nothing else.
+    pub fn for_base_url(base_url: &str) -> Self {
+        if is_openai_host(base_url) {
+            Self::Responses
+        } else {
+            Self::ChatCompletions
+        }
+    }
+}
+
 /// OpenAI-compatible provider with tool-execution loop.
 pub struct OpenAiProvider {
     client: reqwest::Client,
     base_url: String,
+    api: OpenAiApi,
     api_key: SecretString,
     model: String,
     name: String,
@@ -36,7 +62,8 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    /// Create from config values.
+    /// Create from config values. The API follows the base URL (see
+    /// [`OpenAiApi::for_base_url`]); [`OpenAiProvider::with_api`] overrides it.
     pub fn from_config(
         base_url: String,
         api_key: String,
@@ -48,6 +75,7 @@ impl OpenAiProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .map_err(|e| ProviderError::Logic(format!("failed to build HTTP client: {e}")))?,
+            api: OpenAiApi::for_base_url(&base_url),
             base_url,
             api_key: SecretString::new(api_key),
             model,
@@ -76,6 +104,14 @@ impl OpenAiProvider {
     /// deepseek, etc.) their own identity for logging and metrics.
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = name.into();
+        self
+    }
+
+    /// Send requests to `api` whatever the base URL: Responses for a proxy
+    /// or host that implements it, Chat Completions to keep OpenAI itself
+    /// on the older API.
+    pub fn with_api(mut self, api: OpenAiApi) -> Self {
+        self.api = api;
         self
     }
 
@@ -283,7 +319,11 @@ impl Provider for OpenAiProvider {
         let name = self.name.as_str();
         let (system, api_messages) = context.to_api_messages();
         let effective_model = context.model.as_deref().unwrap_or(&self.model);
-        let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
+        let base = self.base_url.trim_end_matches('/');
+        let url = match self.api {
+            OpenAiApi::ChatCompletions => format!("{base}/chat/completions"),
+            OpenAiApi::Responses => format!("{base}/responses"),
+        };
         let auth = format!("Bearer {}", self.api_key.expose_secret());
         let max_turns = context.max_turns.unwrap_or(DEFAULT_MAX_TURNS);
 
@@ -291,9 +331,12 @@ impl Provider for OpenAiProvider {
 
         if has_tools {
             if let Some(ref ws) = self.workspace_path {
-                if is_openai_host(&self.base_url) && needs_responses_for_tools(effective_model) {
+                if self.api == OpenAiApi::ChatCompletions
+                    && is_openai_host(&self.base_url)
+                    && needs_responses_for_tools(effective_model)
+                {
                     return Err(ProviderError::Logic(format!(
-                        "{name}: {effective_model} calls tools only through OpenAI's Responses API, which this provider does not use yet; use gpt-6-luna, or call it without tools"
+                        "{name}: {effective_model} calls tools only through OpenAI's Responses API, and this provider is set to Chat Completions; use OpenAiApi::Responses, or call it without tools"
                     ))
                     .into());
                 }
@@ -307,19 +350,40 @@ impl Provider for OpenAiProvider {
                 executor.connect_mcp_servers(&context.mcp_servers).await;
                 executor.register_toolboxes(&context.toolboxes);
 
-                let result = openai_agentic_complete(
-                    &self.client,
-                    &url,
-                    &auth,
-                    effective_model,
-                    &system,
-                    &api_messages,
-                    &mut executor,
-                    max_turns,
-                    context.token_budget,
-                    name,
-                )
-                .await;
+                let (client, budget) = (&self.client, context.token_budget);
+                let (model, sys, msgs) = (effective_model, &system, &api_messages);
+                let result = match self.api {
+                    OpenAiApi::ChatCompletions => {
+                        openai_agentic_complete(
+                            client,
+                            &url,
+                            &auth,
+                            model,
+                            sys,
+                            msgs,
+                            &mut executor,
+                            max_turns,
+                            budget,
+                            name,
+                        )
+                        .await
+                    }
+                    OpenAiApi::Responses => {
+                        responses_agentic_complete(
+                            client,
+                            &url,
+                            &auth,
+                            model,
+                            sys,
+                            msgs,
+                            &mut executor,
+                            max_turns,
+                            budget,
+                            name,
+                        )
+                        .await
+                    }
+                };
 
                 executor.shutdown_mcp().await;
                 return result;
@@ -327,6 +391,18 @@ impl Provider for OpenAiProvider {
         }
 
         // Fallback: no tools (classification calls, or no workspace).
+        if self.api == OpenAiApi::Responses {
+            return responses_complete(
+                &self.client,
+                &url,
+                &auth,
+                effective_model,
+                &system,
+                &api_messages,
+                name,
+            )
+            .await;
+        }
         let start = Instant::now();
         let messages = build_openai_messages(&system, &api_messages);
         let body = ChatCompletionRequest {
@@ -555,8 +631,9 @@ mod tests {
         assert!(json.get("tools").unwrap().as_array().unwrap().len() == 7);
     }
 
-    /// A Chat Completions stub that answers every request with a final text
-    /// message and records each request body.
+    /// A stub for both APIs: it answers each request with a final text
+    /// message ("done") in the shape of the API the request went to, and
+    /// records each request body with the request target under `__target`.
     async fn spawn_chat_stub() -> (
         std::net::SocketAddr,
         std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
@@ -598,10 +675,21 @@ mod tests {
                             break;
                         }
                     }
-                    if let Ok(v) = serde_json::from_slice(&buf[body_start..read]) {
+                    // The request line's target: a path, or an absolute URL
+                    // when the client sends through a proxy.
+                    let head = String::from_utf8_lossy(&buf[..body_start]).to_string();
+                    let target = head.split_whitespace().nth(1).unwrap_or("").to_string();
+                    if let Ok(mut v) =
+                        serde_json::from_slice::<serde_json::Value>(&buf[body_start..read])
+                    {
+                        v["__target"] = target.clone().into();
                         bodies.lock().unwrap().push(v);
                     }
-                    let body = r#"{"choices":[{"message":{"role":"assistant","content":"done"}}],"model":"stub","usage":{"total_tokens":3}}"#;
+                    let body = if target.ends_with("/responses") {
+                        r#"{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}],"model":"stub","usage":{"total_tokens":3}}"#
+                    } else {
+                        r#"{"choices":[{"message":{"role":"assistant","content":"done"}}],"model":"stub","usage":{"total_tokens":3}}"#
+                    };
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                         body.len()
@@ -721,11 +809,51 @@ mod tests {
         p
     }
 
+    #[test]
+    fn the_api_follows_the_host() {
+        for url in ["https://api.openai.com/v1", "https://eu.api.openai.com/v1"] {
+            assert_eq!(OpenAiApi::for_base_url(url), OpenAiApi::Responses, "{url}");
+        }
+        for url in [
+            "http://localhost:4000/v1",
+            "https://api.groq.com/openai/v1",
+            "https://api.openai.com.evil.test/v1",
+        ] {
+            assert_eq!(
+                OpenAiApi::for_base_url(url),
+                OpenAiApi::ChatCompletions,
+                "{url}"
+            );
+        }
+    }
+
     #[tokio::test]
-    async fn responses_only_model_with_tools_is_refused_for_openai_itself() {
+    async fn openai_itself_gets_the_responses_api_with_and_without_tools() {
         let ws = tempfile::tempdir().unwrap();
         let (addr, bodies) = spawn_chat_stub().await;
         let p = openai_host_via_stub(addr, "gpt-6.2-sol", Some(ws.path().to_path_buf()));
+        let body = sent_body(p, &bodies).await;
+        assert_eq!(body["__target"], "http://api.openai.com/v1/responses");
+        assert_eq!(body["model"], "gpt-6.2-sol");
+        assert_eq!(body["store"], false);
+        let tools = body["tools"].as_array().unwrap();
+        assert!(!tools.is_empty() && tools.iter().all(|t| t.get("function").is_none()));
+        assert!(body.get("messages").is_none() && body.get("reasoning_effort").is_none());
+
+        let (addr, bodies) = spawn_chat_stub().await;
+        let p = openai_host_via_stub(addr, "gpt-6-luna", None);
+        let body = sent_body(p, &bodies).await;
+        assert_eq!(body["__target"], "http://api.openai.com/v1/responses");
+        assert!(body.get("tools").is_none(), "{body}");
+        assert_eq!(body["input"][0]["content"], "hi");
+    }
+
+    #[tokio::test]
+    async fn chat_completions_on_openai_itself_still_refuses_responses_only_tools() {
+        let ws = tempfile::tempdir().unwrap();
+        let (addr, bodies) = spawn_chat_stub().await;
+        let p = openai_host_via_stub(addr, "gpt-6.2-sol", Some(ws.path().to_path_buf()))
+            .with_api(OpenAiApi::ChatCompletions);
         let err = p
             .complete(&Context::new("hi"))
             .await
@@ -734,33 +862,42 @@ mod tests {
         assert!(err.contains("gpt-6.2-sol"), "{err}");
         assert!(err.contains("Responses API"), "{err}");
         assert!(bodies.lock().unwrap().is_empty(), "a request was sent");
-    }
 
-    #[tokio::test]
-    async fn responses_only_model_without_tools_is_called_on_openai_itself() {
+        // Without tools the call goes through, to Chat Completions.
         let (addr, bodies) = spawn_chat_stub().await;
-        let p = openai_host_via_stub(addr, "gpt-6.2-sol", None);
+        let p =
+            openai_host_via_stub(addr, "gpt-6.2-sol", None).with_api(OpenAiApi::ChatCompletions);
         let body = sent_body(p, &bodies).await;
-        assert_eq!(body["model"], "gpt-6.2-sol");
+        assert_eq!(
+            body["__target"],
+            "http://api.openai.com/v1/chat/completions"
+        );
         assert!(body.get("tools").is_none());
         assert!(body.get("reasoning_effort").is_none(), "{body}");
     }
 
     #[tokio::test]
-    async fn responses_only_model_with_tools_passes_through_a_proxy() {
-        // A proxy may translate the call itself, so only OpenAI's own host
-        // gets the refusal.
+    async fn another_host_keeps_chat_completions_unless_told_otherwise() {
+        // A proxy may translate the call itself, so it gets no refusal.
         let ws = tempfile::tempdir().unwrap();
+        let proxy = |addr: std::net::SocketAddr| {
+            OpenAiProvider::from_config(
+                format!("http://{addr}/v1"),
+                "k".into(),
+                "gpt-6.2-sol".into(),
+                Some(ws.path().to_path_buf()),
+            )
+            .unwrap()
+        };
         let (addr, bodies) = spawn_chat_stub().await;
-        let p = OpenAiProvider::from_config(
-            format!("http://{addr}/v1"),
-            "k".into(),
-            "gpt-6.2-sol".into(),
-            Some(ws.path().to_path_buf()),
-        )
-        .unwrap();
-        let body = sent_body(p, &bodies).await;
+        let body = sent_body(proxy(addr), &bodies).await;
+        assert_eq!(body["__target"], "/v1/chat/completions");
         assert!(body["tools"].as_array().is_some_and(|t| !t.is_empty()));
         assert!(body.get("reasoning_effort").is_none(), "{body}");
+
+        let (addr, bodies) = spawn_chat_stub().await;
+        let body = sent_body(proxy(addr).with_api(OpenAiApi::Responses), &bodies).await;
+        assert_eq!(body["__target"], "/v1/responses");
+        assert_eq!(body["store"], false);
     }
 }
