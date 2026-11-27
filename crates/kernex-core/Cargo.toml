@@ -20,6 +20,12 @@ uuid = { workspace = true }
 async-trait = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 
+[dev-dependencies]
+# `#[tokio::test]` needs the macros and a runtime, which the `sync`
+# feature above does not bring; without them `cargo test -p kernex-core`
+# fails on its own and passes only in the workspace run.
+tokio = { workspace = true, features = ["macros", "rt"] }
+
 [features]
 yaml = ["dep:serde_yaml_ng"]
 
