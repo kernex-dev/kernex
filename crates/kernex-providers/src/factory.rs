@@ -81,7 +81,13 @@ impl Default for ProviderConfig {
 impl std::fmt::Debug for ProviderConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ProviderConfig")
-            .field("base_url", &self.base_url)
+            .field(
+                "base_url",
+                &self
+                    .base_url
+                    .as_deref()
+                    .map(crate::http_retry::printable_url),
+            )
             .field("api_key", &self.api_key.as_ref().map(|_| "[REDACTED]"))
             .field("model", &self.model)
             .field("max_tokens", &self.max_tokens)
@@ -112,7 +118,7 @@ fn require_https_for_keyed_provider(
 ) -> Result<(), KernexError> {
     if let Some(url) = base_url {
         if !url.starts_with("https://") {
-            return Err(ProviderError::Logic(format!("{provider}: base_url must use https:// when an API key is sent in the Authorization header (got '{url}')")).into());
+            return Err(ProviderError::Logic(format!("{provider}: base_url must use https:// when an API key is sent in the Authorization header (got '{}')", crate::http_retry::printable_url(url))).into());
         }
     }
     Ok(())
@@ -493,6 +499,32 @@ mod tests {
         assert!(
             require_https_for_keyed_provider("openai", Some("https://api.openai.com/v1")).is_ok()
         );
+    }
+
+    #[test]
+    fn https_check_does_not_echo_credentials() {
+        let msg = require_https_for_keyed_provider(
+            "openai",
+            Some("http://user:s3cret@proxy.example/v1?key=k"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(!msg.contains("s3cret") && !msg.contains("key=k"), "{msg}");
+        assert!(msg.contains("http://proxy.example/v1"), "{msg}");
+    }
+
+    #[test]
+    fn debug_output_redacts_the_base_url() {
+        let cfg = ProviderConfig {
+            base_url: Some("https://user:s3cret@proxy.example/v1?key=k".into()),
+            ..Default::default()
+        };
+        let text = format!("{cfg:?}");
+        assert!(
+            !text.contains("s3cret") && !text.contains("key=k"),
+            "{text}"
+        );
+        assert!(text.contains("https://proxy.example/v1"), "{text}");
     }
 
     #[test]

@@ -68,6 +68,33 @@ pub async fn read_truncated_error_body(resp: Response) -> String {
     s
 }
 
+/// `url` as errors and logs may show it: scheme, host, port and path. A
+/// user, password, query or fragment can carry a credential, so they are
+/// dropped. Anything but an http or https URL with a host is not shown at
+/// all: `user:secret@host/v1`, without its `https://`, parses with `user`
+/// as the scheme and nothing to strip.
+pub(crate) fn printable_url(url: &str) -> String {
+    match reqwest::Url::parse(url) {
+        Ok(mut u) if matches!(u.scheme(), "http" | "https") && u.has_host() => {
+            let _ = u.set_username("");
+            let _ = u.set_password(None);
+            u.set_query(None);
+            u.set_fragment(None);
+            u.to_string()
+        }
+        _ => "<not an http(s) URL>".to_string(),
+    }
+}
+
+/// A reqwest error's text, with its URL passed through [`printable_url`].
+pub(crate) fn request_error(e: reqwest::Error) -> String {
+    let url = e.url().map(|u| printable_url(u.as_str()));
+    match url {
+        Some(url) => format!("{} for url ({url})", e.without_url()),
+        None => e.to_string(),
+    }
+}
+
 /// Execute an HTTP request with exponential backoff retry.
 ///
 /// `build_request` is called on each attempt to produce a fresh `RequestBuilder`
@@ -115,7 +142,10 @@ where
                 return Ok(resp);
             }
             Err(e) => {
-                last_err = Some(format!("{provider_name} request failed: {e}"));
+                last_err = Some(format!(
+                    "{provider_name} request failed: {}",
+                    request_error(e)
+                ));
                 continue;
             }
         }
@@ -132,6 +162,44 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn a_printable_url_has_no_credentials() {
+        assert_eq!(
+            printable_url("https://user:s3cret@proxy.example:8443/v1/chat?key=k#frag"),
+            "https://proxy.example:8443/v1/chat"
+        );
+        assert_eq!(
+            printable_url("http://localhost:11434"),
+            "http://localhost:11434/"
+        );
+        for text in [
+            "not a url s3cret",
+            "user:s3cret@proxy.example/v1",
+            "file:///home/user/s3cret",
+        ] {
+            assert_eq!(printable_url(text), "<not an http(s) URL>", "{text}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_error_names_the_host_without_credentials() {
+        // Port 9 (discard) is closed on loopback, so the connect fails.
+        let e = reqwest::Client::new()
+            .get("http://user:s3cret@127.0.0.1:9/v1?key=k")
+            .send()
+            .await
+            .unwrap_err();
+        // reqwest moves a user and password into the Authorization header
+        // and leaves them out of its error text, but keeps the query.
+        assert!(e.to_string().contains("key=k"), "reqwest shows the query");
+        let text = request_error(e);
+        assert!(
+            !text.contains("s3cret") && !text.contains("key=k"),
+            "{text}"
+        );
+        assert!(text.contains("http://127.0.0.1:9/v1"), "{text}");
+    }
 
     #[test]
     fn parse_retry_after_seconds_form() {

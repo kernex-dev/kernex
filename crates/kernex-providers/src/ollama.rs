@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::http_retry::{read_truncated_error_body, send_with_retry};
+use crate::http_retry::{printable_url, read_truncated_error_body, request_error, send_with_retry};
 use crate::tools::{build_response, tools_enabled, ToolDef, ToolExecutor};
 
 /// Default max agentic loop iterations.
@@ -239,7 +239,10 @@ impl Provider for OllamaProvider {
             "stream": false
         });
 
-        debug!("ollama: POST {url} model={effective_model} (no tools)");
+        debug!(
+            "ollama: POST {} model={effective_model} (no tools)",
+            printable_url(&url)
+        );
 
         let body_json = serde_json::to_vec(&body)
             .map_err(|e| ProviderError::Logic(format!("ollama: serialize failed: {e}")))?;
@@ -295,7 +298,7 @@ impl Provider for OllamaProvider {
         match self.client.get(&url).send().await {
             Ok(resp) => resp.status().is_success(),
             Err(e) => {
-                warn!("ollama not available: {e}");
+                warn!("ollama not available: {}", request_error(e));
                 false
             }
         }
@@ -336,7 +339,10 @@ impl OllamaProvider {
                 tools: tools.clone(),
             };
 
-            debug!("ollama: POST {url} model={model} turn={turn}");
+            debug!(
+                "ollama: POST {} model={model} turn={turn}",
+                printable_url(url)
+            );
 
             let body_json = serde_json::to_vec(&body)
                 .map_err(|e| ProviderError::Logic(format!("ollama: serialize failed: {e}")))?;

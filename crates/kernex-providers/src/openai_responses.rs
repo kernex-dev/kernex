@@ -15,7 +15,7 @@ use std::time::Instant;
 use tracing::{debug, info};
 
 use crate::error::ProviderError;
-use crate::http_retry::{read_truncated_error_body, send_with_retry};
+use crate::http_retry::{printable_url, read_truncated_error_body, send_with_retry};
 use crate::openai_wire::is_reasoning_model;
 use crate::tools::{build_response, ToolDef, ToolExecutor};
 
@@ -301,7 +301,10 @@ pub(crate) async fn responses_complete(
     let start = Instant::now();
     let input = build_input(api_messages);
     let body = request(model, system, &input, None);
-    debug!("{provider_name}: POST {url} model={model} (no tools)");
+    debug!(
+        "{provider_name}: POST {} model={model} (no tools)",
+        printable_url(url)
+    );
     let parsed = post(client, url, auth_header, &body, provider_name).await?;
     check_status(&parsed, provider_name)?;
     let text = read_turn(&parsed.output, provider_name)?.text;
@@ -348,7 +351,10 @@ pub(crate) async fn responses_agentic_complete(
 
     for turn in 0..max_turns {
         let body = request(model, system, &input, tools.as_deref());
-        debug!("{provider_name}: POST {url} model={model} turn={turn}");
+        debug!(
+            "{provider_name}: POST {} model={model} turn={turn}",
+            printable_url(url)
+        );
         let parsed = post(client, url, auth_header, &body, provider_name).await?;
 
         check_status(&parsed, provider_name)?;

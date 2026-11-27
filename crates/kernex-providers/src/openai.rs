@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 use tracing::{debug, info, warn};
 
-use crate::http_retry::{read_truncated_error_body, send_with_retry};
+use crate::http_retry::{printable_url, read_truncated_error_body, request_error, send_with_retry};
 use crate::openai_responses::{responses_agentic_complete, responses_complete};
 use crate::tools::{build_response, tools_enabled, ToolExecutor};
 
@@ -181,7 +181,10 @@ pub(crate) async fn openai_agentic_complete(
             reasoning_effort: chat_tool_effort(provider_name, model).filter(|_| tools.is_some()),
         };
 
-        debug!("{provider_name}: POST {url} model={model} turn={turn}");
+        debug!(
+            "{provider_name}: POST {} model={model} turn={turn}",
+            printable_url(url)
+        );
 
         let body_json = serde_json::to_vec(&body)
             .map_err(|e| ProviderError::Logic(format!("{provider_name}: serialize failed: {e}")))?;
@@ -412,7 +415,10 @@ impl Provider for OpenAiProvider {
             reasoning_effort: None,
         };
 
-        debug!("{name}: POST {url} model={effective_model} (no tools)");
+        debug!(
+            "{name}: POST {} model={effective_model} (no tools)",
+            printable_url(&url)
+        );
 
         let body_json = serde_json::to_vec(&body)
             .map_err(|e| ProviderError::Logic(format!("{name}: serialize failed: {e}")))?;
@@ -480,7 +486,7 @@ impl Provider for OpenAiProvider {
         {
             Ok(resp) => resp.status().is_success(),
             Err(e) => {
-                warn!("{name} not available: {e}");
+                warn!("{name} not available: {}", request_error(e));
                 false
             }
         }
